@@ -4,6 +4,8 @@ Python-driven generator for a baseline **Waterfall Arithmetic Unit (WAU)** archi
 This repository now contains a working foundation for:
 - device-aware WAU configuration (real FPGA presets included),
 - flow compilation (flow stages -> core assignments with fallback cores),
+- DAG/node-based flow compilation with explicit 2D placement directives,
+- multi-program scheduling with async dependency-aware execution and recurrence support,
 - offline scheduling (cycle timeline + encoded schedule words),
 - Verilog emission for coordinator, core/station, ALU and top-level grid.
 
@@ -13,6 +15,13 @@ From repository root:
 ```bash
 PYTHONPATH=src/python python3 -m waugen validate --config src/python/configs/wau_de0_nano_demo.json
 PYTHONPATH=src/python python3 -m waugen generate --config src/python/configs/wau_de0_nano_demo.json --out src/verilog/generated --summary
+```
+
+Advanced 2D multi-program example (DAG + recurrence + load-balancing directives):
+
+```bash
+PYTHONPATH=src/python python3 -m waugen validate --config src/python/configs/wau_2d_multiprogram_demo.json
+PYTHONPATH=src/python python3 -m waugen generate --config src/python/configs/wau_2d_multiprogram_demo.json --out src/verilog/generated_2d --summary
 ```
 
 Compile a basic high-level expression into a new flow and merge it into a config:
@@ -61,6 +70,7 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
   - `cli.py`: CLI entrypoint
 - `src/python/configs/wau_de0_nano_demo.json`: example configuration
 - `src/python/configs/wau_de0_nano_compiled_expr.json`: example output of `compile-expr`
+- `src/python/configs/wau_2d_multiprogram_demo.json`: advanced DAG + multi-program example
 - `src/verilog/generated/`: generated output artifacts
 - `tests/rtl/`: SystemVerilog/Verilog testbenches
 - `tests/python/`: Python unit tests for compiler helpers
@@ -94,11 +104,15 @@ Main JSON fields:
 - `flows`
   - `id`, `name`, `entry`, optional `exit`
   - per-stage: `op`, optional `core`, `fallback_core`, `immediate_b`, `allow_adaptive`
+  - per-node (DAG): `id`, `op`, `deps`, `placement` (`core`/`fallback_core`/`candidate_cores`/`fixed`/`directive`), `recurrent`, `max_iterations`
+- `programs`
+  - `id`, `name`, `flows`, `priority`, `replicas`, `max_parallel_flows`, `load_balance`
+  - `allow_async`, `allow_out_of_order`
 
 ## Current Hardware Scope
 This is a robust **basis**, not final silicon architecture:
 - Stage-to-stage transport currently passes through the coordinator (not full highway/router fabric yet).
-- Runtime adaptation is implemented as primary/fallback core selection per stage.
+- Runtime adaptation is implemented as primary/fallback/candidate core selection per node.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
 
 ## Next Steps

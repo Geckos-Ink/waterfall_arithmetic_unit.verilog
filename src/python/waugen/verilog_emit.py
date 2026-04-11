@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 from pathlib import Path
 
@@ -786,6 +785,8 @@ endmodule
 
 
 def _render_program_json(project: CompiledProject) -> dict:
+    flow_to_slot = {flow.flow_id: flow.flow_slot for flow in project.flows}
+
     return {
         "project": project.config.project_name,
         "device": {
@@ -801,6 +802,7 @@ def _render_program_json(project: CompiledProject) -> dict:
                 "flow_id": flow.flow_id,
                 "flow_slot": flow.flow_slot,
                 "name": flow.name,
+                "linear_node_order": list(flow.linear_node_order),
                 "stages": [
                     {
                         "stage_index": stage.stage_index,
@@ -834,8 +836,75 @@ def _render_program_json(project: CompiledProject) -> dict:
                     }
                     for stage in flow.stages
                 ],
+                "nodes": [
+                    {
+                        "node_id": node.node_id,
+                        "node_slot": node.node_slot,
+                        "deps": list(node.deps),
+                        "dep_slots": list(node.dep_slots),
+                        "op": node.op_name,
+                        "opcode": node.opcode,
+                        "latency": node.latency,
+                        "pipelined": node.pipelined,
+                        "primary_core": {
+                            "x": node.primary_core.x,
+                            "y": node.primary_core.y,
+                            "index": core_index(
+                                node.primary_core.x,
+                                node.primary_core.y,
+                                project.config.device.grid_x,
+                            ),
+                        },
+                        "candidate_cores": [
+                            {
+                                "x": coord.x,
+                                "y": coord.y,
+                                "index": core_index(
+                                    coord.x,
+                                    coord.y,
+                                    project.config.device.grid_x,
+                                ),
+                            }
+                            for coord in node.candidate_cores
+                        ],
+                        "fallback_core": (
+                            {
+                                "x": node.fallback_core.x,
+                                "y": node.fallback_core.y,
+                                "index": core_index(
+                                    node.fallback_core.x,
+                                    node.fallback_core.y,
+                                    project.config.device.grid_x,
+                                ),
+                            }
+                            if node.fallback_core is not None
+                            else None
+                        ),
+                        "allow_adaptive": node.allow_adaptive,
+                        "immediate_b": node.immediate_b,
+                        "recurrent": node.recurrent,
+                        "max_iterations": node.max_iterations,
+                        "cycle_group": node.cycle_group,
+                    }
+                    for node in flow.nodes
+                ],
             }
             for flow in project.flows
+        ],
+        "programs": [
+            {
+                "program_id": program.program_id,
+                "name": program.name,
+                "priority": program.priority,
+                "replicas": program.replicas,
+                "max_parallel_flows": program.max_parallel_flows,
+                "load_balance": program.load_balance,
+                "allow_async": program.allow_async,
+                "allow_out_of_order": program.allow_out_of_order,
+                "flow_ids": list(program.flow_ids),
+                "flow_slots": [flow_to_slot[flow_id] for flow_id in program.flow_ids if flow_id in flow_to_slot],
+            }
+            for program in project.config.programs
         ],
     }
 

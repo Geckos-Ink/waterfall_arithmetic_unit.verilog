@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .compiler import CompiledProject, CompiledStage
+from .compiler import CompiledFlow, CompiledNode, CompiledProject
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,12 @@ class ScheduleInstruction:
     latency: int
     used_fallback: bool
     immediate_b: int | None
+    program_id: int = 0
+    program_name: str = "default"
+    program_replica: int = 0
+    node_id: str = ""
+    iteration: int = 0
+    dependency_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -34,8 +40,13 @@ class SchedulePlan:
                 {
                     "cycle_start": ins.cycle_start,
                     "cycle_end": ins.cycle_end,
+                    "program_id": ins.program_id,
+                    "program_name": ins.program_name,
+                    "program_replica": ins.program_replica,
                     "flow_slot": ins.flow_slot,
                     "flow_id": ins.flow_id,
+                    "node_id": ins.node_id,
+                    "iteration": ins.iteration,
                     "stage_index": ins.stage_index,
                     "op": ins.op_name,
                     "opcode": ins.opcode,
@@ -44,6 +55,7 @@ class SchedulePlan:
                     "latency": ins.latency,
                     "used_fallback": ins.used_fallback,
                     "immediate_b": ins.immediate_b,
+                    "dependency_count": ins.dependency_count,
                 }
                 for ins in self.instructions
             ],
@@ -57,82 +69,354 @@ def core_index(x: int, y: int, grid_x: int) -> int:
     return (y * grid_x) + x
 
 
-def _core_release_cycle(stage: CompiledStage, start_cycle: int) -> int:
-    if stage.pipelined:
+@dataclass
+class _RuntimeNode:
+    key: str
+    program_id: int
+    program_name: str
+    program_replica: int
+    program_priority: int
+    program_allow_out_of_order: bool
+    load_balance: str
+    flow_slot: int
+    flow_id: int
+    node_id: str
+    node_slot: int
+    opcode: int
+    op_name: str
+    latency: int
+    pipelined: bool
+    immediate_b: int | None
+    primary_core_idx: int
+    candidate_core_indices: tuple[int, ...]
+    allow_adaptive: bool
+    iteration: int
+    dep_keys: list[str]
+
+
+@dataclass(frozen=True)
+class _ProgramMeta:
+    name: str
+    priority: int
+
+
+def _core_release_cycle(*, pipelined: bool, latency: int, start_cycle: int) -> int:
+    if pipelined:
         return start_cycle + 1
-    return start_cycle + stage.latency
+    return start_cycle + latency
 
 
-def _choose_core(
+def _resolve_dep_iteration(current: CompiledNode, dep: CompiledNode, iteration: int) -> int | None:
+    if not dep.recurrent:
+        return 0
+
+    if not current.recurrent:
+        return dep.max_iterations - 1
+
+    if current.cycle_group is not None and dep.cycle_group == current.cycle_group:
+        if dep.node_slot < current.node_slot:
+            return min(iteration, dep.max_iterations - 1)
+        prev = iteration - 1
+        if prev < 0:
+            return None
+        return min(prev, dep.max_iterations - 1)
+
+    return min(iteration, dep.max_iterations - 1)
+
+
+def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNode], dict[str, list[str]], dict[str, int], dict[int, _ProgramMeta]]:
+    grid_x = project.config.device.grid_x
+
+    flow_by_id: dict[int, CompiledFlow] = {flow.flow_id: flow for flow in project.flows}
+    runtime_nodes: dict[str, _RuntimeNode] = {}
+    dependents: dict[str, list[str]] = {}
+    indegree: dict[str, int] = {}
+    program_meta: dict[int, _ProgramMeta] = {}
+
+    for program in sorted(project.config.programs, key=lambda p: p.program_id):
+        program_meta[program.program_id] = _ProgramMeta(name=program.name, priority=program.priority)
+
+        flow_instances: list[tuple[int, int]] = []
+        for replica in range(program.replicas):
+            for flow_id in program.flow_ids:
+                flow_instances.append((replica, flow_id))
+
+        if len(flow_instances) > program.max_parallel_flows:
+            flow_instances = flow_instances[: program.max_parallel_flows]
+
+        for replica, flow_id in flow_instances:
+            flow = flow_by_id[flow_id]
+            by_id = {node.node_id: node for node in flow.nodes}
+            key_of: dict[tuple[str, int], str] = {}
+            node_order = sorted(flow.nodes, key=lambda node: node.node_slot)
+
+            for node in node_order:
+                iterations = node.max_iterations if node.recurrent else 1
+                for iteration in range(iterations):
+                    key = (
+                        f"p{program.program_id}_r{replica}_f{flow.flow_slot}_"
+                        f"n{node.node_id}_i{iteration}"
+                    )
+                    key_of[(node.node_id, iteration)] = key
+
+                    candidate_core_indices = tuple(
+                        core_index(coord.x, coord.y, grid_x) for coord in node.candidate_cores
+                    )
+                    if not candidate_core_indices:
+                        candidate_core_indices = (core_index(node.primary_core.x, node.primary_core.y, grid_x),)
+
+                    primary_idx = core_index(node.primary_core.x, node.primary_core.y, grid_x)
+                    if primary_idx not in candidate_core_indices:
+                        candidate_core_indices = (primary_idx,) + candidate_core_indices
+
+                    runtime_nodes[key] = _RuntimeNode(
+                        key=key,
+                        program_id=program.program_id,
+                        program_name=program.name,
+                        program_replica=replica,
+                        program_priority=program.priority,
+                        program_allow_out_of_order=program.allow_out_of_order,
+                        load_balance=program.load_balance,
+                        flow_slot=flow.flow_slot,
+                        flow_id=flow.flow_id,
+                        node_id=node.node_id,
+                        node_slot=node.node_slot,
+                        opcode=node.opcode,
+                        op_name=node.op_name,
+                        latency=node.latency,
+                        pipelined=node.pipelined,
+                        immediate_b=node.immediate_b,
+                        primary_core_idx=primary_idx,
+                        candidate_core_indices=candidate_core_indices,
+                        allow_adaptive=node.allow_adaptive,
+                        iteration=iteration,
+                        dep_keys=[],
+                    )
+
+            for node in node_order:
+                iterations = node.max_iterations if node.recurrent else 1
+                for iteration in range(iterations):
+                    current_key = key_of[(node.node_id, iteration)]
+                    dep_keys: list[str] = []
+
+                    for dep_id in node.deps:
+                        dep_node = by_id[dep_id]
+                        dep_iteration = _resolve_dep_iteration(node, dep_node, iteration)
+                        if dep_iteration is None:
+                            continue
+                        dep_iteration = max(0, min(dep_iteration, (dep_node.max_iterations if dep_node.recurrent else 1) - 1))
+                        dep_key = key_of.get((dep_id, dep_iteration))
+                        if dep_key is not None:
+                            dep_keys.append(dep_key)
+
+                    if node.recurrent and iteration > 0 and node.node_id not in node.deps:
+                        prev_key = key_of.get((node.node_id, iteration - 1))
+                        if prev_key is not None:
+                            dep_keys.append(prev_key)
+
+                    dedup: list[str] = []
+                    seen: set[str] = set()
+                    for dep_key in dep_keys:
+                        if dep_key in seen:
+                            continue
+                        seen.add(dep_key)
+                        dedup.append(dep_key)
+
+                    runtime_nodes[current_key].dep_keys = dedup
+
+            if not program.allow_async or not program.allow_out_of_order:
+                serial_keys: list[str] = []
+                for node in sorted(node_order, key=lambda n: (n.node_slot, n.node_id)):
+                    iterations = node.max_iterations if node.recurrent else 1
+                    for iteration in range(iterations):
+                        serial_keys.append(key_of[(node.node_id, iteration)])
+                for prev_key, next_key in zip(serial_keys, serial_keys[1:]):
+                    if prev_key not in runtime_nodes[next_key].dep_keys:
+                        runtime_nodes[next_key].dep_keys.append(prev_key)
+
+    for key, node in runtime_nodes.items():
+        indegree[key] = len(node.dep_keys)
+        for dep_key in node.dep_keys:
+            dependents.setdefault(dep_key, []).append(key)
+        dependents.setdefault(key, [])
+
+    return runtime_nodes, dependents, indegree, program_meta
+
+
+def _select_program(
     *,
-    stage: CompiledStage,
-    flow_ready: int,
+    ready_programs: set[int],
+    policy: str,
+    program_issue_count: dict[int, int],
+    program_meta: dict[int, _ProgramMeta],
+    round_robin_state: dict[str, int],
+) -> int:
+    if policy == "strict_priority":
+        return max(ready_programs, key=lambda pid: (program_meta[pid].priority, -pid))
+
+    if policy == "round_robin":
+        ordered = sorted(ready_programs)
+        cursor = round_robin_state.get("program", 0)
+        pick = ordered[cursor % len(ordered)]
+        round_robin_state["program"] = cursor + 1
+        return pick
+
+    # weighted_fair
+    def score(pid: int) -> tuple[float, int, int]:
+        issued = program_issue_count.get(pid, 0)
+        priority = max(1, program_meta[pid].priority)
+        return (issued / priority, -priority, pid)
+
+    return min(ready_programs, key=score)
+
+
+def _select_core(
+    *,
+    node: _RuntimeNode,
+    ready_time: int,
     core_ready: dict[int, int],
-    grid_x: int,
-    allow_adapt: bool,
+    core_issue_count: dict[int, int],
+    allow_adaptive_reroute: bool,
+    round_robin_state: dict[str, int],
 ) -> tuple[int, int, bool]:
-    primary_idx = core_index(stage.primary_core.x, stage.primary_core.y, grid_x)
-    primary_start = max(flow_ready, core_ready.get(primary_idx, 0))
-    best_idx = primary_idx
-    best_start = primary_start
-    best_fallback = False
+    candidates = list(node.candidate_core_indices)
+    if not (allow_adaptive_reroute and node.allow_adaptive):
+        candidates = [node.primary_core_idx]
 
-    if allow_adapt and stage.fallback_core is not None:
-        fallback_idx = core_index(stage.fallback_core.x, stage.fallback_core.y, grid_x)
-        fallback_start = max(flow_ready, core_ready.get(fallback_idx, 0))
-        if fallback_start < best_start:
-            best_idx = fallback_idx
-            best_start = fallback_start
-            best_fallback = True
+    if not candidates:
+        candidates = [node.primary_core_idx]
 
-    return best_idx, best_start, best_fallback
+    candidates = sorted(set(candidates))
+
+    if node.load_balance == "least_busy":
+        chosen = min(
+            candidates,
+            key=lambda c: (
+                max(ready_time, core_ready.get(c, 0)),
+                core_issue_count.get(c, 0),
+                c,
+            ),
+        )
+        start = max(ready_time, core_ready.get(chosen, 0))
+        return chosen, start, chosen != node.primary_core_idx
+
+    cursor_key = f"core_rr_{node.program_id}"
+    cursor = round_robin_state.get(cursor_key, 0)
+    offset = cursor % len(candidates)
+    rotated = candidates[offset:] + candidates[:offset]
+
+    chosen = rotated[0]
+    chosen_start = max(ready_time, core_ready.get(chosen, 0))
+    for cand in rotated[1:]:
+        cand_start = max(ready_time, core_ready.get(cand, 0))
+        if cand_start < chosen_start:
+            chosen = cand
+            chosen_start = cand_start
+
+    round_robin_state[cursor_key] = cursor + 1
+    return chosen, chosen_start, chosen != node.primary_core_idx
 
 
 def build_schedule(project: CompiledProject) -> SchedulePlan:
     strategy = project.config.scheduler.strategy
     allow_adapt = project.config.compiler.allow_adaptive_reroute
+    policy = project.config.scheduler.program_policy
     grid_x = project.config.device.grid_x
 
-    instructions: list[ScheduleInstruction] = []
+    runtime_nodes, dependents, indegree, program_meta = _build_runtime_nodes(project)
+
+    unscheduled: set[str] = set(runtime_nodes)
+    ready_keys: set[str] = {key for key, indeg in indegree.items() if indeg == 0}
+    dep_end_cycle: dict[str, int] = {}
+
     core_ready: dict[int, int] = {}
-    flow_next_ready: dict[int, int] = {flow.flow_slot: 0 for flow in project.flows}
+    core_issue_count: dict[int, int] = {}
+    program_issue_count: dict[int, int] = {}
+    round_robin_state: dict[str, int] = {}
 
-    if strategy == "serial":
-        queue: list[tuple[int, int]] = []
-        for flow in project.flows:
-            for stage_idx in range(len(flow.stages)):
-                queue.append((flow.flow_slot, stage_idx))
-    else:
-        queue = []
-        done = False
-        stage_cursor = {flow.flow_slot: 0 for flow in project.flows}
-        while not done:
-            done = True
-            for flow in project.flows:
-                cursor = stage_cursor[flow.flow_slot]
-                if cursor < len(flow.stages):
-                    queue.append((flow.flow_slot, cursor))
-                    stage_cursor[flow.flow_slot] = cursor + 1
-                    done = False
+    instructions: list[ScheduleInstruction] = []
 
-    flow_by_slot = {flow.flow_slot: flow for flow in project.flows}
+    while unscheduled:
+        available = [key for key in ready_keys if key in unscheduled]
+        if not available:
+            unresolved = sorted(unscheduled)
+            raise ValueError(
+                "Unable to build schedule due to unresolved dependency cycle in runtime graph. "
+                f"Unscheduled nodes: {unresolved[:8]}"
+            )
 
-    for flow_slot, stage_index in queue:
-        flow = flow_by_slot[flow_slot]
-        stage = flow.stages[stage_index]
+        if strategy == "serial":
+            selected_key = min(
+                available,
+                key=lambda k: (
+                    runtime_nodes[k].program_id,
+                    runtime_nodes[k].flow_slot,
+                    runtime_nodes[k].iteration,
+                    runtime_nodes[k].node_slot,
+                    runtime_nodes[k].node_id,
+                ),
+            )
+        else:
+            ready_programs = {runtime_nodes[key].program_id for key in available}
+            selected_program = _select_program(
+                ready_programs=ready_programs,
+                policy=policy,
+                program_issue_count=program_issue_count,
+                program_meta=program_meta,
+                round_robin_state=round_robin_state,
+            )
 
-        chosen_core, start, used_fallback = _choose_core(
-            stage=stage,
-            flow_ready=flow_next_ready[flow_slot],
+            program_keys = [key for key in available if runtime_nodes[key].program_id == selected_program]
+
+            def ready_time(node_key: str) -> int:
+                deps = runtime_nodes[node_key].dep_keys
+                if not deps:
+                    return 0
+                return max(dep_end_cycle.get(dep_key, 0) for dep_key in deps)
+
+            if runtime_nodes[program_keys[0]].program_allow_out_of_order:
+                selected_key = min(
+                    program_keys,
+                    key=lambda k: (
+                        ready_time(k),
+                        runtime_nodes[k].flow_slot,
+                        runtime_nodes[k].iteration,
+                        runtime_nodes[k].node_slot,
+                        runtime_nodes[k].node_id,
+                    ),
+                )
+            else:
+                selected_key = min(
+                    program_keys,
+                    key=lambda k: (
+                        runtime_nodes[k].flow_slot,
+                        runtime_nodes[k].iteration,
+                        runtime_nodes[k].node_slot,
+                        ready_time(k),
+                        runtime_nodes[k].node_id,
+                    ),
+                )
+
+        node = runtime_nodes[selected_key]
+        deps = node.dep_keys
+        ready_time = max((dep_end_cycle.get(dep_key, 0) for dep_key in deps), default=0)
+
+        chosen_core, start, used_fallback = _select_core(
+            node=node,
+            ready_time=ready_time,
             core_ready=core_ready,
-            grid_x=grid_x,
-            allow_adapt=allow_adapt and stage.allow_adaptive,
+            core_issue_count=core_issue_count,
+            allow_adaptive_reroute=allow_adapt,
+            round_robin_state=round_robin_state,
         )
 
-        end = start + stage.latency
-        release = _core_release_cycle(stage, start)
+        end = start + node.latency
+        release = _core_release_cycle(pipelined=node.pipelined, latency=node.latency, start_cycle=start)
         core_ready[chosen_core] = release
-        flow_next_ready[flow_slot] = end
+        core_issue_count[chosen_core] = core_issue_count.get(chosen_core, 0) + 1
+        program_issue_count[node.program_id] = program_issue_count.get(node.program_id, 0) + 1
+
+        dep_end_cycle[selected_key] = end
 
         core_y = chosen_core // grid_x
         core_x = chosen_core % grid_x
@@ -141,21 +425,44 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
             ScheduleInstruction(
                 cycle_start=start,
                 cycle_end=end,
-                flow_slot=flow_slot,
-                flow_id=flow.flow_id,
-                stage_index=stage_index,
-                opcode=stage.opcode,
-                op_name=stage.op_name,
+                flow_slot=node.flow_slot,
+                flow_id=node.flow_id,
+                stage_index=node.node_slot,
+                opcode=node.opcode,
+                op_name=node.op_name,
                 core_index=chosen_core,
                 core_x=core_x,
                 core_y=core_y,
-                latency=stage.latency,
+                latency=node.latency,
                 used_fallback=used_fallback,
-                immediate_b=stage.immediate_b,
+                immediate_b=node.immediate_b,
+                program_id=node.program_id,
+                program_name=node.program_name,
+                program_replica=node.program_replica,
+                node_id=node.node_id,
+                iteration=node.iteration,
+                dependency_count=len(node.dep_keys),
             )
         )
 
-    instructions.sort(key=lambda ins: (ins.cycle_start, ins.flow_slot, ins.stage_index))
+        unscheduled.remove(selected_key)
+        ready_keys.discard(selected_key)
+
+        for dep_key in dependents.get(selected_key, []):
+            indegree[dep_key] -= 1
+            if indegree[dep_key] == 0:
+                ready_keys.add(dep_key)
+
+    instructions.sort(
+        key=lambda ins: (
+            ins.cycle_start,
+            ins.program_id,
+            ins.program_replica,
+            ins.flow_slot,
+            ins.iteration,
+            ins.stage_index,
+        )
+    )
     makespan = max((ins.cycle_end for ins in instructions), default=0)
     return SchedulePlan(instructions=tuple(instructions), makespan_cycles=makespan)
 
@@ -167,7 +474,7 @@ def encode_instruction_word(instruction: ScheduleInstruction) -> int:
     if instruction.immediate_b is not None:
         flags |= 0x02
 
-    # 64-bit encoded word:
+    # 64-bit encoded word (legacy-compatible payload):
     # [63:56] opcode
     # [55:40] flow_id
     # [39:32] stage_index

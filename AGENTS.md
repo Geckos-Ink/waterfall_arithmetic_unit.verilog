@@ -18,9 +18,9 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 
 ## Ownership Boundaries
 - `config.py`: schema and validation only.
-- `compiler.py`: mapping flows/stages onto cores and fallback strategy.
+- `compiler.py`: mapping flows/nodes onto 2D cores and adaptive placement strategy.
 - `basic_compiler.py`: expression-to-flow lowering rules for basic WAU compilation.
-- `scheduler.py`: timing model and encoded schedule outputs.
+- `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs.
 - `verilog_emit.py`: text emission only; no scheduling decisions should live here.
 - Generated files under `src/verilog/generated/` are build outputs and may be overwritten.
 
@@ -47,6 +47,7 @@ When changing flow compilation/scheduling behavior:
 1. Update `compiler.py`, `basic_compiler.py`, and `scheduler.py` as needed.
 2. Keep `wau_program.json` and `wau_schedule.json/.hex` consistent.
 3. Mention behavioral deltas in README.
+4. Validate at least one advanced DAG/program config (`wau_2d_multiprogram_demo.json`).
 
 ## Review Checklist
 Before finalizing changes:

@@ -1,0 +1,199 @@
+{
+  "project": "wau_2d_multiprogram_demo",
+  "output_module_name": "wau_top",
+  "device": {
+    "preset": "intel_de0_nano",
+    "grid": {
+      "x": 4,
+      "y": 3
+    },
+    "coordinator_mode": "direct",
+    "enable_runtime_auto_adapt": true,
+    "data_width": 32,
+    "flow_id_width": 12,
+    "opcode_width": 8
+  },
+  "operations": {
+    "library": [
+      "add",
+      "sub",
+      "mul",
+      "div",
+      "max"
+    ],
+    "overrides": {
+      "mul": {
+        "latency": 3,
+        "pipelined": true
+      },
+      "div": {
+        "latency": 8,
+        "pipelined": false
+      }
+    }
+  },
+  "compiler": {
+    "routing": "waterfall",
+    "allow_adaptive_reroute": true,
+    "allow_cycle_recurrence": true,
+    "fallback_radius": 2
+  },
+  "scheduler": {
+    "strategy": "dependency_aware",
+    "program_policy": "weighted_fair",
+    "emit_timeline": true
+  },
+  "flows": [
+    {
+      "id": 10,
+      "name": "fused_filter",
+      "entry": {
+        "x": 0,
+        "y": 0
+      },
+      "nodes": [
+        {
+          "id": "n_add",
+          "op": "add",
+          "placement": {
+            "candidate_cores": [
+              {"x": 0, "y": 0},
+              {"x": 1, "y": 0},
+              {"x": 0, "y": 1}
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "n_mul",
+          "op": "mul",
+          "deps": ["n_add"],
+          "immediate_b": 2,
+          "placement": {
+            "candidate_cores": [
+              {"x": 1, "y": 0},
+              {"x": 1, "y": 1},
+              {"x": 2, "y": 1}
+            ]
+          }
+        },
+        {
+          "id": "n_sub",
+          "op": "sub",
+          "deps": ["n_mul"],
+          "placement": {
+            "core": {"x": 2, "y": 1},
+            "fallback_core": {"x": 2, "y": 0}
+          }
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "name": "async_branches",
+      "entry": {
+        "x": 0,
+        "y": 1
+      },
+      "nodes": [
+        {
+          "id": "left_add",
+          "op": "add",
+          "placement": {
+            "candidate_cores": [
+              {"x": 0, "y": 1},
+              {"x": 1, "y": 1}
+            ]
+          }
+        },
+        {
+          "id": "right_max",
+          "op": "max",
+          "placement": {
+            "candidate_cores": [
+              {"x": 0, "y": 2},
+              {"x": 1, "y": 2}
+            ]
+          }
+        },
+        {
+          "id": "merge_mul",
+          "op": "mul",
+          "deps": ["left_add", "right_max"],
+          "placement": {
+            "core": {"x": 2, "y": 2},
+            "fallback_core": {"x": 2, "y": 1}
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "name": "recurrent_control_loop",
+      "entry": {
+        "x": 2,
+        "y": 0
+      },
+      "nodes": [
+        {
+          "id": "acc",
+          "op": "add",
+          "deps": ["mix"],
+          "recurrent": true,
+          "max_iterations": 4,
+          "placement": {
+            "candidate_cores": [
+              {"x": 2, "y": 0},
+              {"x": 3, "y": 0}
+            ]
+          }
+        },
+        {
+          "id": "mix",
+          "op": "sub",
+          "deps": ["acc"],
+          "recurrent": true,
+          "max_iterations": 4,
+          "placement": {
+            "candidate_cores": [
+              {"x": 2, "y": 1},
+              {"x": 3, "y": 1}
+            ]
+          }
+        },
+        {
+          "id": "out",
+          "op": "max",
+          "deps": ["acc"],
+          "placement": {
+            "core": {"x": 3, "y": 2}
+          }
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": 1,
+      "name": "analytics",
+      "flows": [10, 11],
+      "priority": 2,
+      "replicas": 2,
+      "max_parallel_flows": 4,
+      "load_balance": "least_busy",
+      "allow_async": true,
+      "allow_out_of_order": true
+    },
+    {
+      "id": 2,
+      "name": "control",
+      "flows": [12],
+      "priority": 1,
+      "replicas": 1,
+      "max_parallel_flows": 1,
+      "load_balance": "round_robin",
+      "allow_async": true,
+      "allow_out_of_order": true
+    }
+  ]
+}

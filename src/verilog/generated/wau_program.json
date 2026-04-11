@@ -16,6 +16,11 @@
       "flow_id": 1,
       "flow_slot": 0,
       "name": "accumulate_and_scale",
+      "linear_node_order": [
+        "s0",
+        "s1",
+        "s2"
+      ],
       "stages": [
         {
           "stage_index": 0,
@@ -71,12 +76,137 @@
           },
           "immediate_b": null
         }
+      ],
+      "nodes": [
+        {
+          "node_id": "s0",
+          "node_slot": 0,
+          "deps": [],
+          "dep_slots": [],
+          "op": "add",
+          "opcode": 1,
+          "latency": 1,
+          "pipelined": true,
+          "primary_core": {
+            "x": 0,
+            "y": 0,
+            "index": 0
+          },
+          "candidate_cores": [
+            {
+              "x": 0,
+              "y": 0,
+              "index": 0
+            },
+            {
+              "x": 1,
+              "y": 0,
+              "index": 1
+            }
+          ],
+          "fallback_core": {
+            "x": 1,
+            "y": 0,
+            "index": 1
+          },
+          "allow_adaptive": true,
+          "immediate_b": null,
+          "recurrent": false,
+          "max_iterations": 1,
+          "cycle_group": null
+        },
+        {
+          "node_id": "s1",
+          "node_slot": 1,
+          "deps": [
+            "s0"
+          ],
+          "dep_slots": [
+            0
+          ],
+          "op": "mul",
+          "opcode": 3,
+          "latency": 3,
+          "pipelined": true,
+          "primary_core": {
+            "x": 1,
+            "y": 0,
+            "index": 1
+          },
+          "candidate_cores": [
+            {
+              "x": 1,
+              "y": 0,
+              "index": 1
+            },
+            {
+              "x": 2,
+              "y": 0,
+              "index": 2
+            }
+          ],
+          "fallback_core": {
+            "x": 2,
+            "y": 0,
+            "index": 2
+          },
+          "allow_adaptive": true,
+          "immediate_b": 3,
+          "recurrent": false,
+          "max_iterations": 1,
+          "cycle_group": null
+        },
+        {
+          "node_id": "s2",
+          "node_slot": 2,
+          "deps": [
+            "s1"
+          ],
+          "dep_slots": [
+            1
+          ],
+          "op": "sub",
+          "opcode": 2,
+          "latency": 1,
+          "pipelined": true,
+          "primary_core": {
+            "x": 2,
+            "y": 0,
+            "index": 2
+          },
+          "candidate_cores": [
+            {
+              "x": 2,
+              "y": 0,
+              "index": 2
+            },
+            {
+              "x": 2,
+              "y": 1,
+              "index": 5
+            }
+          ],
+          "fallback_core": {
+            "x": 2,
+            "y": 1,
+            "index": 5
+          },
+          "allow_adaptive": true,
+          "immediate_b": null,
+          "recurrent": false,
+          "max_iterations": 1,
+          "cycle_group": null
+        }
       ]
     },
     {
       "flow_id": 2,
       "flow_slot": 1,
       "name": "max_then_div",
+      "linear_node_order": [
+        "s0",
+        "s1"
+      ],
       "stages": [
         {
           "stage_index": 0,
@@ -114,6 +244,106 @@
           },
           "immediate_b": null
         }
+      ],
+      "nodes": [
+        {
+          "node_id": "s0",
+          "node_slot": 0,
+          "deps": [],
+          "dep_slots": [],
+          "op": "max",
+          "opcode": 7,
+          "latency": 1,
+          "pipelined": true,
+          "primary_core": {
+            "x": 2,
+            "y": 1,
+            "index": 5
+          },
+          "candidate_cores": [
+            {
+              "x": 2,
+              "y": 1,
+              "index": 5
+            },
+            {
+              "x": 1,
+              "y": 1,
+              "index": 4
+            }
+          ],
+          "fallback_core": {
+            "x": 1,
+            "y": 1,
+            "index": 4
+          },
+          "allow_adaptive": true,
+          "immediate_b": null,
+          "recurrent": false,
+          "max_iterations": 1,
+          "cycle_group": null
+        },
+        {
+          "node_id": "s1",
+          "node_slot": 1,
+          "deps": [
+            "s0"
+          ],
+          "dep_slots": [
+            0
+          ],
+          "op": "div",
+          "opcode": 4,
+          "latency": 8,
+          "pipelined": false,
+          "primary_core": {
+            "x": 2,
+            "y": 0,
+            "index": 2
+          },
+          "candidate_cores": [
+            {
+              "x": 2,
+              "y": 0,
+              "index": 2
+            },
+            {
+              "x": 1,
+              "y": 0,
+              "index": 1
+            }
+          ],
+          "fallback_core": {
+            "x": 1,
+            "y": 0,
+            "index": 1
+          },
+          "allow_adaptive": true,
+          "immediate_b": null,
+          "recurrent": false,
+          "max_iterations": 1,
+          "cycle_group": null
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "program_id": 0,
+      "name": "default",
+      "priority": 1,
+      "replicas": 1,
+      "max_parallel_flows": 2,
+      "load_balance": "round_robin",
+      "allow_async": true,
+      "allow_out_of_order": true,
+      "flow_ids": [
+        1,
+        2
+      ],
+      "flow_slots": [
+        0,
+        1
       ]
     }
   ]

@@ -4,8 +4,13 @@
     {
       "cycle_start": 0,
       "cycle_end": 1,
+      "program_id": 0,
+      "program_name": "default",
+      "program_replica": 0,
       "flow_slot": 0,
       "flow_id": 1,
+      "node_id": "s0",
+      "iteration": 0,
       "stage_index": 0,
       "op": "add",
       "opcode": 1,
@@ -16,13 +21,19 @@
       },
       "latency": 1,
       "used_fallback": false,
-      "immediate_b": null
+      "immediate_b": null,
+      "dependency_count": 0
     },
     {
       "cycle_start": 0,
       "cycle_end": 1,
+      "program_id": 0,
+      "program_name": "default",
+      "program_replica": 0,
       "flow_slot": 1,
       "flow_id": 2,
+      "node_id": "s0",
+      "iteration": 0,
       "stage_index": 0,
       "op": "max",
       "opcode": 7,
@@ -33,13 +44,19 @@
       },
       "latency": 1,
       "used_fallback": false,
-      "immediate_b": null
+      "immediate_b": null,
+      "dependency_count": 0
     },
     {
       "cycle_start": 1,
       "cycle_end": 4,
+      "program_id": 0,
+      "program_name": "default",
+      "program_replica": 0,
       "flow_slot": 0,
       "flow_id": 1,
+      "node_id": "s1",
+      "iteration": 0,
       "stage_index": 1,
       "op": "mul",
       "opcode": 3,
@@ -50,13 +67,19 @@
       },
       "latency": 3,
       "used_fallback": false,
-      "immediate_b": 3
+      "immediate_b": 3,
+      "dependency_count": 1
     },
     {
       "cycle_start": 1,
       "cycle_end": 9,
+      "program_id": 0,
+      "program_name": "default",
+      "program_replica": 0,
       "flow_slot": 1,
       "flow_id": 2,
+      "node_id": "s1",
+      "iteration": 0,
       "stage_index": 1,
       "op": "div",
       "opcode": 4,
@@ -67,13 +90,19 @@
       },
       "latency": 8,
       "used_fallback": false,
-      "immediate_b": null
+      "immediate_b": null,
+      "dependency_count": 1
     },
     {
       "cycle_start": 4,
       "cycle_end": 5,
+      "program_id": 0,
+      "program_name": "default",
+      "program_replica": 0,
       "flow_slot": 0,
       "flow_id": 1,
+      "node_id": "s2",
+      "iteration": 0,
       "stage_index": 2,
       "op": "sub",
       "opcode": 2,
@@ -84,7 +113,8 @@
       },
       "latency": 1,
       "used_fallback": true,
-      "immediate_b": null
+      "immediate_b": null,
+      "dependency_count": 1
     }
   ]
 }

@@ -119,6 +119,15 @@ class OperationSpec:
 
 
 @dataclass(frozen=True)
+class PlacementSpec:
+    core: Coord | None
+    fallback_core: Coord | None
+    candidate_cores: tuple[Coord, ...]
+    fixed: bool
+    directive: str
+
+
+@dataclass(frozen=True)
 class FlowStageSpec:
     op: str
     core: Coord | None
@@ -128,13 +137,39 @@ class FlowStageSpec:
 
 
 @dataclass(frozen=True)
+class FlowNodeSpec:
+    node_id: str
+    op: str
+    deps: tuple[str, ...]
+    placement: PlacementSpec
+    immediate_b: int | None
+    allow_adaptive: bool
+    recurrent: bool
+    max_iterations: int
+
+
+@dataclass(frozen=True)
 class FlowSpec:
     flow_id: int
     name: str
     entry: Coord
     exit: Coord | None
     stages: tuple[FlowStageSpec, ...]
+    nodes: tuple[FlowNodeSpec, ...]
     max_in_flight: int
+
+
+@dataclass(frozen=True)
+class ProgramSpec:
+    program_id: int
+    name: str
+    flow_ids: tuple[int, ...]
+    priority: int
+    replicas: int
+    max_parallel_flows: int
+    load_balance: str
+    allow_async: bool
+    allow_out_of_order: bool
 
 
 @dataclass(frozen=True)
@@ -142,6 +177,7 @@ class CompilerSpec:
     routing: str
     allow_adaptive_reroute: bool
     fallback_radius: int
+    allow_cycle_recurrence: bool
 
     @staticmethod
     def from_obj(value: Any) -> "CompilerSpec":
@@ -157,6 +193,7 @@ class CompilerSpec:
             fallback_radius=validate_range(
                 int(value.get("fallback_radius", 1)), minimum=0, name="compiler.fallback_radius"
             ),
+            allow_cycle_recurrence=bool(value.get("allow_cycle_recurrence", True)),
         )
 
 
@@ -164,6 +201,7 @@ class CompilerSpec:
 class SchedulerSpec:
     strategy: str
     emit_timeline: bool
+    program_policy: str
 
     @staticmethod
     def from_obj(value: Any) -> "SchedulerSpec":
@@ -171,11 +209,19 @@ class SchedulerSpec:
         if not isinstance(value, dict):
             raise ConfigError("scheduler must be an object")
         strategy = str(value.get("strategy", "round_robin"))
-        if strategy not in {"round_robin", "serial"}:
-            raise ConfigError("scheduler.strategy must be round_robin or serial")
+        if strategy not in {"round_robin", "serial", "dependency_aware"}:
+            raise ConfigError("scheduler.strategy must be round_robin, serial, or dependency_aware")
+
+        program_policy = str(value.get("program_policy", "weighted_fair"))
+        if program_policy not in {"weighted_fair", "strict_priority", "round_robin"}:
+            raise ConfigError(
+                "scheduler.program_policy must be weighted_fair, strict_priority, or round_robin"
+            )
+
         return SchedulerSpec(
             strategy=strategy,
             emit_timeline=bool(value.get("emit_timeline", True)),
+            program_policy=program_policy,
         )
 
 
@@ -186,6 +232,7 @@ class ProjectConfig:
     device: DeviceSpec
     operations: tuple[OperationSpec, ...]
     flows: tuple[FlowSpec, ...]
+    programs: tuple[ProgramSpec, ...]
     compiler: CompilerSpec
     scheduler: SchedulerSpec
 
@@ -291,6 +338,155 @@ def _load_operations(value: Any) -> tuple[OperationSpec, ...]:
     return tuple(loaded)
 
 
+def _parse_coord_list(value: Any, *, field_name: str) -> tuple[Coord, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError(f"{field_name} must be a list of coord objects")
+    coords: list[Coord] = []
+    for idx, raw in enumerate(value):
+        coords.append(Coord.from_obj(raw, field_name=f"{field_name}[{idx}]") )
+    return tuple(coords)
+
+
+def _parse_placement(raw_node: dict[str, Any], *, flow_id: int, node_label: str) -> PlacementSpec:
+    placement = raw_node.get("placement", {})
+    if placement is None:
+        placement = {}
+    if not isinstance(placement, dict):
+        raise ConfigError(f"flow {flow_id} node {node_label} placement must be an object")
+
+    core = (
+        Coord.from_obj(placement["core"], field_name=f"flow[{flow_id}].nodes[{node_label}].placement.core")
+        if "core" in placement
+        else (
+            Coord.from_obj(raw_node["core"], field_name=f"flow[{flow_id}].nodes[{node_label}].core")
+            if "core" in raw_node
+            else None
+        )
+    )
+
+    fallback_core = (
+        Coord.from_obj(
+            placement["fallback_core"],
+            field_name=f"flow[{flow_id}].nodes[{node_label}].placement.fallback_core",
+        )
+        if "fallback_core" in placement
+        else (
+            Coord.from_obj(raw_node["fallback_core"], field_name=f"flow[{flow_id}].nodes[{node_label}].fallback_core")
+            if "fallback_core" in raw_node
+            else None
+        )
+    )
+
+    candidate_cores = _parse_coord_list(
+        placement.get("candidate_cores", raw_node.get("candidate_cores", [])),
+        field_name=f"flow[{flow_id}].nodes[{node_label}].candidate_cores",
+    )
+
+    fixed = bool(placement.get("fixed", raw_node.get("fixed", False)))
+    directive = str(placement.get("directive", raw_node.get("placement_directive", "auto")))
+    if directive not in {"auto", "manual", "prefer_locality", "prefer_balance"}:
+        raise ConfigError(
+            f"flow {flow_id} node {node_label} placement directive must be one of: "
+            "auto, manual, prefer_locality, prefer_balance"
+        )
+
+    return PlacementSpec(
+        core=core,
+        fallback_core=fallback_core,
+        candidate_cores=candidate_cores,
+        fixed=fixed,
+        directive=directive,
+    )
+
+
+def _load_flow_nodes(raw_flow: dict[str, Any], *, flow_id: int) -> tuple[FlowNodeSpec, ...]:
+    raw_nodes = raw_flow.get("nodes", [])
+    if raw_nodes is None:
+        raw_nodes = []
+    if not isinstance(raw_nodes, list):
+        raise ConfigError(f"flow {flow_id}.nodes must be a list")
+
+    nodes: list[FlowNodeSpec] = []
+    seen_ids: set[str] = set()
+
+    for idx, raw_node in enumerate(raw_nodes):
+        if isinstance(raw_node, str):
+            node_id = f"n{idx}"
+            op = raw_node
+            deps: tuple[str, ...] = ()
+            placement = PlacementSpec(
+                core=None,
+                fallback_core=None,
+                candidate_cores=(),
+                fixed=False,
+                directive="auto",
+            )
+            immediate_b = None
+            allow_adaptive = True
+            recurrent = False
+            max_iterations = 1
+        else:
+            if not isinstance(raw_node, dict):
+                raise ConfigError(f"flow {flow_id}.nodes[{idx}] must be object or operation name string")
+
+            node_id = str(raw_node.get("id", f"n{idx}")).strip()
+            if not node_id:
+                raise ConfigError(f"flow {flow_id}.nodes[{idx}] id cannot be empty")
+
+            op = str(raw_node.get("op", "")).strip()
+            if not op:
+                raise ConfigError(f"flow {flow_id}.nodes[{idx}] requires op")
+
+            raw_deps = raw_node.get("deps", [])
+            if not isinstance(raw_deps, list):
+                raise ConfigError(f"flow {flow_id}.nodes[{node_id}].deps must be a list")
+            deps = tuple(str(dep).strip() for dep in raw_deps if str(dep).strip())
+
+            placement = _parse_placement(raw_node, flow_id=flow_id, node_label=node_id)
+            immediate_b = int(raw_node["immediate_b"]) if "immediate_b" in raw_node else None
+            allow_adaptive = bool(raw_node.get("allow_adaptive", True))
+
+            loop_cfg = raw_node.get("loop", {})
+            if loop_cfg is None:
+                loop_cfg = {}
+            if not isinstance(loop_cfg, dict):
+                raise ConfigError(f"flow {flow_id}.nodes[{node_id}].loop must be an object")
+
+            recurrent = bool(raw_node.get("recurrent", loop_cfg.get("enabled", False)))
+            max_iterations = validate_range(
+                int(raw_node.get("max_iterations", loop_cfg.get("max_iterations", 1))),
+                minimum=1,
+                name=f"flow[{flow_id}].nodes[{node_id}].max_iterations",
+            )
+
+        if node_id in seen_ids:
+            raise ConfigError(f"flow {flow_id} duplicate node id: {node_id}")
+        seen_ids.add(node_id)
+
+        nodes.append(
+            FlowNodeSpec(
+                node_id=node_id,
+                op=op,
+                deps=deps,
+                placement=placement,
+                immediate_b=immediate_b,
+                allow_adaptive=allow_adaptive,
+                recurrent=recurrent,
+                max_iterations=max_iterations,
+            )
+        )
+
+    node_ids = {node.node_id for node in nodes}
+    for node in nodes:
+        for dep in node.deps:
+            if dep not in node_ids:
+                raise ConfigError(f"flow {flow_id} node {node.node_id} depends on unknown node '{dep}'")
+
+    return tuple(nodes)
+
+
 def _load_flows(value: Any) -> tuple[FlowSpec, ...]:
     if not isinstance(value, list):
         raise ConfigError("flows must be a list")
@@ -318,8 +514,10 @@ def _load_flows(value: Any) -> tuple[FlowSpec, ...]:
         )
 
         raw_stages = raw_flow.get("stages", [])
-        if not isinstance(raw_stages, list) or not raw_stages:
-            raise ConfigError(f"flow {flow_id} must contain a non-empty stages list")
+        if raw_stages is None:
+            raw_stages = []
+        if not isinstance(raw_stages, list):
+            raise ConfigError(f"flow {flow_id} stages must be a list")
 
         stages: list[FlowStageSpec] = []
         for idx, raw_stage in enumerate(raw_stages):
@@ -360,6 +558,11 @@ def _load_flows(value: Any) -> tuple[FlowSpec, ...]:
                 )
             )
 
+        nodes = _load_flow_nodes(raw_flow, flow_id=flow_id)
+
+        if not stages and not nodes:
+            raise ConfigError(f"flow {flow_id} must contain a non-empty stages or nodes list")
+
         flows.append(
             FlowSpec(
                 flow_id=flow_id,
@@ -367,6 +570,7 @@ def _load_flows(value: Any) -> tuple[FlowSpec, ...]:
                 entry=entry,
                 exit=exit_coord,
                 stages=tuple(stages),
+                nodes=nodes,
                 max_in_flight=validate_range(
                     int(raw_flow.get("max_in_flight", 1)),
                     minimum=1,
@@ -379,6 +583,124 @@ def _load_flows(value: Any) -> tuple[FlowSpec, ...]:
         raise ConfigError("at least one flow must be declared")
 
     return tuple(flows)
+
+
+def _resolve_flow_ref(ref: Any, *, flow_ids: set[int], flow_name_to_id: dict[str, int], program_id: int) -> int:
+    if isinstance(ref, int):
+        flow_id = ref
+    elif isinstance(ref, str):
+        raw = ref.strip()
+        if raw.isdigit() or (raw.startswith("-") and raw[1:].isdigit()):
+            flow_id = int(raw)
+        else:
+            if raw not in flow_name_to_id:
+                raise ConfigError(f"program {program_id} references unknown flow name '{raw}'")
+            flow_id = flow_name_to_id[raw]
+    elif isinstance(ref, dict):
+        if "id" in ref:
+            flow_id = int(ref["id"])
+        elif "name" in ref:
+            name = str(ref["name"])
+            if name not in flow_name_to_id:
+                raise ConfigError(f"program {program_id} references unknown flow name '{name}'")
+            flow_id = flow_name_to_id[name]
+        else:
+            raise ConfigError(f"program {program_id} flow ref object must contain id or name")
+    else:
+        raise ConfigError(f"program {program_id} flow refs must be int/string/object")
+
+    if flow_id not in flow_ids:
+        raise ConfigError(f"program {program_id} references unknown flow id {flow_id}")
+    return flow_id
+
+
+def _load_programs(value: Any, *, flows: tuple[FlowSpec, ...]) -> tuple[ProgramSpec, ...]:
+    flow_ids = {flow.flow_id for flow in flows}
+    flow_name_to_id = {flow.name: flow.flow_id for flow in flows}
+    default_flow_ids = tuple(sorted(flow_ids))
+
+    if value is None:
+        return (
+            ProgramSpec(
+                program_id=0,
+                name="default",
+                flow_ids=default_flow_ids,
+                priority=1,
+                replicas=1,
+                max_parallel_flows=max(1, len(default_flow_ids)),
+                load_balance="round_robin",
+                allow_async=True,
+                allow_out_of_order=True,
+            ),
+        )
+
+    if not isinstance(value, list):
+        raise ConfigError("programs must be a list")
+
+    programs: list[ProgramSpec] = []
+    seen_ids: set[int] = set()
+
+    for idx, raw_program in enumerate(value):
+        if not isinstance(raw_program, dict):
+            raise ConfigError("each program must be an object")
+
+        program_id = int(raw_program.get("id", idx))
+        if program_id < 0:
+            raise ConfigError("program id must be non-negative")
+        if program_id in seen_ids:
+            raise ConfigError(f"duplicate program id: {program_id}")
+        seen_ids.add(program_id)
+
+        name = str(raw_program.get("name", f"program_{program_id}")).strip() or f"program_{program_id}"
+
+        raw_refs = raw_program.get("flows", list(default_flow_ids))
+        if not isinstance(raw_refs, list) or not raw_refs:
+            raise ConfigError(f"program {program_id} flows must be a non-empty list")
+        resolved_ids = tuple(
+            _resolve_flow_ref(ref, flow_ids=flow_ids, flow_name_to_id=flow_name_to_id, program_id=program_id)
+            for ref in raw_refs
+        )
+
+        priority = validate_range(
+            int(raw_program.get("priority", 1)),
+            minimum=1,
+            name=f"program[{program_id}].priority",
+        )
+        replicas = validate_range(
+            int(raw_program.get("replicas", 1)),
+            minimum=1,
+            name=f"program[{program_id}].replicas",
+        )
+        max_parallel_flows = validate_range(
+            int(raw_program.get("max_parallel_flows", len(resolved_ids) * replicas)),
+            minimum=1,
+            name=f"program[{program_id}].max_parallel_flows",
+        )
+
+        load_balance = str(raw_program.get("load_balance", "round_robin"))
+        if load_balance not in {"round_robin", "least_busy"}:
+            raise ConfigError(
+                f"program {program_id} load_balance must be round_robin or least_busy"
+            )
+
+        programs.append(
+            ProgramSpec(
+                program_id=program_id,
+                name=name,
+                flow_ids=resolved_ids,
+                priority=priority,
+                replicas=replicas,
+                max_parallel_flows=max_parallel_flows,
+                load_balance=load_balance,
+                allow_async=bool(raw_program.get("allow_async", True)),
+                allow_out_of_order=bool(raw_program.get("allow_out_of_order", True)),
+            )
+        )
+
+    if not programs:
+        raise ConfigError("at least one program must be declared")
+
+    return tuple(programs)
 
 
 def load_config(path: Path) -> ProjectConfig:
@@ -398,6 +720,7 @@ def load_config(path: Path) -> ProjectConfig:
     device = DeviceSpec.from_obj(payload.get("device", {}))
     operations = _load_operations(payload.get("operations", {"library": ["add", "sub", "mul", "div"]}))
     flows = _load_flows(payload.get("flows", []))
+    programs = _load_programs(payload.get("programs"), flows=flows)
     compiler = CompilerSpec.from_obj(payload.get("compiler", {}))
     scheduler = SchedulerSpec.from_obj(payload.get("scheduler", {}))
 
@@ -408,6 +731,11 @@ def load_config(path: Path) -> ProjectConfig:
                 raise ConfigError(
                     f"Flow {flow.flow_id} stage {idx} references unknown op '{stage.op}'"
                 )
+        for node in flow.nodes:
+            if node.op not in op_names:
+                raise ConfigError(
+                    f"Flow {flow.flow_id} node {node.node_id} references unknown op '{node.op}'"
+                )
 
     return ProjectConfig(
         project_name=project_name,
@@ -415,6 +743,7 @@ def load_config(path: Path) -> ProjectConfig:
         device=device,
         operations=operations,
         flows=flows,
+        programs=programs,
         compiler=compiler,
         scheduler=scheduler,
     )
