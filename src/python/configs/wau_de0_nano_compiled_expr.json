@@ -1,0 +1,117 @@
+{
+  "project": "wau_de0_nano_demo",
+  "output_module_name": "wau_top",
+  "device": {
+    "preset": "intel_de0_nano",
+    "grid": {
+      "x": 3,
+      "y": 2
+    },
+    "coordinator_mode": "direct",
+    "enable_runtime_auto_adapt": true,
+    "data_width": 32,
+    "flow_id_width": 12,
+    "opcode_width": 8,
+    "local_ram_depth": 128,
+    "global_ram_depth": 2048
+  },
+  "operations": {
+    "library": [
+      "add",
+      "sub",
+      "mul",
+      "div",
+      "max"
+    ],
+    "overrides": {
+      "mul": {
+        "latency": 3,
+        "pipelined": true
+      },
+      "div": {
+        "latency": 8,
+        "pipelined": false
+      }
+    }
+  },
+  "compiler": {
+    "routing": "waterfall",
+    "allow_adaptive_reroute": true,
+    "fallback_radius": 1
+  },
+  "scheduler": {
+    "strategy": "round_robin",
+    "emit_timeline": true
+  },
+  "flows": [
+    {
+      "id": 1,
+      "name": "accumulate_and_scale",
+      "entry": {
+        "x": 0,
+        "y": 0
+      },
+      "stages": [
+        {
+          "op": "add"
+        },
+        {
+          "op": "mul",
+          "immediate_b": 3
+        },
+        {
+          "op": "sub"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "max_then_div",
+      "entry": {
+        "x": 0,
+        "y": 1
+      },
+      "stages": [
+        {
+          "op": "max",
+          "core": {
+            "x": 2,
+            "y": 1
+          }
+        },
+        {
+          "op": "div",
+          "core": {
+            "x": 2,
+            "y": 0
+          },
+          "fallback_core": {
+            "x": 1,
+            "y": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "name": "expr_compiled_flow",
+      "entry": {
+        "x": 1,
+        "y": 0
+      },
+      "max_in_flight": 1,
+      "stages": [
+        {
+          "op": "add"
+        },
+        {
+          "op": "mul",
+          "immediate_b": 3
+        },
+        {
+          "op": "sub"
+        }
+      ]
+    }
+  ]
+}

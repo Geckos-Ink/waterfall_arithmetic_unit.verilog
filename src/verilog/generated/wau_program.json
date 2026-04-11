@@ -1,0 +1,120 @@
+{
+  "project": "wau_de0_nano_demo",
+  "device": {
+    "name": "intel_de0_nano",
+    "vendor": "Intel",
+    "family": "Cyclone IV E",
+    "part": "EP4CE22F17C6N",
+    "grid": {
+      "x": 3,
+      "y": 2
+    },
+    "coordinator_mode": "direct"
+  },
+  "flows": [
+    {
+      "flow_id": 1,
+      "flow_slot": 0,
+      "name": "accumulate_and_scale",
+      "stages": [
+        {
+          "stage_index": 0,
+          "op": "add",
+          "opcode": 1,
+          "latency": 1,
+          "pipelined": true,
+          "primary_core": {
+            "x": 0,
+            "y": 0,
+            "index": 0
+          },
+          "fallback_core": {
+            "x": 1,
+            "y": 0,
+            "index": 1
+          },
+          "immediate_b": null
+        },
+        {
+          "stage_index": 1,
+          "op": "mul",
+          "opcode": 3,
+          "latency": 3,
+          "pipelined": true,
+          "primary_core": {
+            "x": 1,
+            "y": 0,
+            "index": 1
+          },
+          "fallback_core": {
+            "x": 2,
+            "y": 0,
+            "index": 2
+          },
+          "immediate_b": 3
+        },
+        {
+          "stage_index": 2,
+          "op": "sub",
+          "opcode": 2,
+          "latency": 1,
+          "pipelined": true,
+          "primary_core": {
+            "x": 2,
+            "y": 0,
+            "index": 2
+          },
+          "fallback_core": {
+            "x": 2,
+            "y": 1,
+            "index": 5
+          },
+          "immediate_b": null
+        }
+      ]
+    },
+    {
+      "flow_id": 2,
+      "flow_slot": 1,
+      "name": "max_then_div",
+      "stages": [
+        {
+          "stage_index": 0,
+          "op": "max",
+          "opcode": 7,
+          "latency": 1,
+          "pipelined": true,
+          "primary_core": {
+            "x": 2,
+            "y": 1,
+            "index": 5
+          },
+          "fallback_core": {
+            "x": 1,
+            "y": 1,
+            "index": 4
+          },
+          "immediate_b": null
+        },
+        {
+          "stage_index": 1,
+          "op": "div",
+          "opcode": 4,
+          "latency": 8,
+          "pipelined": false,
+          "primary_core": {
+            "x": 2,
+            "y": 0,
+            "index": 2
+          },
+          "fallback_core": {
+            "x": 1,
+            "y": 0,
+            "index": 1
+          },
+          "immediate_b": null
+        }
+      ]
+    }
+  ]
+}

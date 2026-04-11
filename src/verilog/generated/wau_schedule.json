@@ -1,0 +1,90 @@
+{
+  "makespan_cycles": 9,
+  "instructions": [
+    {
+      "cycle_start": 0,
+      "cycle_end": 1,
+      "flow_slot": 0,
+      "flow_id": 1,
+      "stage_index": 0,
+      "op": "add",
+      "opcode": 1,
+      "core_index": 0,
+      "core": {
+        "x": 0,
+        "y": 0
+      },
+      "latency": 1,
+      "used_fallback": false,
+      "immediate_b": null
+    },
+    {
+      "cycle_start": 0,
+      "cycle_end": 1,
+      "flow_slot": 1,
+      "flow_id": 2,
+      "stage_index": 0,
+      "op": "max",
+      "opcode": 7,
+      "core_index": 5,
+      "core": {
+        "x": 2,
+        "y": 1
+      },
+      "latency": 1,
+      "used_fallback": false,
+      "immediate_b": null
+    },
+    {
+      "cycle_start": 1,
+      "cycle_end": 4,
+      "flow_slot": 0,
+      "flow_id": 1,
+      "stage_index": 1,
+      "op": "mul",
+      "opcode": 3,
+      "core_index": 1,
+      "core": {
+        "x": 1,
+        "y": 0
+      },
+      "latency": 3,
+      "used_fallback": false,
+      "immediate_b": 3
+    },
+    {
+      "cycle_start": 1,
+      "cycle_end": 9,
+      "flow_slot": 1,
+      "flow_id": 2,
+      "stage_index": 1,
+      "op": "div",
+      "opcode": 4,
+      "core_index": 2,
+      "core": {
+        "x": 2,
+        "y": 0
+      },
+      "latency": 8,
+      "used_fallback": false,
+      "immediate_b": null
+    },
+    {
+      "cycle_start": 4,
+      "cycle_end": 5,
+      "flow_slot": 0,
+      "flow_id": 1,
+      "stage_index": 2,
+      "op": "sub",
+      "opcode": 2,
+      "core_index": 5,
+      "core": {
+        "x": 2,
+        "y": 1
+      },
+      "latency": 1,
+      "used_fallback": true,
+      "immediate_b": null
+    }
+  ]
+}
