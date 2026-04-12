@@ -96,9 +96,9 @@ def compile_expression_to_stages(expr: str) -> list[CompiledStageExpr]:
     return stages
 
 
-def build_flow_from_expression(
+def _build_flow_from_compiled_stages(
     *,
-    expr: str,
+    compiled_stages: list[CompiledStageExpr],
     flow_id: int,
     name: str,
     entry_x: int,
@@ -109,8 +109,6 @@ def build_flow_from_expression(
         raise BasicCompilerError("flow_id must be non-negative")
     if max_in_flight < 1:
         raise BasicCompilerError("max_in_flight must be >= 1")
-
-    compiled_stages = compile_expression_to_stages(expr)
     raw_stages: list[dict[str, Any]] = []
     for stage in compiled_stages:
         raw = {"op": stage.op}
@@ -125,6 +123,170 @@ def build_flow_from_expression(
         "max_in_flight": max_in_flight,
         "stages": raw_stages,
     }
+
+
+def build_flow_from_expression(
+    *,
+    expr: str,
+    flow_id: int,
+    name: str,
+    entry_x: int,
+    entry_y: int,
+    max_in_flight: int = 1,
+) -> dict[str, Any]:
+    compiled_stages = compile_expression_to_stages(expr)
+    return _build_flow_from_compiled_stages(
+        compiled_stages=compiled_stages,
+        flow_id=flow_id,
+        name=name,
+        entry_x=entry_x,
+        entry_y=entry_y,
+        max_in_flight=max_in_flight,
+    )
+
+
+def _strip_pseudoc_comments(program: str) -> str:
+    lines: list[str] = []
+    for raw_line in program.splitlines():
+        line = raw_line.split("//", 1)[0]
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _statement_from_source(statement: str, *, statement_index: int) -> ast.stmt:
+    try:
+        parsed = ast.parse(statement, mode="exec")
+    except SyntaxError as exc:
+        raise BasicCompilerError(
+            f"Invalid pseudo-C syntax in statement {statement_index}: {exc}"
+        ) from exc
+
+    if len(parsed.body) != 1:
+        raise BasicCompilerError(
+            f"Pseudo-C statement {statement_index} must contain exactly one assignment"
+        )
+
+    return parsed.body[0]
+
+
+def _pseudo_stage_from_expr(
+    expr: ast.expr,
+    *,
+    accumulator_name: str,
+    statement_index: int,
+) -> CompiledStageExpr:
+    if not isinstance(expr, ast.BinOp):
+        raise BasicCompilerError(
+            "Pseudo-C operations must be binary expressions: "
+            f"statement {statement_index} should look like '{accumulator_name} = {accumulator_name} <op> (b|const)'"
+        )
+
+    if type(expr.op) not in _OP_MAP:
+        raise BasicCompilerError(
+            f"Unsupported operator in pseudo-C statement {statement_index}: {type(expr.op).__name__}"
+        )
+
+    if not isinstance(expr.left, ast.Name) or expr.left.id != accumulator_name:
+        raise BasicCompilerError(
+            f"Pseudo-C statement {statement_index} must use '{accumulator_name}' as left operand"
+        )
+
+    _, imm = _operand_kind(expr.right)
+    return CompiledStageExpr(op=_OP_MAP[type(expr.op)], immediate_b=imm)
+
+
+def compile_pseudoc_to_stages(program: str) -> list[CompiledStageExpr]:
+    cleaned = _strip_pseudoc_comments(program)
+    raw_statements = [chunk.strip() for chunk in cleaned.split(";") if chunk.strip()]
+    if not raw_statements:
+        raise BasicCompilerError("Pseudo-C program must contain at least one assignment")
+
+    accumulator_name: str | None = None
+    stages: list[CompiledStageExpr] = []
+
+    for idx, statement in enumerate(raw_statements, start=1):
+        parsed = _statement_from_source(statement, statement_index=idx)
+
+        if isinstance(parsed, ast.Assign):
+            if len(parsed.targets) != 1 or not isinstance(parsed.targets[0], ast.Name):
+                raise BasicCompilerError(
+                    f"Pseudo-C statement {idx} must assign to a single variable"
+                )
+            target_name = parsed.targets[0].id
+
+            if accumulator_name is None:
+                if isinstance(parsed.value, ast.Name) and parsed.value.id == "a":
+                    accumulator_name = target_name
+                    continue
+                raise BasicCompilerError(
+                    "Pseudo-C program must start with accumulator initialization "
+                    "like 'acc = a'"
+                )
+
+            if target_name != accumulator_name:
+                raise BasicCompilerError(
+                    f"Pseudo-C statement {idx} must assign back to accumulator '{accumulator_name}'"
+                )
+
+            stages.append(
+                _pseudo_stage_from_expr(
+                    parsed.value,
+                    accumulator_name=accumulator_name,
+                    statement_index=idx,
+                )
+            )
+            continue
+
+        if isinstance(parsed, ast.AugAssign):
+            if not isinstance(parsed.target, ast.Name):
+                raise BasicCompilerError(
+                    f"Pseudo-C statement {idx} must assign to a variable"
+                )
+            target_name = parsed.target.id
+            if accumulator_name is None:
+                raise BasicCompilerError(
+                    "Pseudo-C program must start with accumulator initialization "
+                    "like 'acc = a'"
+                )
+            if target_name != accumulator_name:
+                raise BasicCompilerError(
+                    f"Pseudo-C statement {idx} must assign back to accumulator '{accumulator_name}'"
+                )
+            if type(parsed.op) not in _OP_MAP:
+                raise BasicCompilerError(
+                    f"Unsupported operator in pseudo-C statement {idx}: {type(parsed.op).__name__}"
+                )
+            _, imm = _operand_kind(parsed.value)
+            stages.append(CompiledStageExpr(op=_OP_MAP[type(parsed.op)], immediate_b=imm))
+            continue
+
+        raise BasicCompilerError(
+            f"Pseudo-C statement {idx} must be assignment-based"
+        )
+
+    if not stages:
+        raise BasicCompilerError("Pseudo-C program must emit at least one WAU stage")
+    return stages
+
+
+def build_flow_from_pseudoc(
+    *,
+    program: str,
+    flow_id: int,
+    name: str,
+    entry_x: int,
+    entry_y: int,
+    max_in_flight: int = 1,
+) -> dict[str, Any]:
+    compiled_stages = compile_pseudoc_to_stages(program)
+    return _build_flow_from_compiled_stages(
+        compiled_stages=compiled_stages,
+        flow_id=flow_id,
+        name=name,
+        entry_x=entry_x,
+        entry_y=entry_y,
+        max_in_flight=max_in_flight,
+    )
 
 
 def _extract_operation_name(raw: Any) -> str | None:
@@ -180,17 +342,12 @@ def _ensure_operations_present(payload: dict[str, Any], needed_ops: set[str]) ->
     raise BasicCompilerError("operations must be a list or object")
 
 
-def merge_expression_into_config(
+def _merge_flow_into_config(
     *,
     base_config_path: Path,
     out_config_path: Path,
-    expr: str,
-    flow_id: int,
-    name: str,
-    entry_x: int,
-    entry_y: int,
+    flow: dict[str, Any],
     replace_existing: bool,
-    max_in_flight: int = 1,
 ) -> dict[str, Any]:
     try:
         payload = json.loads(base_config_path.read_text())
@@ -202,19 +359,11 @@ def merge_expression_into_config(
     if not isinstance(payload, dict):
         raise BasicCompilerError("Base config root must be a JSON object")
 
-    flow = build_flow_from_expression(
-        expr=expr,
-        flow_id=flow_id,
-        name=name,
-        entry_x=entry_x,
-        entry_y=entry_y,
-        max_in_flight=max_in_flight,
-    )
-
     flows = payload.setdefault("flows", [])
     if not isinstance(flows, list):
         raise BasicCompilerError("flows must be a list")
 
+    flow_id = int(flow.get("id", -1))
     existing_index: int | None = None
     for idx, raw_flow in enumerate(flows):
         if isinstance(raw_flow, dict) and int(raw_flow.get("id", -1)) == flow_id:
@@ -240,3 +389,60 @@ def merge_expression_into_config(
     load_config(out_config_path)
 
     return flow
+
+
+def merge_expression_into_config(
+    *,
+    base_config_path: Path,
+    out_config_path: Path,
+    expr: str,
+    flow_id: int,
+    name: str,
+    entry_x: int,
+    entry_y: int,
+    replace_existing: bool,
+    max_in_flight: int = 1,
+) -> dict[str, Any]:
+    flow = build_flow_from_expression(
+        expr=expr,
+        flow_id=flow_id,
+        name=name,
+        entry_x=entry_x,
+        entry_y=entry_y,
+        max_in_flight=max_in_flight,
+    )
+
+    return _merge_flow_into_config(
+        base_config_path=base_config_path,
+        out_config_path=out_config_path,
+        flow=flow,
+        replace_existing=replace_existing,
+    )
+
+
+def merge_pseudoc_into_config(
+    *,
+    base_config_path: Path,
+    out_config_path: Path,
+    program: str,
+    flow_id: int,
+    name: str,
+    entry_x: int,
+    entry_y: int,
+    replace_existing: bool,
+    max_in_flight: int = 1,
+) -> dict[str, Any]:
+    flow = build_flow_from_pseudoc(
+        program=program,
+        flow_id=flow_id,
+        name=name,
+        entry_x=entry_x,
+        entry_y=entry_y,
+        max_in_flight=max_in_flight,
+    )
+    return _merge_flow_into_config(
+        base_config_path=base_config_path,
+        out_config_path=out_config_path,
+        flow=flow,
+        replace_existing=replace_existing,
+    )

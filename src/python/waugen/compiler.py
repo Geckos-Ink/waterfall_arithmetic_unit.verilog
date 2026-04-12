@@ -17,6 +17,7 @@ class CompiledStage:
     fallback_core: Coord | None
     immediate_b: int | None
     allow_adaptive: bool
+    dtype: str | None
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class CompiledNode:
     candidate_cores: tuple[Coord, ...]
     immediate_b: int | None
     allow_adaptive: bool
+    dtype: str | None
     recurrent: bool
     max_iterations: int
     cycle_group: int | None
@@ -62,13 +64,14 @@ class CompiledProject:
         return max((len(flow.stages) for flow in self.flows), default=0)
 
 
-def _all_coords(grid_x: int, grid_y: int) -> list[Coord]:
+def _all_coords(grid_x: int, grid_y: int, *, routing: str) -> list[Coord]:
     ordered: list[Coord] = []
+    serpentine = routing == "serpentine"
     for y in range(grid_y):
-        if y % 2 == 0:
-            xs = range(grid_x)
-        else:
+        if serpentine and (y % 2 == 1):
             xs = range(grid_x - 1, -1, -1)
+        else:
+            xs = range(grid_x)
         for x in xs:
             ordered.append(Coord(x=x, y=y))
     return ordered
@@ -140,6 +143,7 @@ def _flow_nodes_from_stages(flow: FlowSpec) -> tuple[FlowNodeSpec, ...]:
                 placement=placement,
                 immediate_b=stage.immediate_b,
                 allow_adaptive=stage.allow_adaptive,
+                dtype=stage.dtype,
                 recurrent=False,
                 max_iterations=1,
             )
@@ -281,11 +285,30 @@ def _resolve_primary_core(
     grid_x: int,
     grid_y: int,
     flow_id: int,
+    op_name: str,
+    dtype: str | None,
+    op_caps: dict[tuple[int, int], set[str]],
+    dtype_caps: dict[tuple[int, int], set[str]],
 ) -> Coord:
+    def supports(coord: Coord) -> bool:
+        key = (coord.x, coord.y)
+        allowed_ops = op_caps.get(key)
+        if allowed_ops is not None and op_name not in allowed_ops:
+            return False
+        allowed_dtypes = dtype_caps.get(key)
+        if dtype is not None and allowed_dtypes is not None and dtype not in allowed_dtypes:
+            return False
+        return True
+
     if node.placement.core is not None:
         if not _is_coord_inside(node.placement.core, grid_x=grid_x, grid_y=grid_y):
             raise ValueError(
                 f"flow {flow_id} node {node.node_id} core {node.placement.core} out of grid bounds"
+            )
+        if not supports(node.placement.core):
+            raise ValueError(
+                f"flow {flow_id} node {node.node_id} core ({node.placement.core.x},{node.placement.core.y}) "
+                f"does not support op '{op_name}' dtype '{dtype or 'default'}'"
             )
         return node.placement.core
 
@@ -293,11 +316,11 @@ def _resolve_primary_core(
         valid_candidates = [
             cand
             for cand in node.placement.candidate_cores
-            if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y)
+            if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y) and supports(cand)
         ]
         if not valid_candidates:
             raise ValueError(
-                f"flow {flow_id} node {node.node_id} has no in-bounds candidate cores"
+                f"flow {flow_id} node {node.node_id} has no in-bounds compatible candidate cores"
             )
 
         if node.placement.directive == "prefer_locality":
@@ -321,7 +344,14 @@ def _resolve_primary_core(
         raise ValueError("grid has no coordinates")
 
     slot = (order_start + node_slot) % len(order)
-    return order[slot]
+    for offset in range(len(order)):
+        cand = order[(slot + offset) % len(order)]
+        if supports(cand):
+            return cand
+
+    raise ValueError(
+        f"flow {flow_id} node {node.node_id} has no compatible core for op '{op_name}' dtype '{dtype or 'default'}'"
+    )
 
 
 def _resolve_candidates(
@@ -333,13 +363,27 @@ def _resolve_candidates(
     grid_y: int,
     fallback_radius: int,
     allow_adaptive_reroute: bool,
+    op_name: str,
+    dtype: str | None,
+    op_caps: dict[tuple[int, int], set[str]],
+    dtype_caps: dict[tuple[int, int], set[str]],
 ) -> tuple[tuple[Coord, ...], Coord | None]:
+    def supports(coord: Coord) -> bool:
+        key = (coord.x, coord.y)
+        allowed_ops = op_caps.get(key)
+        if allowed_ops is not None and op_name not in allowed_ops:
+            return False
+        allowed_dtypes = dtype_caps.get(key)
+        if dtype is not None and allowed_dtypes is not None and dtype not in allowed_dtypes:
+            return False
+        return True
+
     if node.placement.fixed:
         return (primary,), None
 
     base_candidates: list[Coord] = [primary]
     for cand in node.placement.candidate_cores:
-        if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y):
+        if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y) and supports(cand):
             base_candidates.append(cand)
 
     if node.placement.fallback_core is not None:
@@ -347,10 +391,16 @@ def _resolve_candidates(
             raise ValueError(
                 f"node {node.node_id} fallback_core {node.placement.fallback_core} out of bounds"
             )
+        if not supports(node.placement.fallback_core):
+            raise ValueError(
+                f"node {node.node_id} fallback_core ({node.placement.fallback_core.x},{node.placement.fallback_core.y}) "
+                f"does not support op '{op_name}' dtype '{dtype or 'default'}'"
+            )
         base_candidates.append(node.placement.fallback_core)
 
     if node.placement.directive == "prefer_balance" and len(base_candidates) == 1:
         around = list(_coords_in_radius(primary, max(1, fallback_radius), grid_x=grid_x, grid_y=grid_y))
+        around = [cand for cand in around if supports(cand)]
         around.sort(key=lambda c: (core_load.get(c, 0), abs(c.x - primary.x) + abs(c.y - primary.y), c.y, c.x))
         for cand in around[:3]:
             base_candidates.append(cand)
@@ -360,6 +410,8 @@ def _resolve_candidates(
         best_load = 1_000_000
         for cand in _coords_in_radius(primary, fallback_radius, grid_x=grid_x, grid_y=grid_y):
             if cand == primary:
+                continue
+            if not supports(cand):
                 continue
             load = core_load.get(cand, 0)
             if load < best_load:
@@ -378,8 +430,16 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
     grid_y = config.device.grid_y
 
     op_table = {op.name: op for op in config.operations}
-    order = _all_coords(grid_x, grid_y)
+    order = _all_coords(grid_x, grid_y, routing=config.compiler.routing)
     core_load: dict[Coord, int] = {coord: 0 for coord in order}
+    op_caps: dict[tuple[int, int], set[str]] = {}
+    dtype_caps: dict[tuple[int, int], set[str]] = {}
+    for capability in config.compiler.core_capabilities:
+        key = (capability.core.x, capability.core.y)
+        if capability.operations:
+            op_caps[key] = set(capability.operations)
+        if capability.data_types:
+            dtype_caps[key] = set(capability.data_types)
 
     compiled_flows: list[CompiledFlow] = []
     sorted_flows = sorted(config.flows, key=lambda flow: flow.flow_id)
@@ -392,6 +452,14 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
 
         raw_nodes = flow.nodes if flow.nodes else _flow_nodes_from_stages(flow)
         order_start = _nearest_order_index(order, flow.entry)
+
+        if config.compiler.routing == "manual":
+            for node in raw_nodes:
+                if node.placement.core is None and not node.placement.candidate_cores:
+                    raise ValueError(
+                        f"flow {flow.flow_id} node {node.node_id} requires explicit core or candidate_cores "
+                        "when compiler.routing=manual"
+                    )
 
         node_slot_by_id = {node.node_id: idx for idx, node in enumerate(raw_nodes)}
         cycle_group_by_node, cycle_iterations = _build_cycle_groups(
@@ -414,6 +482,10 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
                 grid_x=grid_x,
                 grid_y=grid_y,
                 flow_id=flow.flow_id,
+                op_name=node.op,
+                dtype=node.dtype,
+                op_caps=op_caps,
+                dtype_caps=dtype_caps,
             )
 
             candidates, fallback = _resolve_candidates(
@@ -424,6 +496,10 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
                 grid_y=grid_y,
                 fallback_radius=config.compiler.fallback_radius,
                 allow_adaptive_reroute=config.compiler.allow_adaptive_reroute,
+                op_name=node.op,
+                dtype=node.dtype,
+                op_caps=op_caps,
+                dtype_caps=dtype_caps,
             )
 
             core_load[primary] = core_load.get(primary, 0) + 1
@@ -449,6 +525,7 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
                     candidate_cores=candidates,
                     immediate_b=node.immediate_b,
                     allow_adaptive=node.allow_adaptive,
+                    dtype=node.dtype,
                     recurrent=node.recurrent,
                     max_iterations=max_iterations,
                     cycle_group=cycle_group,
@@ -472,6 +549,7 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
                     fallback_core=node.fallback_core,
                     immediate_b=node.immediate_b,
                     allow_adaptive=node.allow_adaptive,
+                    dtype=node.dtype,
                 )
             )
 

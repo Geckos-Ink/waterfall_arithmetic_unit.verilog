@@ -11,15 +11,18 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
    - `PYTHONPATH=src/python python3 -m waugen validate --config <config.json>`
 3. If touching expression-to-flow logic, validate the basic compiler path:
    - `PYTHONPATH=src/python python3 -m waugen compile-expr --expr '((a + b) * 3) - b' --flow-id <id> --base-config <in> --out-config <out>`
-4. Regenerate artifacts when behavior changes:
+4. If touching pseudo-C lowering, validate the pseudo-C compiler path:
+   - `PYTHONPATH=src/python python3 -m waugen compile-pseudoc --program 'acc = a; acc = acc + b; acc *= 3;' --flow-id <id> --base-config <in> --out-config <out>`
+5. Regenerate artifacts when behavior changes:
    - `PYTHONPATH=src/python python3 -m waugen generate --config <config.json> --out src/verilog/generated --summary`
-5. Run RTL tests when RTL, scheduler, or flow semantics change:
+6. Run RTL tests when RTL, scheduler, or flow semantics change:
    - `./scripts/run_iverilog_tests.sh`
 
 ## Ownership Boundaries
 - `config.py`: schema and validation only.
 - `compiler.py`: mapping flows/nodes onto 2D cores and adaptive placement strategy.
 - `basic_compiler.py`: expression-to-flow lowering rules for basic WAU compilation.
+- `basic_compiler.py`: expression/pseudo-C lowering rules for basic WAU compilation.
 - `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs.
 - `verilog_emit.py`: text emission only; no scheduling decisions should live here.
 - Generated files under `src/verilog/generated/` are build outputs and may be overwritten.
@@ -29,6 +32,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - Flow IDs must be unique.
 - Stage operations must exist in the operation table.
 - Core indices must stay within `grid_x * grid_y`.
+- Compiler core capability constraints must reference existing operations/data types.
 - Verilog macros in `wau_defs.vh` must match emitted modules.
 
 ## Extension Rules

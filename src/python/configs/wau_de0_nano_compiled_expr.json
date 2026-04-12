@@ -1,6 +1,10 @@
 {
   "project": "wau_de0_nano_demo",
   "output_module_name": "wau_top",
+  "abstraction": {
+    "language": "wau_flow_ir",
+    "version": 1
+  },
   "device": {
     "preset": "intel_de0_nano",
     "grid": {
@@ -12,6 +16,10 @@
     "data_width": 32,
     "flow_id_width": 12,
     "opcode_width": 8,
+    "data_types": [
+      "int32",
+      "float16"
+    ],
     "local_ram_depth": 128,
     "global_ram_depth": 2048
   },
@@ -37,7 +45,61 @@
   "compiler": {
     "routing": "waterfall",
     "allow_adaptive_reroute": true,
-    "fallback_radius": 1
+    "fallback_radius": 1,
+    "core_capabilities": [
+      {
+        "core": {
+          "x": 0,
+          "y": 0
+        },
+        "operations": [
+          "add",
+          "sub"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      },
+      {
+        "core": {
+          "x": 1,
+          "y": 0
+        },
+        "operations": [
+          "mul",
+          "div"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      },
+      {
+        "core": {
+          "x": 2,
+          "y": 0
+        },
+        "operations": [
+          "sub",
+          "div",
+          "max"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      },
+      {
+        "core": {
+          "x": 2,
+          "y": 1
+        },
+        "operations": [
+          "max"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      }
+    ]
   },
   "scheduler": {
     "strategy": "round_robin",
@@ -53,14 +115,17 @@
       },
       "stages": [
         {
-          "op": "add"
+          "op": "add",
+          "dtype": "int32"
         },
         {
           "op": "mul",
-          "immediate_b": 3
+          "immediate_b": 3,
+          "dtype": "int32"
         },
         {
-          "op": "sub"
+          "op": "sub",
+          "dtype": "int32"
         }
       ]
     },
@@ -74,6 +139,7 @@
       "stages": [
         {
           "op": "max",
+          "dtype": "int32",
           "core": {
             "x": 2,
             "y": 1
@@ -81,6 +147,7 @@
         },
         {
           "op": "div",
+          "dtype": "int32",
           "core": {
             "x": 2,
             "y": 0

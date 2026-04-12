@@ -20,6 +20,7 @@ class ScheduleInstruction:
     latency: int
     used_fallback: bool
     immediate_b: int | None
+    dtype: str | None = None
     program_id: int = 0
     program_name: str = "default"
     program_replica: int = 0
@@ -55,6 +56,7 @@ class SchedulePlan:
                     "latency": ins.latency,
                     "used_fallback": ins.used_fallback,
                     "immediate_b": ins.immediate_b,
+                    "dtype": ins.dtype,
                     "dependency_count": ins.dependency_count,
                 }
                 for ins in self.instructions
@@ -87,6 +89,7 @@ class _RuntimeNode:
     latency: int
     pipelined: bool
     immediate_b: int | None
+    dtype: str | None
     primary_core_idx: int
     candidate_core_indices: tuple[int, ...]
     allow_adaptive: bool
@@ -186,6 +189,7 @@ def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNo
                         latency=node.latency,
                         pipelined=node.pipelined,
                         immediate_b=node.immediate_b,
+                        dtype=node.dtype,
                         primary_core_idx=primary_idx,
                         candidate_core_indices=candidate_core_indices,
                         allow_adaptive=node.allow_adaptive,
@@ -436,6 +440,7 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
                 latency=node.latency,
                 used_fallback=used_fallback,
                 immediate_b=node.immediate_b,
+                dtype=node.dtype,
                 program_id=node.program_id,
                 program_name=node.program_name,
                 program_replica=node.program_replica,

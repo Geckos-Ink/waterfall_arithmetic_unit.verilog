@@ -5,7 +5,9 @@ Roadmap for evolving this repository from a WAU generator basis to a production-
 Completed baseline:
 - Python WAU generator pipeline (`config -> compiler -> scheduler -> verilog_emit`).
 - Basic expression compiler (`compile-expr`) for left-deep arithmetic chains.
+- Constrained pseudo-C accumulator frontend (`compile-pseudoc`) for higher-level pipeline authoring.
 - DAG/node-based flows with explicit 2D placement candidates and directives.
+- Per-core capability constraints (operation and data-type aware placement).
 - Program-level scheduling metadata (priority, replicas, load balance, async policies).
 - Recurrence-aware scheduling support for in-device recursive cycles.
 - Generated RTL for coordinator/core/station/ALU/top.

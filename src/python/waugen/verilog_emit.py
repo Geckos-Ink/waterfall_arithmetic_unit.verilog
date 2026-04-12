@@ -19,6 +19,8 @@ def _render_defs(project: CompiledProject) -> str:
     lines.append("`define WAU_DEFS_VH")
     lines.append("")
     lines.append(f"`define WAU_PROJECT_NAME \"{cfg.project_name}\"")
+    lines.append(f"`define WAU_ABSTRACTION_LANGUAGE \"{cfg.abstraction_language}\"")
+    lines.append(f"`define WAU_ABSTRACTION_VERSION {cfg.abstraction_version}")
     lines.append(f"`define WAU_GRID_X {cfg.device.grid_x}")
     lines.append(f"`define WAU_GRID_Y {cfg.device.grid_y}")
     lines.append(f"`define WAU_CORE_COUNT {cfg.device.grid_x * cfg.device.grid_y}")
@@ -27,9 +29,11 @@ def _render_defs(project: CompiledProject) -> str:
     lines.append(f"`define WAU_OPCODE_WIDTH {cfg.device.opcode_width}")
     lines.append(f"`define WAU_LOCAL_RAM_DEPTH {cfg.device.local_ram_depth}")
     lines.append(f"`define WAU_GLOBAL_RAM_DEPTH {cfg.device.global_ram_depth}")
+    lines.append(f"`define WAU_DATA_TYPE_COUNT {len(cfg.device.supported_data_types)}")
     lines.append(f"`define WAU_FLOW_COUNT {len(project.flows)}")
     lines.append(f"`define WAU_MAX_STAGES {project.max_stages}")
     lines.append(f"`define WAU_OP_COUNT {len(cfg.operations)}")
+    lines.append(f"// Supported data types: {', '.join(cfg.device.supported_data_types)}")
     lines.append("")
     for op in cfg.operations:
         m = _op_macro(op.name)
@@ -789,6 +793,10 @@ def _render_program_json(project: CompiledProject) -> dict:
 
     return {
         "project": project.config.project_name,
+        "abstraction": {
+            "language": project.config.abstraction_language,
+            "version": project.config.abstraction_version,
+        },
         "device": {
             "name": project.config.device.name,
             "vendor": project.config.device.vendor,
@@ -796,6 +804,21 @@ def _render_program_json(project: CompiledProject) -> dict:
             "part": project.config.device.part,
             "grid": {"x": project.config.device.grid_x, "y": project.config.device.grid_y},
             "coordinator_mode": project.config.device.coordinator_mode,
+            "supported_data_types": list(project.config.device.supported_data_types),
+        },
+        "compiler": {
+            "routing": project.config.compiler.routing,
+            "allow_adaptive_reroute": project.config.compiler.allow_adaptive_reroute,
+            "fallback_radius": project.config.compiler.fallback_radius,
+            "allow_cycle_recurrence": project.config.compiler.allow_cycle_recurrence,
+            "core_capabilities": [
+                {
+                    "core": {"x": cap.core.x, "y": cap.core.y},
+                    "operations": list(cap.operations),
+                    "data_types": list(cap.data_types),
+                }
+                for cap in project.config.compiler.core_capabilities
+            ],
         },
         "flows": [
             {
@@ -833,6 +856,7 @@ def _render_program_json(project: CompiledProject) -> dict:
                             else None
                         ),
                         "immediate_b": stage.immediate_b,
+                        "dtype": stage.dtype,
                     }
                     for stage in flow.stages
                 ],
@@ -882,6 +906,7 @@ def _render_program_json(project: CompiledProject) -> dict:
                         ),
                         "allow_adaptive": node.allow_adaptive,
                         "immediate_b": node.immediate_b,
+                        "dtype": node.dtype,
                         "recurrent": node.recurrent,
                         "max_iterations": node.max_iterations,
                         "cycle_group": node.cycle_group,

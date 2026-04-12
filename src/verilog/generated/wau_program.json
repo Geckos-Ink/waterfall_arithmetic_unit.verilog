@@ -1,5 +1,9 @@
 {
   "project": "wau_de0_nano_demo",
+  "abstraction": {
+    "language": "wau_flow_ir",
+    "version": 1
+  },
   "device": {
     "name": "intel_de0_nano",
     "vendor": "Intel",
@@ -9,7 +13,71 @@
       "x": 3,
       "y": 2
     },
-    "coordinator_mode": "direct"
+    "coordinator_mode": "direct",
+    "supported_data_types": [
+      "int32",
+      "float16"
+    ]
+  },
+  "compiler": {
+    "routing": "waterfall",
+    "allow_adaptive_reroute": true,
+    "fallback_radius": 1,
+    "allow_cycle_recurrence": true,
+    "core_capabilities": [
+      {
+        "core": {
+          "x": 0,
+          "y": 0
+        },
+        "operations": [
+          "add",
+          "sub"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      },
+      {
+        "core": {
+          "x": 1,
+          "y": 0
+        },
+        "operations": [
+          "mul",
+          "div"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      },
+      {
+        "core": {
+          "x": 2,
+          "y": 0
+        },
+        "operations": [
+          "sub",
+          "div",
+          "max"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      },
+      {
+        "core": {
+          "x": 2,
+          "y": 1
+        },
+        "operations": [
+          "max"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      }
+    ]
   },
   "flows": [
     {
@@ -34,11 +102,12 @@
             "index": 0
           },
           "fallback_core": {
-            "x": 1,
-            "y": 0,
-            "index": 1
+            "x": 0,
+            "y": 1,
+            "index": 3
           },
-          "immediate_b": null
+          "immediate_b": null,
+          "dtype": "int32"
         },
         {
           "stage_index": 1,
@@ -52,11 +121,12 @@
             "index": 1
           },
           "fallback_core": {
-            "x": 2,
-            "y": 0,
-            "index": 2
+            "x": 1,
+            "y": 1,
+            "index": 4
           },
-          "immediate_b": 3
+          "immediate_b": 3,
+          "dtype": "int32"
         },
         {
           "stage_index": 2,
@@ -69,12 +139,9 @@
             "y": 0,
             "index": 2
           },
-          "fallback_core": {
-            "x": 2,
-            "y": 1,
-            "index": 5
-          },
-          "immediate_b": null
+          "fallback_core": null,
+          "immediate_b": null,
+          "dtype": "int32"
         }
       ],
       "nodes": [
@@ -99,18 +166,19 @@
               "index": 0
             },
             {
-              "x": 1,
-              "y": 0,
-              "index": 1
+              "x": 0,
+              "y": 1,
+              "index": 3
             }
           ],
           "fallback_core": {
-            "x": 1,
-            "y": 0,
-            "index": 1
+            "x": 0,
+            "y": 1,
+            "index": 3
           },
           "allow_adaptive": true,
           "immediate_b": null,
+          "dtype": "int32",
           "recurrent": false,
           "max_iterations": 1,
           "cycle_group": null
@@ -140,18 +208,19 @@
               "index": 1
             },
             {
-              "x": 2,
-              "y": 0,
-              "index": 2
+              "x": 1,
+              "y": 1,
+              "index": 4
             }
           ],
           "fallback_core": {
-            "x": 2,
-            "y": 0,
-            "index": 2
+            "x": 1,
+            "y": 1,
+            "index": 4
           },
           "allow_adaptive": true,
           "immediate_b": 3,
+          "dtype": "int32",
           "recurrent": false,
           "max_iterations": 1,
           "cycle_group": null
@@ -179,20 +248,12 @@
               "x": 2,
               "y": 0,
               "index": 2
-            },
-            {
-              "x": 2,
-              "y": 1,
-              "index": 5
             }
           ],
-          "fallback_core": {
-            "x": 2,
-            "y": 1,
-            "index": 5
-          },
+          "fallback_core": null,
           "allow_adaptive": true,
           "immediate_b": null,
+          "dtype": "int32",
           "recurrent": false,
           "max_iterations": 1,
           "cycle_group": null
@@ -220,11 +281,12 @@
             "index": 5
           },
           "fallback_core": {
-            "x": 1,
-            "y": 1,
-            "index": 4
+            "x": 2,
+            "y": 0,
+            "index": 2
           },
-          "immediate_b": null
+          "immediate_b": null,
+          "dtype": "int32"
         },
         {
           "stage_index": 1,
@@ -242,7 +304,8 @@
             "y": 0,
             "index": 1
           },
-          "immediate_b": null
+          "immediate_b": null,
+          "dtype": "int32"
         }
       ],
       "nodes": [
@@ -267,18 +330,19 @@
               "index": 5
             },
             {
-              "x": 1,
-              "y": 1,
-              "index": 4
+              "x": 2,
+              "y": 0,
+              "index": 2
             }
           ],
           "fallback_core": {
-            "x": 1,
-            "y": 1,
-            "index": 4
+            "x": 2,
+            "y": 0,
+            "index": 2
           },
           "allow_adaptive": true,
           "immediate_b": null,
+          "dtype": "int32",
           "recurrent": false,
           "max_iterations": 1,
           "cycle_group": null
@@ -320,6 +384,7 @@
           },
           "allow_adaptive": true,
           "immediate_b": null,
+          "dtype": "int32",
           "recurrent": false,
           "max_iterations": 1,
           "cycle_group": null

@@ -1,5 +1,5 @@
 {
-  "makespan_cycles": 9,
+  "makespan_cycles": 10,
   "instructions": [
     {
       "cycle_start": 0,
@@ -22,6 +22,7 @@
       "latency": 1,
       "used_fallback": false,
       "immediate_b": null,
+      "dtype": "int32",
       "dependency_count": 0
     },
     {
@@ -45,6 +46,7 @@
       "latency": 1,
       "used_fallback": false,
       "immediate_b": null,
+      "dtype": "int32",
       "dependency_count": 0
     },
     {
@@ -68,6 +70,7 @@
       "latency": 3,
       "used_fallback": false,
       "immediate_b": 3,
+      "dtype": "int32",
       "dependency_count": 1
     },
     {
@@ -91,11 +94,12 @@
       "latency": 8,
       "used_fallback": false,
       "immediate_b": null,
+      "dtype": "int32",
       "dependency_count": 1
     },
     {
-      "cycle_start": 4,
-      "cycle_end": 5,
+      "cycle_start": 9,
+      "cycle_end": 10,
       "program_id": 0,
       "program_name": "default",
       "program_replica": 0,
@@ -106,14 +110,15 @@
       "stage_index": 2,
       "op": "sub",
       "opcode": 2,
-      "core_index": 5,
+      "core_index": 2,
       "core": {
         "x": 2,
-        "y": 1
+        "y": 0
       },
       "latency": 1,
-      "used_fallback": true,
+      "used_fallback": false,
       "immediate_b": null,
+      "dtype": "int32",
       "dependency_count": 1
     }
   ]

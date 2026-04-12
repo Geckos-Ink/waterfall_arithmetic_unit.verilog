@@ -5,8 +5,10 @@ This repository now contains a working foundation for:
 - device-aware WAU configuration (real FPGA presets included),
 - flow compilation (flow stages -> core assignments with fallback cores),
 - DAG/node-based flow compilation with explicit 2D placement directives,
+- per-core capability constraints (operations and data types),
 - multi-program scheduling with async dependency-aware execution and recurrence support,
 - offline scheduling (cycle timeline + encoded schedule words),
+- constrained pseudo-C accumulator frontend (`compile-pseudoc`) in addition to expression compilation,
 - Verilog emission for coordinator, core/station, ALU and top-level grid.
 
 ## Quickstart
@@ -32,6 +34,18 @@ PYTHONPATH=src/python python3 -m waugen compile-expr \
   --flow-id 30 \
   --name expr_compiled_flow \
   --entry 1,0 \
+  --base-config src/python/configs/wau_de0_nano_demo.json \
+  --out-config src/python/configs/wau_de0_nano_compiled_expr.json
+```
+
+Compile a constrained pseudo-C pipeline program into a new flow:
+
+```bash
+PYTHONPATH=src/python python3 -m waugen compile-pseudoc \
+  --program 'acc = a; acc = acc + b; acc = acc * 3; acc -= b;' \
+  --flow-id 31 \
+  --name pseudoc_flow \
+  --entry 1,1 \
   --base-config src/python/configs/wau_de0_nano_demo.json \
   --out-config src/python/configs/wau_de0_nano_compiled_expr.json
 ```
@@ -70,6 +84,7 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
   - `cli.py`: CLI entrypoint
 - `src/python/configs/wau_de0_nano_demo.json`: example configuration
 - `src/python/configs/wau_de0_nano_compiled_expr.json`: example output of `compile-expr`
+- `src/python/configs/wau_de0_nano_compiled_pseudoc.json`: example output of `compile-pseudoc`
 - `src/python/configs/wau_2d_multiprogram_demo.json`: advanced DAG + multi-program example
 - `src/verilog/generated/`: generated output artifacts
 - `tests/rtl/`: SystemVerilog/Verilog testbenches
@@ -94,17 +109,23 @@ Main JSON fields:
   - `preset` (e.g. `intel_de0_nano`, `intel_agilex7_fm`, `xilinx_artix7_100t`)
   - `grid.x`, `grid.y`
   - widths/depths (`data_width`, `flow_id_width`, `opcode_width`, `local_ram_depth`, `global_ram_depth`)
+  - `data_types` (e.g. `["int32", "float16", "float32"]`)
   - `coordinator_mode`, `enable_runtime_auto_adapt`
+- `abstraction`
+  - `language` (`wau_flow_ir` or `wau_pseudoc`)
+  - `version` (integer, currently `1`)
 - `operations`
   - library-driven (`library` + `overrides`) and/or `custom`
 - `compiler`
-  - `routing`, `allow_adaptive_reroute`, `fallback_radius`
+  - `routing` (`waterfall`, `serpentine`, `manual`)
+  - `allow_adaptive_reroute`, `fallback_radius`, `allow_cycle_recurrence`
+  - `core_capabilities`: per-core operation/data type constraints
 - `scheduler`
-  - `strategy` (`round_robin` or `serial`)
+  - `strategy` (`round_robin`, `serial`, or `dependency_aware`)
 - `flows`
   - `id`, `name`, `entry`, optional `exit`
-  - per-stage: `op`, optional `core`, `fallback_core`, `immediate_b`, `allow_adaptive`
-  - per-node (DAG): `id`, `op`, `deps`, `placement` (`core`/`fallback_core`/`candidate_cores`/`fixed`/`directive`), `recurrent`, `max_iterations`
+  - per-stage: `op`, optional `core`, `fallback_core`, `immediate_b`, `allow_adaptive`, `dtype`
+  - per-node (DAG): `id`, `op`, `deps`, `placement` (`core`/`fallback_core`/`candidate_cores`/`fixed`/`directive`), `dtype`, `recurrent`, `max_iterations`
 - `programs`
   - `id`, `name`, `flows`, `priority`, `replicas`, `max_parallel_flows`, `load_balance`
   - `allow_async`, `allow_out_of_order`
@@ -112,8 +133,9 @@ Main JSON fields:
 ## Current Hardware Scope
 This is a robust **basis**, not final silicon architecture:
 - Stage-to-stage transport currently passes through the coordinator (not full highway/router fabric yet).
-- Runtime adaptation is implemented as primary/fallback/candidate core selection per node.
+- Runtime adaptation is implemented as primary/fallback/candidate core selection per node, constrained by per-core capability metadata.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
+- Current pseudo-C frontend targets accumulator-style pipelines (`acc = a; acc = acc <op> ...`) to stay compatible with the present coordinator execution model.
 
 ## Next Steps
 Recommended follow-ups:

@@ -1,6 +1,10 @@
 {
   "project": "wau_2d_multiprogram_demo",
   "output_module_name": "wau_top",
+  "abstraction": {
+    "language": "wau_flow_ir",
+    "version": 1
+  },
   "device": {
     "preset": "intel_de0_nano",
     "grid": {
@@ -10,6 +14,7 @@
     "coordinator_mode": "direct",
     "enable_runtime_auto_adapt": true,
     "data_width": 32,
+    "data_types": ["int32", "float16", "float32"],
     "flow_id_width": 12,
     "opcode_width": 8
   },
@@ -33,10 +38,22 @@
     }
   },
   "compiler": {
-    "routing": "waterfall",
+    "routing": "serpentine",
     "allow_adaptive_reroute": true,
     "allow_cycle_recurrence": true,
-    "fallback_radius": 2
+    "fallback_radius": 2,
+    "core_capabilities": [
+      {
+        "core": {"x": 2, "y": 2},
+        "operations": ["mul"],
+        "data_types": ["int32"]
+      },
+      {
+        "core": {"x": 3, "y": 2},
+        "operations": ["max", "sub"],
+        "data_types": ["int32"]
+      }
+    ]
   },
   "scheduler": {
     "strategy": "dependency_aware",
@@ -55,6 +72,7 @@
         {
           "id": "n_add",
           "op": "add",
+          "dtype": "int32",
           "placement": {
             "candidate_cores": [
               {"x": 0, "y": 0},
@@ -67,6 +85,7 @@
         {
           "id": "n_mul",
           "op": "mul",
+          "dtype": "int32",
           "deps": ["n_add"],
           "immediate_b": 2,
           "placement": {
@@ -80,6 +99,7 @@
         {
           "id": "n_sub",
           "op": "sub",
+          "dtype": "int32",
           "deps": ["n_mul"],
           "placement": {
             "core": {"x": 2, "y": 1},
@@ -99,6 +119,7 @@
         {
           "id": "left_add",
           "op": "add",
+          "dtype": "int32",
           "placement": {
             "candidate_cores": [
               {"x": 0, "y": 1},
@@ -109,6 +130,7 @@
         {
           "id": "right_max",
           "op": "max",
+          "dtype": "int32",
           "placement": {
             "candidate_cores": [
               {"x": 0, "y": 2},
@@ -119,6 +141,7 @@
         {
           "id": "merge_mul",
           "op": "mul",
+          "dtype": "int32",
           "deps": ["left_add", "right_max"],
           "placement": {
             "core": {"x": 2, "y": 2},
@@ -138,6 +161,7 @@
         {
           "id": "acc",
           "op": "add",
+          "dtype": "int32",
           "deps": ["mix"],
           "recurrent": true,
           "max_iterations": 4,
@@ -151,6 +175,7 @@
         {
           "id": "mix",
           "op": "sub",
+          "dtype": "int32",
           "deps": ["acc"],
           "recurrent": true,
           "max_iterations": 4,
@@ -164,6 +189,7 @@
         {
           "id": "out",
           "op": "max",
+          "dtype": "int32",
           "deps": ["acc"],
           "placement": {
             "core": {"x": 3, "y": 2}

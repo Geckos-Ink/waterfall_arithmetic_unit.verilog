@@ -142,10 +142,10 @@ module wau_coordinator #(
         begin
             value = 8'd0;
             case ({flow_slot, stage_idx})
-                16'h0000: value = 8'd1;
-                16'h0001: value = 8'd2;
-                16'h0002: value = 8'd5;
-                16'h0100: value = 8'd4;
+                16'h0000: value = 8'd3;
+                16'h0001: value = 8'd4;
+                16'h0002: value = 8'd2;
+                16'h0100: value = 8'd2;
                 16'h0101: value = 8'd1;
                 default: value = 8'd0;
             endcase

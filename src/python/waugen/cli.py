@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from .basic_compiler import BasicCompilerError, merge_expression_into_config
+from .basic_compiler import BasicCompilerError, merge_expression_into_config, merge_pseudoc_into_config
 from .compiler import compile_project
 from .config import ConfigError, load_config
 from .device_library import DEVICE_PRESETS
@@ -68,6 +68,44 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output config path with merged compiled flow",
     )
     c.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="Replace existing flow if the same flow id already exists",
+    )
+
+    pc = sub.add_parser(
+        "compile-pseudoc",
+        help="compile constrained pseudo-C accumulator program into a flow and merge it in a config",
+    )
+    source = pc.add_mutually_exclusive_group(required=True)
+    source.add_argument("--program", help="Pseudo-C program string")
+    source.add_argument("--program-file", type=Path, help="Path to a pseudo-C program file")
+    pc.add_argument("--flow-id", required=True, type=int, help="Flow id to generate")
+    pc.add_argument("--name", default=None, help="Flow name (default: pseudoc_flow_<id>)")
+    pc.add_argument(
+        "--entry",
+        default="0,0",
+        help="Flow entry coordinate as x,y (default: 0,0)",
+    )
+    pc.add_argument(
+        "--max-in-flight",
+        type=int,
+        default=1,
+        help="Flow max in-flight packets (default: 1)",
+    )
+    pc.add_argument(
+        "--base-config",
+        required=True,
+        type=Path,
+        help="Base WAU config to extend",
+    )
+    pc.add_argument(
+        "--out-config",
+        required=True,
+        type=Path,
+        help="Output config path with merged compiled flow",
+    )
+    pc.add_argument(
         "--replace-existing",
         action="store_true",
         help="Replace existing flow if the same flow id already exists",
@@ -158,6 +196,38 @@ def _run_compile_expr(
     return 0
 
 
+def _run_compile_pseudoc(
+    *,
+    program: str,
+    flow_id: int,
+    name: str | None,
+    entry: str,
+    max_in_flight: int,
+    base_config: Path,
+    out_config: Path,
+    replace_existing: bool,
+) -> int:
+    entry_x, entry_y = _parse_entry(entry)
+    resolved_name = name or f"pseudoc_flow_{flow_id}"
+
+    flow = merge_pseudoc_into_config(
+        base_config_path=base_config,
+        out_config_path=out_config,
+        program=program,
+        flow_id=flow_id,
+        name=resolved_name,
+        entry_x=entry_x,
+        entry_y=entry_y,
+        replace_existing=replace_existing,
+        max_in_flight=max_in_flight,
+    )
+
+    print(f"Compiled pseudo-C into flow {flow_id} ({resolved_name})")
+    print(f"Stages: {len(flow['stages'])}")
+    print(f"Wrote merged config: {out_config}")
+    return 0
+
+
 def _run_list_devices() -> int:
     for name in sorted(DEVICE_PRESETS):
         preset = DEVICE_PRESETS[name]
@@ -191,6 +261,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "compile-expr":
             return _run_compile_expr(
                 expr=args.expr,
+                flow_id=args.flow_id,
+                name=args.name,
+                entry=args.entry,
+                max_in_flight=args.max_in_flight,
+                base_config=args.base_config,
+                out_config=args.out_config,
+                replace_existing=args.replace_existing,
+            )
+        if args.command == "compile-pseudoc":
+            if args.program is not None:
+                program = args.program
+            else:
+                program = args.program_file.read_text()
+            return _run_compile_pseudoc(
+                program=program,
                 flow_id=args.flow_id,
                 name=args.name,
                 entry=args.entry,

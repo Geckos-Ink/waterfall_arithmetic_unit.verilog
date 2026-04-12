@@ -158,6 +158,27 @@
           }
         }
       ]
+    },
+    {
+      "id": 31,
+      "name": "pseudoc_compiled_flow",
+      "entry": {
+        "x": 1,
+        "y": 1
+      },
+      "max_in_flight": 1,
+      "stages": [
+        {
+          "op": "add"
+        },
+        {
+          "op": "mul",
+          "immediate_b": 3
+        },
+        {
+          "op": "sub"
+        }
+      ]
     }
   ]
 }
