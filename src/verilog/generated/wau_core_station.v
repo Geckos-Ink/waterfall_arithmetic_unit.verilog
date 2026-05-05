@@ -4,7 +4,8 @@
 module wau_core_station #(
     parameter DATA_WIDTH = `WAU_DATA_WIDTH,
     parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
-    parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH
+    parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH,
+    parameter CACHE_ENTRIES = 4
 ) (
     input wire clk,
     input wire rst_n,
@@ -41,10 +42,16 @@ module wau_core_station #(
     reg signed [DATA_WIDTH-1:0] op_b;
     reg [7:0] wait_cycles;
 
-    reg cache_valid;
-    reg [OPCODE_WIDTH-1:0] last_opcode;
-    reg signed [DATA_WIDTH-1:0] last_a;
-    reg signed [DATA_WIDTH-1:0] last_b;
+    reg cache_valid [0:CACHE_ENTRIES-1];
+    reg [OPCODE_WIDTH-1:0] cache_opcode [0:CACHE_ENTRIES-1];
+    reg signed [DATA_WIDTH-1:0] cache_a [0:CACHE_ENTRIES-1];
+    reg signed [DATA_WIDTH-1:0] cache_b [0:CACHE_ENTRIES-1];
+    reg signed [DATA_WIDTH-1:0] cache_value [0:CACHE_ENTRIES-1];
+    reg [7:0] cache_replace_ptr;
+
+    reg cache_hit_comb;
+    reg [7:0] cache_hit_index;
+    reg signed [DATA_WIDTH-1:0] cache_hit_value;
 
     reg alu_in_valid;
     wire alu_out_valid;
@@ -52,6 +59,9 @@ module wau_core_station #(
 
     reg result_latched_valid;
     reg signed [DATA_WIDTH-1:0] result_latched_value;
+
+    integer cache_idx;
+    integer cache_scan;
 
     wire signed [DATA_WIDTH-1:0] effective_b;
     assign effective_b = in_use_immediate ? in_immediate_b : in_b;
@@ -87,6 +97,23 @@ module wau_core_station #(
         .y(alu_out_value)
     );
 
+    always @(*) begin
+        cache_hit_comb = 1'b0;
+        cache_hit_index = 8'd0;
+        cache_hit_value = {DATA_WIDTH{1'b0}};
+        for (cache_scan = 0; cache_scan < CACHE_ENTRIES; cache_scan = cache_scan + 1) begin
+            if (cache_valid[cache_scan] &&
+                (cache_opcode[cache_scan] == in_opcode) &&
+                (cache_a[cache_scan] == in_a) &&
+                (cache_b[cache_scan] == effective_b) &&
+                !cache_hit_comb) begin
+                cache_hit_comb = 1'b1;
+                cache_hit_index = cache_scan[7:0];
+                cache_hit_value = cache_value[cache_scan];
+            end
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= ST_IDLE;
@@ -100,16 +127,21 @@ module wau_core_station #(
             op_a <= {DATA_WIDTH{1'b0}};
             op_b <= {DATA_WIDTH{1'b0}};
             wait_cycles <= 8'd0;
-            cache_valid <= 1'b0;
-            last_opcode <= {OPCODE_WIDTH{1'b0}};
-            last_a <= {DATA_WIDTH{1'b0}};
-            last_b <= {DATA_WIDTH{1'b0}};
+            cache_replace_ptr <= 8'd0;
+            for (cache_idx = 0; cache_idx < CACHE_ENTRIES; cache_idx = cache_idx + 1) begin
+                cache_valid[cache_idx] <= 1'b0;
+                cache_opcode[cache_idx] <= {OPCODE_WIDTH{1'b0}};
+                cache_a[cache_idx] <= {DATA_WIDTH{1'b0}};
+                cache_b[cache_idx] <= {DATA_WIDTH{1'b0}};
+                cache_value[cache_idx] <= {DATA_WIDTH{1'b0}};
+            end
             cache_hit <= 1'b0;
             alu_in_valid <= 1'b0;
             result_latched_valid <= 1'b0;
             result_latched_value <= {DATA_WIDTH{1'b0}};
         end else begin
             alu_in_valid <= 1'b0;
+            cache_hit <= 1'b0;
 
             if (out_valid && out_ready) begin
                 out_valid <= 1'b0;
@@ -119,24 +151,24 @@ module wau_core_station #(
                 ST_IDLE: begin
                     result_latched_valid <= 1'b0;
                     if (in_valid && in_ready) begin
-                        active_flow_id <= in_flow_id;
-                        active_opcode <= in_opcode;
-                        active_stage_id <= in_stage_id;
-                        op_a <= in_a;
-                        op_b <= effective_b;
-                        wait_cycles <= op_latency(in_opcode) - 8'd1;
+                        cache_hit <= cache_hit_comb;
+                        if (cache_hit_comb) begin
+                            out_valid <= 1'b1;
+                            out_flow_id <= in_flow_id;
+                            out_stage_id <= in_stage_id;
+                            out_value <= cache_hit_value;
+                            state <= ST_OUT;
+                        end else begin
+                            active_flow_id <= in_flow_id;
+                            active_opcode <= in_opcode;
+                            active_stage_id <= in_stage_id;
+                            op_a <= in_a;
+                            op_b <= effective_b;
+                            wait_cycles <= op_latency(in_opcode) - 8'd1;
 
-                        cache_hit <= cache_valid &&
-                                     (last_opcode == in_opcode) &&
-                                     (last_a == in_a) &&
-                                     (last_b == effective_b);
-                        cache_valid <= 1'b1;
-                        last_opcode <= in_opcode;
-                        last_a <= in_a;
-                        last_b <= effective_b;
-
-                        alu_in_valid <= 1'b1;
-                        state <= ST_EXEC;
+                            alu_in_valid <= 1'b1;
+                            state <= ST_EXEC;
+                        end
                     end
                 end
 
@@ -155,6 +187,19 @@ module wau_core_station #(
                         out_flow_id <= active_flow_id;
                         out_stage_id <= active_stage_id;
                         out_value <= alu_out_valid ? alu_out_value : result_latched_value;
+
+                        cache_valid[cache_replace_ptr] <= 1'b1;
+                        cache_opcode[cache_replace_ptr] <= active_opcode;
+                        cache_a[cache_replace_ptr] <= op_a;
+                        cache_b[cache_replace_ptr] <= op_b;
+                        cache_value[cache_replace_ptr] <= alu_out_valid ? alu_out_value : result_latched_value;
+
+                        if (cache_replace_ptr == (CACHE_ENTRIES - 1)) begin
+                            cache_replace_ptr <= 8'd0;
+                        end else begin
+                            cache_replace_ptr <= cache_replace_ptr + 8'd1;
+                        end
+
                         result_latched_valid <= 1'b0;
                         state <= ST_OUT;
                     end

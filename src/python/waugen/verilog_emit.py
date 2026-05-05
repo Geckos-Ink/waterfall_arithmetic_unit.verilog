@@ -103,7 +103,8 @@ def _render_core_station(project: CompiledProject) -> str:
 module wau_core_station #(
     parameter DATA_WIDTH = `WAU_DATA_WIDTH,
     parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
-    parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH
+    parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH,
+    parameter CACHE_ENTRIES = 4
 ) (
     input wire clk,
     input wire rst_n,
@@ -140,10 +141,16 @@ module wau_core_station #(
     reg signed [DATA_WIDTH-1:0] op_b;
     reg [7:0] wait_cycles;
 
-    reg cache_valid;
-    reg [OPCODE_WIDTH-1:0] last_opcode;
-    reg signed [DATA_WIDTH-1:0] last_a;
-    reg signed [DATA_WIDTH-1:0] last_b;
+    reg cache_valid [0:CACHE_ENTRIES-1];
+    reg [OPCODE_WIDTH-1:0] cache_opcode [0:CACHE_ENTRIES-1];
+    reg signed [DATA_WIDTH-1:0] cache_a [0:CACHE_ENTRIES-1];
+    reg signed [DATA_WIDTH-1:0] cache_b [0:CACHE_ENTRIES-1];
+    reg signed [DATA_WIDTH-1:0] cache_value [0:CACHE_ENTRIES-1];
+    reg [7:0] cache_replace_ptr;
+
+    reg cache_hit_comb;
+    reg [7:0] cache_hit_index;
+    reg signed [DATA_WIDTH-1:0] cache_hit_value;
 
     reg alu_in_valid;
     wire alu_out_valid;
@@ -151,6 +158,9 @@ module wau_core_station #(
 
     reg result_latched_valid;
     reg signed [DATA_WIDTH-1:0] result_latched_value;
+
+    integer cache_idx;
+    integer cache_scan;
 
     wire signed [DATA_WIDTH-1:0] effective_b;
     assign effective_b = in_use_immediate ? in_immediate_b : in_b;
@@ -182,6 +192,23 @@ module wau_core_station #(
         .y(alu_out_value)
     );
 
+    always @(*) begin
+        cache_hit_comb = 1'b0;
+        cache_hit_index = 8'd0;
+        cache_hit_value = {{DATA_WIDTH{{1'b0}}}};
+        for (cache_scan = 0; cache_scan < CACHE_ENTRIES; cache_scan = cache_scan + 1) begin
+            if (cache_valid[cache_scan] &&
+                (cache_opcode[cache_scan] == in_opcode) &&
+                (cache_a[cache_scan] == in_a) &&
+                (cache_b[cache_scan] == effective_b) &&
+                !cache_hit_comb) begin
+                cache_hit_comb = 1'b1;
+                cache_hit_index = cache_scan[7:0];
+                cache_hit_value = cache_value[cache_scan];
+            end
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= ST_IDLE;
@@ -195,16 +222,21 @@ module wau_core_station #(
             op_a <= {{DATA_WIDTH{{1'b0}}}};
             op_b <= {{DATA_WIDTH{{1'b0}}}};
             wait_cycles <= 8'd0;
-            cache_valid <= 1'b0;
-            last_opcode <= {{OPCODE_WIDTH{{1'b0}}}};
-            last_a <= {{DATA_WIDTH{{1'b0}}}};
-            last_b <= {{DATA_WIDTH{{1'b0}}}};
+            cache_replace_ptr <= 8'd0;
+            for (cache_idx = 0; cache_idx < CACHE_ENTRIES; cache_idx = cache_idx + 1) begin
+                cache_valid[cache_idx] <= 1'b0;
+                cache_opcode[cache_idx] <= {{OPCODE_WIDTH{{1'b0}}}};
+                cache_a[cache_idx] <= {{DATA_WIDTH{{1'b0}}}};
+                cache_b[cache_idx] <= {{DATA_WIDTH{{1'b0}}}};
+                cache_value[cache_idx] <= {{DATA_WIDTH{{1'b0}}}};
+            end
             cache_hit <= 1'b0;
             alu_in_valid <= 1'b0;
             result_latched_valid <= 1'b0;
             result_latched_value <= {{DATA_WIDTH{{1'b0}}}};
         end else begin
             alu_in_valid <= 1'b0;
+            cache_hit <= 1'b0;
 
             if (out_valid && out_ready) begin
                 out_valid <= 1'b0;
@@ -214,24 +246,24 @@ module wau_core_station #(
                 ST_IDLE: begin
                     result_latched_valid <= 1'b0;
                     if (in_valid && in_ready) begin
-                        active_flow_id <= in_flow_id;
-                        active_opcode <= in_opcode;
-                        active_stage_id <= in_stage_id;
-                        op_a <= in_a;
-                        op_b <= effective_b;
-                        wait_cycles <= op_latency(in_opcode) - 8'd1;
+                        cache_hit <= cache_hit_comb;
+                        if (cache_hit_comb) begin
+                            out_valid <= 1'b1;
+                            out_flow_id <= in_flow_id;
+                            out_stage_id <= in_stage_id;
+                            out_value <= cache_hit_value;
+                            state <= ST_OUT;
+                        end else begin
+                            active_flow_id <= in_flow_id;
+                            active_opcode <= in_opcode;
+                            active_stage_id <= in_stage_id;
+                            op_a <= in_a;
+                            op_b <= effective_b;
+                            wait_cycles <= op_latency(in_opcode) - 8'd1;
 
-                        cache_hit <= cache_valid &&
-                                     (last_opcode == in_opcode) &&
-                                     (last_a == in_a) &&
-                                     (last_b == effective_b);
-                        cache_valid <= 1'b1;
-                        last_opcode <= in_opcode;
-                        last_a <= in_a;
-                        last_b <= effective_b;
-
-                        alu_in_valid <= 1'b1;
-                        state <= ST_EXEC;
+                            alu_in_valid <= 1'b1;
+                            state <= ST_EXEC;
+                        end
                     end
                 end
 
@@ -250,6 +282,19 @@ module wau_core_station #(
                         out_flow_id <= active_flow_id;
                         out_stage_id <= active_stage_id;
                         out_value <= alu_out_valid ? alu_out_value : result_latched_value;
+
+                        cache_valid[cache_replace_ptr] <= 1'b1;
+                        cache_opcode[cache_replace_ptr] <= active_opcode;
+                        cache_a[cache_replace_ptr] <= op_a;
+                        cache_b[cache_replace_ptr] <= op_b;
+                        cache_value[cache_replace_ptr] <= alu_out_valid ? alu_out_value : result_latched_value;
+
+                        if (cache_replace_ptr == (CACHE_ENTRIES - 1)) begin
+                            cache_replace_ptr <= 8'd0;
+                        end else begin
+                            cache_replace_ptr <= cache_replace_ptr + 8'd1;
+                        end
+
                         result_latched_valid <= 1'b0;
                         state <= ST_OUT;
                     end
@@ -332,6 +377,622 @@ endmodule
 """
 
 
+def _render_neighbor_forward() -> str:
+    return """`timescale 1ns/1ps
+`include "wau_defs.vh"
+
+module wau_neighbor_forward #(
+    parameter CORE_ID_WIDTH = 8,
+    parameter PAYLOAD_WIDTH = 64
+) (
+    input wire in_valid,
+    output wire in_ready,
+    input wire [CORE_ID_WIDTH-1:0] in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] in_payload,
+
+    output wire out_valid,
+    input wire out_ready,
+    output wire [CORE_ID_WIDTH-1:0] out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] out_payload
+);
+    assign in_ready = out_ready;
+    assign out_valid = in_valid;
+    assign out_dst = in_dst;
+    assign out_payload = in_payload;
+endmodule
+"""
+
+
+def _render_highway_router() -> str:
+    return """`timescale 1ns/1ps
+`include "wau_defs.vh"
+
+module wau_highway_router #(
+    parameter CORE_INDEX = 0,
+    parameter CORE_X = 0,
+    parameter CORE_Y = 0,
+    parameter GRID_X = `WAU_GRID_X,
+    parameter CORE_ID_WIDTH = 8,
+    parameter PAYLOAD_WIDTH = 64
+) (
+    input wire local_in_valid,
+    output reg local_in_ready,
+    input wire [CORE_ID_WIDTH-1:0] local_in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] local_in_payload,
+
+    output reg local_out_valid,
+    input wire local_out_ready,
+    output reg [CORE_ID_WIDTH-1:0] local_out_dst,
+    output reg [PAYLOAD_WIDTH-1:0] local_out_payload,
+
+    input wire north_in_valid,
+    output reg north_in_ready,
+    input wire [CORE_ID_WIDTH-1:0] north_in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] north_in_payload,
+
+    output reg north_out_valid,
+    input wire north_out_ready,
+    output reg [CORE_ID_WIDTH-1:0] north_out_dst,
+    output reg [PAYLOAD_WIDTH-1:0] north_out_payload,
+
+    input wire south_in_valid,
+    output reg south_in_ready,
+    input wire [CORE_ID_WIDTH-1:0] south_in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] south_in_payload,
+
+    output reg south_out_valid,
+    input wire south_out_ready,
+    output reg [CORE_ID_WIDTH-1:0] south_out_dst,
+    output reg [PAYLOAD_WIDTH-1:0] south_out_payload,
+
+    input wire east_in_valid,
+    output reg east_in_ready,
+    input wire [CORE_ID_WIDTH-1:0] east_in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] east_in_payload,
+
+    output reg east_out_valid,
+    input wire east_out_ready,
+    output reg [CORE_ID_WIDTH-1:0] east_out_dst,
+    output reg [PAYLOAD_WIDTH-1:0] east_out_payload,
+
+    input wire west_in_valid,
+    output reg west_in_ready,
+    input wire [CORE_ID_WIDTH-1:0] west_in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] west_in_payload,
+
+    output reg west_out_valid,
+    input wire west_out_ready,
+    output reg [CORE_ID_WIDTH-1:0] west_out_dst,
+    output reg [PAYLOAD_WIDTH-1:0] west_out_payload
+);
+    localparam DIR_LOCAL = 3'd0;
+    localparam DIR_NORTH = 3'd1;
+    localparam DIR_SOUTH = 3'd2;
+    localparam DIR_EAST = 3'd3;
+    localparam DIR_WEST = 3'd4;
+
+    integer sel_local;
+    integer sel_north;
+    integer sel_south;
+    integer sel_east;
+    integer sel_west;
+
+    wire [2:0] local_dir;
+    wire [2:0] north_dir;
+    wire [2:0] south_dir;
+    wire [2:0] east_dir;
+    wire [2:0] west_dir;
+
+    function [2:0] route_dir;
+        input [CORE_ID_WIDTH-1:0] dst_core;
+        integer dst_x;
+        integer dst_y;
+        begin
+            if (dst_core == CORE_INDEX[CORE_ID_WIDTH-1:0]) begin
+                route_dir = DIR_LOCAL;
+            end else begin
+                dst_x = dst_core % GRID_X;
+                dst_y = dst_core / GRID_X;
+
+                if (dst_x > CORE_X) begin
+                    route_dir = DIR_EAST;
+                end else if (dst_x < CORE_X) begin
+                    route_dir = DIR_WEST;
+                end else if (dst_y > CORE_Y) begin
+                    route_dir = DIR_SOUTH;
+                end else begin
+                    route_dir = DIR_NORTH;
+                end
+            end
+        end
+    endfunction
+
+    assign local_dir = route_dir(local_in_dst);
+    assign north_dir = route_dir(north_in_dst);
+    assign south_dir = route_dir(south_in_dst);
+    assign east_dir = route_dir(east_in_dst);
+    assign west_dir = route_dir(west_in_dst);
+
+    always @(*) begin
+        local_in_ready = 1'b0;
+        north_in_ready = 1'b0;
+        south_in_ready = 1'b0;
+        east_in_ready = 1'b0;
+        west_in_ready = 1'b0;
+
+        local_out_valid = 1'b0;
+        local_out_dst = {CORE_ID_WIDTH{1'b0}};
+        local_out_payload = {PAYLOAD_WIDTH{1'b0}};
+
+        north_out_valid = 1'b0;
+        north_out_dst = {CORE_ID_WIDTH{1'b0}};
+        north_out_payload = {PAYLOAD_WIDTH{1'b0}};
+
+        south_out_valid = 1'b0;
+        south_out_dst = {CORE_ID_WIDTH{1'b0}};
+        south_out_payload = {PAYLOAD_WIDTH{1'b0}};
+
+        east_out_valid = 1'b0;
+        east_out_dst = {CORE_ID_WIDTH{1'b0}};
+        east_out_payload = {PAYLOAD_WIDTH{1'b0}};
+
+        west_out_valid = 1'b0;
+        west_out_dst = {CORE_ID_WIDTH{1'b0}};
+        west_out_payload = {PAYLOAD_WIDTH{1'b0}};
+
+        sel_local = -1;
+        sel_north = -1;
+        sel_south = -1;
+        sel_east = -1;
+        sel_west = -1;
+
+        if (local_in_valid && local_dir == DIR_LOCAL) begin
+            sel_local = 0;
+        end else if (north_in_valid && north_dir == DIR_LOCAL) begin
+            sel_local = 1;
+        end else if (south_in_valid && south_dir == DIR_LOCAL) begin
+            sel_local = 2;
+        end else if (east_in_valid && east_dir == DIR_LOCAL) begin
+            sel_local = 3;
+        end else if (west_in_valid && west_dir == DIR_LOCAL) begin
+            sel_local = 4;
+        end
+
+        if (local_in_valid && local_dir == DIR_NORTH) begin
+            sel_north = 0;
+        end else if (north_in_valid && north_dir == DIR_NORTH) begin
+            sel_north = 1;
+        end else if (south_in_valid && south_dir == DIR_NORTH) begin
+            sel_north = 2;
+        end else if (east_in_valid && east_dir == DIR_NORTH) begin
+            sel_north = 3;
+        end else if (west_in_valid && west_dir == DIR_NORTH) begin
+            sel_north = 4;
+        end
+
+        if (local_in_valid && local_dir == DIR_SOUTH) begin
+            sel_south = 0;
+        end else if (north_in_valid && north_dir == DIR_SOUTH) begin
+            sel_south = 1;
+        end else if (south_in_valid && south_dir == DIR_SOUTH) begin
+            sel_south = 2;
+        end else if (east_in_valid && east_dir == DIR_SOUTH) begin
+            sel_south = 3;
+        end else if (west_in_valid && west_dir == DIR_SOUTH) begin
+            sel_south = 4;
+        end
+
+        if (local_in_valid && local_dir == DIR_EAST) begin
+            sel_east = 0;
+        end else if (north_in_valid && north_dir == DIR_EAST) begin
+            sel_east = 1;
+        end else if (south_in_valid && south_dir == DIR_EAST) begin
+            sel_east = 2;
+        end else if (east_in_valid && east_dir == DIR_EAST) begin
+            sel_east = 3;
+        end else if (west_in_valid && west_dir == DIR_EAST) begin
+            sel_east = 4;
+        end
+
+        if (local_in_valid && local_dir == DIR_WEST) begin
+            sel_west = 0;
+        end else if (north_in_valid && north_dir == DIR_WEST) begin
+            sel_west = 1;
+        end else if (south_in_valid && south_dir == DIR_WEST) begin
+            sel_west = 2;
+        end else if (east_in_valid && east_dir == DIR_WEST) begin
+            sel_west = 3;
+        end else if (west_in_valid && west_dir == DIR_WEST) begin
+            sel_west = 4;
+        end
+
+        case (sel_local)
+            0: begin
+                local_out_valid = 1'b1;
+                local_out_dst = local_in_dst;
+                local_out_payload = local_in_payload;
+                local_in_ready = local_out_ready;
+            end
+            1: begin
+                local_out_valid = 1'b1;
+                local_out_dst = north_in_dst;
+                local_out_payload = north_in_payload;
+                north_in_ready = local_out_ready;
+            end
+            2: begin
+                local_out_valid = 1'b1;
+                local_out_dst = south_in_dst;
+                local_out_payload = south_in_payload;
+                south_in_ready = local_out_ready;
+            end
+            3: begin
+                local_out_valid = 1'b1;
+                local_out_dst = east_in_dst;
+                local_out_payload = east_in_payload;
+                east_in_ready = local_out_ready;
+            end
+            4: begin
+                local_out_valid = 1'b1;
+                local_out_dst = west_in_dst;
+                local_out_payload = west_in_payload;
+                west_in_ready = local_out_ready;
+            end
+            default: begin
+            end
+        endcase
+
+        case (sel_north)
+            0: begin
+                north_out_valid = 1'b1;
+                north_out_dst = local_in_dst;
+                north_out_payload = local_in_payload;
+                local_in_ready = north_out_ready;
+            end
+            1: begin
+                north_out_valid = 1'b1;
+                north_out_dst = north_in_dst;
+                north_out_payload = north_in_payload;
+                north_in_ready = north_out_ready;
+            end
+            2: begin
+                north_out_valid = 1'b1;
+                north_out_dst = south_in_dst;
+                north_out_payload = south_in_payload;
+                south_in_ready = north_out_ready;
+            end
+            3: begin
+                north_out_valid = 1'b1;
+                north_out_dst = east_in_dst;
+                north_out_payload = east_in_payload;
+                east_in_ready = north_out_ready;
+            end
+            4: begin
+                north_out_valid = 1'b1;
+                north_out_dst = west_in_dst;
+                north_out_payload = west_in_payload;
+                west_in_ready = north_out_ready;
+            end
+            default: begin
+            end
+        endcase
+
+        case (sel_south)
+            0: begin
+                south_out_valid = 1'b1;
+                south_out_dst = local_in_dst;
+                south_out_payload = local_in_payload;
+                local_in_ready = south_out_ready;
+            end
+            1: begin
+                south_out_valid = 1'b1;
+                south_out_dst = north_in_dst;
+                south_out_payload = north_in_payload;
+                north_in_ready = south_out_ready;
+            end
+            2: begin
+                south_out_valid = 1'b1;
+                south_out_dst = south_in_dst;
+                south_out_payload = south_in_payload;
+                south_in_ready = south_out_ready;
+            end
+            3: begin
+                south_out_valid = 1'b1;
+                south_out_dst = east_in_dst;
+                south_out_payload = east_in_payload;
+                east_in_ready = south_out_ready;
+            end
+            4: begin
+                south_out_valid = 1'b1;
+                south_out_dst = west_in_dst;
+                south_out_payload = west_in_payload;
+                west_in_ready = south_out_ready;
+            end
+            default: begin
+            end
+        endcase
+
+        case (sel_east)
+            0: begin
+                east_out_valid = 1'b1;
+                east_out_dst = local_in_dst;
+                east_out_payload = local_in_payload;
+                local_in_ready = east_out_ready;
+            end
+            1: begin
+                east_out_valid = 1'b1;
+                east_out_dst = north_in_dst;
+                east_out_payload = north_in_payload;
+                north_in_ready = east_out_ready;
+            end
+            2: begin
+                east_out_valid = 1'b1;
+                east_out_dst = south_in_dst;
+                east_out_payload = south_in_payload;
+                south_in_ready = east_out_ready;
+            end
+            3: begin
+                east_out_valid = 1'b1;
+                east_out_dst = east_in_dst;
+                east_out_payload = east_in_payload;
+                east_in_ready = east_out_ready;
+            end
+            4: begin
+                east_out_valid = 1'b1;
+                east_out_dst = west_in_dst;
+                east_out_payload = west_in_payload;
+                west_in_ready = east_out_ready;
+            end
+            default: begin
+            end
+        endcase
+
+        case (sel_west)
+            0: begin
+                west_out_valid = 1'b1;
+                west_out_dst = local_in_dst;
+                west_out_payload = local_in_payload;
+                local_in_ready = west_out_ready;
+            end
+            1: begin
+                west_out_valid = 1'b1;
+                west_out_dst = north_in_dst;
+                west_out_payload = north_in_payload;
+                north_in_ready = west_out_ready;
+            end
+            2: begin
+                west_out_valid = 1'b1;
+                west_out_dst = south_in_dst;
+                west_out_payload = south_in_payload;
+                south_in_ready = west_out_ready;
+            end
+            3: begin
+                west_out_valid = 1'b1;
+                west_out_dst = east_in_dst;
+                west_out_payload = east_in_payload;
+                east_in_ready = west_out_ready;
+            end
+            4: begin
+                west_out_valid = 1'b1;
+                west_out_dst = west_in_dst;
+                west_out_payload = west_in_payload;
+                west_in_ready = west_out_ready;
+            end
+            default: begin
+            end
+        endcase
+    end
+endmodule
+"""
+
+
+def _render_highway_mesh() -> str:
+    return """`timescale 1ns/1ps
+`include "wau_defs.vh"
+
+module wau_highway_mesh #(
+    parameter GRID_X = `WAU_GRID_X,
+    parameter GRID_Y = `WAU_GRID_Y,
+    parameter CORE_COUNT = `WAU_CORE_COUNT,
+    parameter CORE_ID_WIDTH = 8,
+    parameter PAYLOAD_WIDTH = 64
+) (
+    input wire [CORE_COUNT-1:0] local_in_valid,
+    output wire [CORE_COUNT-1:0] local_in_ready,
+    input wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_in_dst,
+    input wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_in_payload,
+
+    output wire [CORE_COUNT-1:0] local_out_valid,
+    input wire [CORE_COUNT-1:0] local_out_ready,
+    output wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_out_dst,
+    output wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_out_payload
+);
+    wire [CORE_COUNT-1:0] north_in_valid;
+    wire [CORE_COUNT-1:0] north_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] north_in_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] north_in_payload;
+    wire [CORE_COUNT-1:0] north_out_valid;
+    wire [CORE_COUNT-1:0] north_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] north_out_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] north_out_payload;
+
+    wire [CORE_COUNT-1:0] south_in_valid;
+    wire [CORE_COUNT-1:0] south_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] south_in_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] south_in_payload;
+    wire [CORE_COUNT-1:0] south_out_valid;
+    wire [CORE_COUNT-1:0] south_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] south_out_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] south_out_payload;
+
+    wire [CORE_COUNT-1:0] east_in_valid;
+    wire [CORE_COUNT-1:0] east_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] east_in_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] east_in_payload;
+    wire [CORE_COUNT-1:0] east_out_valid;
+    wire [CORE_COUNT-1:0] east_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] east_out_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] east_out_payload;
+
+    wire [CORE_COUNT-1:0] west_in_valid;
+    wire [CORE_COUNT-1:0] west_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] west_in_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] west_in_payload;
+    wire [CORE_COUNT-1:0] west_out_valid;
+    wire [CORE_COUNT-1:0] west_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] west_out_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] west_out_payload;
+
+    genvar gy;
+    genvar gx;
+    generate
+        for (gy = 0; gy < GRID_Y; gy = gy + 1) begin : gen_y
+            for (gx = 0; gx < GRID_X; gx = gx + 1) begin : gen_x
+                localparam integer CORE_INDEX = (gy * GRID_X) + gx;
+                localparam integer NORTH_INDEX = CORE_INDEX - GRID_X;
+                localparam integer SOUTH_INDEX = CORE_INDEX + GRID_X;
+                localparam integer EAST_INDEX = CORE_INDEX + 1;
+                localparam integer WEST_INDEX = CORE_INDEX - 1;
+
+                wau_highway_router #(
+                    .CORE_INDEX(CORE_INDEX),
+                    .CORE_X(gx),
+                    .CORE_Y(gy),
+                    .GRID_X(GRID_X),
+                    .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                    .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+                ) router_u (
+                    .local_in_valid(local_in_valid[CORE_INDEX]),
+                    .local_in_ready(local_in_ready[CORE_INDEX]),
+                    .local_in_dst(local_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .local_in_payload(local_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .local_out_valid(local_out_valid[CORE_INDEX]),
+                    .local_out_ready(local_out_ready[CORE_INDEX]),
+                    .local_out_dst(local_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .local_out_payload(local_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .north_in_valid(north_in_valid[CORE_INDEX]),
+                    .north_in_ready(north_in_ready[CORE_INDEX]),
+                    .north_in_dst(north_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .north_in_payload(north_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .north_out_valid(north_out_valid[CORE_INDEX]),
+                    .north_out_ready(north_out_ready[CORE_INDEX]),
+                    .north_out_dst(north_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .north_out_payload(north_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .south_in_valid(south_in_valid[CORE_INDEX]),
+                    .south_in_ready(south_in_ready[CORE_INDEX]),
+                    .south_in_dst(south_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .south_in_payload(south_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .south_out_valid(south_out_valid[CORE_INDEX]),
+                    .south_out_ready(south_out_ready[CORE_INDEX]),
+                    .south_out_dst(south_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .south_out_payload(south_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .east_in_valid(east_in_valid[CORE_INDEX]),
+                    .east_in_ready(east_in_ready[CORE_INDEX]),
+                    .east_in_dst(east_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .east_in_payload(east_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .east_out_valid(east_out_valid[CORE_INDEX]),
+                    .east_out_ready(east_out_ready[CORE_INDEX]),
+                    .east_out_dst(east_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .east_out_payload(east_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .west_in_valid(west_in_valid[CORE_INDEX]),
+                    .west_in_ready(west_in_ready[CORE_INDEX]),
+                    .west_in_dst(west_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .west_in_payload(west_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .west_out_valid(west_out_valid[CORE_INDEX]),
+                    .west_out_ready(west_out_ready[CORE_INDEX]),
+                    .west_out_dst(west_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .west_out_payload(west_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                );
+
+                if (gy == 0) begin : north_edge
+                    assign north_in_valid[CORE_INDEX] = 1'b0;
+                    assign north_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+                    assign north_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
+                    assign north_out_ready[CORE_INDEX] = 1'b1;
+                end else begin : north_link
+                    wau_neighbor_forward #(
+                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+                    ) from_north_u (
+                        .in_valid(south_out_valid[NORTH_INDEX]),
+                        .in_ready(south_out_ready[NORTH_INDEX]),
+                        .in_dst(south_out_dst[(NORTH_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .in_payload(south_out_payload[(NORTH_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                        .out_valid(north_in_valid[CORE_INDEX]),
+                        .out_ready(north_in_ready[CORE_INDEX]),
+                        .out_dst(north_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .out_payload(north_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    );
+                end
+
+                if (gy == GRID_Y - 1) begin : south_edge
+                    assign south_in_valid[CORE_INDEX] = 1'b0;
+                    assign south_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+                    assign south_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
+                    assign south_out_ready[CORE_INDEX] = 1'b1;
+                end else begin : south_link
+                    wau_neighbor_forward #(
+                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+                    ) from_south_u (
+                        .in_valid(north_out_valid[SOUTH_INDEX]),
+                        .in_ready(north_out_ready[SOUTH_INDEX]),
+                        .in_dst(north_out_dst[(SOUTH_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .in_payload(north_out_payload[(SOUTH_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                        .out_valid(south_in_valid[CORE_INDEX]),
+                        .out_ready(south_in_ready[CORE_INDEX]),
+                        .out_dst(south_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .out_payload(south_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    );
+                end
+
+                if (gx == GRID_X - 1) begin : east_edge
+                    assign east_in_valid[CORE_INDEX] = 1'b0;
+                    assign east_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+                    assign east_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
+                    assign east_out_ready[CORE_INDEX] = 1'b1;
+                end else begin : east_link
+                    wau_neighbor_forward #(
+                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+                    ) from_east_u (
+                        .in_valid(west_out_valid[EAST_INDEX]),
+                        .in_ready(west_out_ready[EAST_INDEX]),
+                        .in_dst(west_out_dst[(EAST_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .in_payload(west_out_payload[(EAST_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                        .out_valid(east_in_valid[CORE_INDEX]),
+                        .out_ready(east_in_ready[CORE_INDEX]),
+                        .out_dst(east_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .out_payload(east_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    );
+                end
+
+                if (gx == 0) begin : west_edge
+                    assign west_in_valid[CORE_INDEX] = 1'b0;
+                    assign west_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+                    assign west_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
+                    assign west_out_ready[CORE_INDEX] = 1'b1;
+                end else begin : west_link
+                    wau_neighbor_forward #(
+                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+                    ) from_west_u (
+                        .in_valid(east_out_valid[WEST_INDEX]),
+                        .in_ready(east_out_ready[WEST_INDEX]),
+                        .in_dst(east_out_dst[(WEST_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .in_payload(east_out_payload[(WEST_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                        .out_valid(west_in_valid[CORE_INDEX]),
+                        .out_ready(west_in_ready[CORE_INDEX]),
+                        .out_dst(west_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .out_payload(west_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    );
+                end
+            end
+        end
+    endgenerate
+endmodule
+"""
+
+
 def _stage_case_entries(project: CompiledProject, field: str) -> str:
     lines: list[str] = []
     for flow in project.flows:
@@ -406,21 +1067,24 @@ module wau_coordinator #(
 
     input wire enable_auto_adapt,
 
-    output reg [CORE_COUNT-1:0] core_dispatch_valid,
-    input wire [CORE_COUNT-1:0] core_dispatch_ready,
-    output reg [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_dispatch_flow_id,
-    output reg [CORE_COUNT*OPCODE_WIDTH-1:0] core_dispatch_opcode,
-    output reg [CORE_COUNT*DATA_WIDTH-1:0] core_dispatch_a,
-    output reg [CORE_COUNT*DATA_WIDTH-1:0] core_dispatch_b,
-    output reg [CORE_COUNT-1:0] core_dispatch_use_immediate,
-    output reg [CORE_COUNT*DATA_WIDTH-1:0] core_dispatch_immediate_b,
-    output reg [CORE_COUNT*8-1:0] core_dispatch_stage_id,
+    output reg dispatch_pkt_valid,
+    input wire dispatch_pkt_ready,
+    output reg [7:0] dispatch_pkt_dst_core,
+    output reg [FLOW_ID_WIDTH-1:0] dispatch_pkt_flow_id,
+    output reg [OPCODE_WIDTH-1:0] dispatch_pkt_opcode,
+    output reg signed [DATA_WIDTH-1:0] dispatch_pkt_a,
+    output reg signed [DATA_WIDTH-1:0] dispatch_pkt_b,
+    output reg dispatch_pkt_use_immediate,
+    output reg signed [DATA_WIDTH-1:0] dispatch_pkt_immediate_b,
+    output reg [7:0] dispatch_pkt_stage_id,
 
-    input wire [CORE_COUNT-1:0] core_result_valid,
-    output reg [CORE_COUNT-1:0] core_result_ready,
-    input wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_result_flow_id,
-    input wire [CORE_COUNT*8-1:0] core_result_stage_id,
-    input wire [CORE_COUNT*DATA_WIDTH-1:0] core_result_value,
+    input wire result_pkt_valid,
+    output wire result_pkt_ready,
+    input wire [7:0] result_pkt_src_core,
+    input wire [FLOW_ID_WIDTH-1:0] result_pkt_flow_id,
+    input wire [7:0] result_pkt_stage_id,
+    input wire signed [DATA_WIDTH-1:0] result_pkt_value,
+
     input wire [CORE_COUNT-1:0] core_busy
 );
     localparam ST_IDLE = 2'd0;
@@ -444,15 +1108,8 @@ module wau_coordinator #(
 
     reg [7:0] chosen_core;
 
-    wire [FLOW_ID_WIDTH-1:0] waiting_result_flow_id;
-    wire [7:0] waiting_result_stage_id;
-    wire signed [DATA_WIDTH-1:0] waiting_result_value;
-
-    assign waiting_result_flow_id = core_result_flow_id[(waiting_core*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH];
-    assign waiting_result_stage_id = core_result_stage_id[(waiting_core*8) +: 8];
-    assign waiting_result_value = core_result_value[(waiting_core*DATA_WIDTH) +: DATA_WIDTH];
-
     assign host_in_ready = (state == ST_IDLE) && !host_out_valid;
+    assign result_pkt_ready = (state == ST_WAIT_RESULT);
 
     function [7:0] flow_slot_from_id;
         input [FLOW_ID_WIDTH-1:0] flow_id;
@@ -568,32 +1225,26 @@ module wau_coordinator #(
     end
 
     always @(*) begin
-        core_dispatch_valid = {{CORE_COUNT{{1'b0}}}};
-        core_dispatch_flow_id = {{CORE_COUNT*FLOW_ID_WIDTH{{1'b0}}}};
-        core_dispatch_opcode = {{CORE_COUNT*OPCODE_WIDTH{{1'b0}}}};
-        core_dispatch_a = {{CORE_COUNT*DATA_WIDTH{{1'b0}}}};
-        core_dispatch_b = {{CORE_COUNT*DATA_WIDTH{{1'b0}}}};
-        core_dispatch_use_immediate = {{CORE_COUNT{{1'b0}}}};
-        core_dispatch_immediate_b = {{CORE_COUNT*DATA_WIDTH{{1'b0}}}};
-        core_dispatch_stage_id = {{CORE_COUNT*8{{1'b0}}}};
-
-        core_result_ready = {{CORE_COUNT{{1'b0}}}};
+        dispatch_pkt_valid = 1'b0;
+        dispatch_pkt_dst_core = 8'd0;
+        dispatch_pkt_flow_id = {{FLOW_ID_WIDTH{{1'b0}}}};
+        dispatch_pkt_opcode = {{OPCODE_WIDTH{{1'b0}}}};
+        dispatch_pkt_a = {{DATA_WIDTH{{1'b0}}}};
+        dispatch_pkt_b = {{DATA_WIDTH{{1'b0}}}};
+        dispatch_pkt_use_immediate = 1'b0;
+        dispatch_pkt_immediate_b = {{DATA_WIDTH{{1'b0}}}};
+        dispatch_pkt_stage_id = 8'd0;
 
         if (state == ST_DISPATCH && current_flow_slot != 8'hFF) begin
-            if (core_dispatch_ready[chosen_core]) begin
-                core_dispatch_valid[chosen_core] = 1'b1;
-                core_dispatch_flow_id[(chosen_core*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH] = current_flow_id;
-                core_dispatch_opcode[(chosen_core*OPCODE_WIDTH) +: OPCODE_WIDTH] = stage_opcode;
-                core_dispatch_a[(chosen_core*DATA_WIDTH) +: DATA_WIDTH] = accumulator;
-                core_dispatch_b[(chosen_core*DATA_WIDTH) +: DATA_WIDTH] = operand_b;
-                core_dispatch_use_immediate[chosen_core] = stage_use_immediate;
-                core_dispatch_immediate_b[(chosen_core*DATA_WIDTH) +: DATA_WIDTH] = stage_immediate_b;
-                core_dispatch_stage_id[(chosen_core*8) +: 8] = current_stage;
-            end
-        end
-
-        if (state == ST_WAIT_RESULT) begin
-            core_result_ready[waiting_core] = 1'b1;
+            dispatch_pkt_valid = 1'b1;
+            dispatch_pkt_dst_core = chosen_core;
+            dispatch_pkt_flow_id = current_flow_id;
+            dispatch_pkt_opcode = stage_opcode;
+            dispatch_pkt_a = accumulator;
+            dispatch_pkt_b = operand_b;
+            dispatch_pkt_use_immediate = stage_use_immediate;
+            dispatch_pkt_immediate_b = stage_immediate_b;
+            dispatch_pkt_stage_id = current_stage;
         end
     end
 
@@ -632,19 +1283,23 @@ module wau_coordinator #(
                 ST_DISPATCH: begin
                     if (current_flow_slot == 8'hFF) begin
                         state <= ST_IDLE;
-                    end else if (core_dispatch_ready[chosen_core]) begin
+                    end else if (dispatch_pkt_valid && dispatch_pkt_ready) begin
                         waiting_core <= chosen_core;
                         state <= ST_WAIT_RESULT;
                     end
                 end
 
                 ST_WAIT_RESULT: begin
-                    if (core_result_valid[waiting_core]) begin
-                        accumulator <= waiting_result_value;
+                    if (result_pkt_valid &&
+                        result_pkt_ready &&
+                        (result_pkt_src_core == waiting_core) &&
+                        (result_pkt_flow_id == current_flow_id) &&
+                        (result_pkt_stage_id == current_stage)) begin
+                        accumulator <= result_pkt_value;
                         if (current_stage >= stage_last) begin
                             host_out_valid <= 1'b1;
-                            host_out_flow_id <= waiting_result_flow_id;
-                            host_out_value <= waiting_result_value;
+                            host_out_flow_id <= result_pkt_flow_id;
+                            host_out_value <= result_pkt_value;
                             state <= ST_IDLE;
                         end else begin
                             current_stage <= current_stage + 8'd1;
@@ -665,10 +1320,10 @@ endmodule
 
 def _render_top(project: CompiledProject) -> str:
     module_name = project.config.output_module_name
-    return f"""`timescale 1ns/1ps
+    template = """`timescale 1ns/1ps
 `include "wau_defs.vh"
 
-module {module_name} #(
+module __WAU_TOP_MODULE__ #(
     parameter DATA_WIDTH = `WAU_DATA_WIDTH,
     parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
     parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH,
@@ -692,6 +1347,24 @@ module {module_name} #(
 
     input wire enable_auto_adapt
 );
+    localparam integer CORE_ID_WIDTH = 8;
+    localparam integer COORDINATOR_CORE_INDEX = 0;
+
+    localparam integer CTRL_STAGE_LSB = 0;
+    localparam integer CTRL_IMM_LSB = CTRL_STAGE_LSB + 8;
+    localparam integer CTRL_USE_IMM_LSB = CTRL_IMM_LSB + DATA_WIDTH;
+    localparam integer CTRL_B_LSB = CTRL_USE_IMM_LSB + 1;
+    localparam integer CTRL_A_LSB = CTRL_B_LSB + DATA_WIDTH;
+    localparam integer CTRL_OPCODE_LSB = CTRL_A_LSB + DATA_WIDTH;
+    localparam integer CTRL_FLOW_ID_LSB = CTRL_OPCODE_LSB + OPCODE_WIDTH;
+    localparam integer CTRL_PAYLOAD_WIDTH = CTRL_FLOW_ID_LSB + FLOW_ID_WIDTH;
+
+    localparam integer DATA_FLOW_ID_LSB = 0;
+    localparam integer DATA_STAGE_LSB = DATA_FLOW_ID_LSB + FLOW_ID_WIDTH;
+    localparam integer DATA_VALUE_LSB = DATA_STAGE_LSB + 8;
+    localparam integer DATA_SRC_CORE_LSB = DATA_VALUE_LSB + DATA_WIDTH;
+    localparam integer DATA_PAYLOAD_WIDTH = DATA_SRC_CORE_LSB + CORE_ID_WIDTH;
+
     wire [CORE_COUNT-1:0] core_dispatch_valid;
     wire [CORE_COUNT-1:0] core_dispatch_ready;
     wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_dispatch_flow_id;
@@ -709,6 +1382,42 @@ module {module_name} #(
     wire [CORE_COUNT*DATA_WIDTH-1:0] core_result_value;
     wire [CORE_COUNT-1:0] core_busy;
     wire [CORE_COUNT-1:0] core_cache_hit;
+
+    wire coord_dispatch_valid;
+    wire coord_dispatch_ready;
+    wire [CORE_ID_WIDTH-1:0] coord_dispatch_dst_core;
+    wire [FLOW_ID_WIDTH-1:0] coord_dispatch_flow_id;
+    wire [OPCODE_WIDTH-1:0] coord_dispatch_opcode;
+    wire signed [DATA_WIDTH-1:0] coord_dispatch_a;
+    wire signed [DATA_WIDTH-1:0] coord_dispatch_b;
+    wire coord_dispatch_use_immediate;
+    wire signed [DATA_WIDTH-1:0] coord_dispatch_immediate_b;
+    wire [7:0] coord_dispatch_stage_id;
+
+    wire coord_result_valid;
+    wire coord_result_ready;
+    wire [CORE_ID_WIDTH-1:0] coord_result_src_core;
+    wire [FLOW_ID_WIDTH-1:0] coord_result_flow_id;
+    wire [7:0] coord_result_stage_id;
+    wire signed [DATA_WIDTH-1:0] coord_result_value;
+
+    wire [CORE_COUNT-1:0] ctrl_local_in_valid;
+    wire [CORE_COUNT-1:0] ctrl_local_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] ctrl_local_in_dst;
+    wire [CORE_COUNT*CTRL_PAYLOAD_WIDTH-1:0] ctrl_local_in_payload;
+    wire [CORE_COUNT-1:0] ctrl_local_out_valid;
+    wire [CORE_COUNT-1:0] ctrl_local_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] ctrl_local_out_dst;
+    wire [CORE_COUNT*CTRL_PAYLOAD_WIDTH-1:0] ctrl_local_out_payload;
+
+    wire [CORE_COUNT-1:0] data_local_in_valid;
+    wire [CORE_COUNT-1:0] data_local_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] data_local_in_dst;
+    wire [CORE_COUNT*DATA_PAYLOAD_WIDTH-1:0] data_local_in_payload;
+    wire [CORE_COUNT-1:0] data_local_out_valid;
+    wire [CORE_COUNT-1:0] data_local_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] data_local_out_dst;
+    wire [CORE_COUNT*DATA_PAYLOAD_WIDTH-1:0] data_local_out_payload;
 
     wau_coordinator #(
         .DATA_WIDTH(DATA_WIDTH),
@@ -728,21 +1437,123 @@ module {module_name} #(
         .host_out_flow_id(host_out_flow_id),
         .host_out_value(host_out_value),
         .enable_auto_adapt(enable_auto_adapt),
-        .core_dispatch_valid(core_dispatch_valid),
-        .core_dispatch_ready(core_dispatch_ready),
-        .core_dispatch_flow_id(core_dispatch_flow_id),
-        .core_dispatch_opcode(core_dispatch_opcode),
-        .core_dispatch_a(core_dispatch_a),
-        .core_dispatch_b(core_dispatch_b),
-        .core_dispatch_use_immediate(core_dispatch_use_immediate),
-        .core_dispatch_immediate_b(core_dispatch_immediate_b),
-        .core_dispatch_stage_id(core_dispatch_stage_id),
-        .core_result_valid(core_result_valid),
-        .core_result_ready(core_result_ready),
-        .core_result_flow_id(core_result_flow_id),
-        .core_result_stage_id(core_result_stage_id),
-        .core_result_value(core_result_value),
+        .dispatch_pkt_valid(coord_dispatch_valid),
+        .dispatch_pkt_ready(coord_dispatch_ready),
+        .dispatch_pkt_dst_core(coord_dispatch_dst_core),
+        .dispatch_pkt_flow_id(coord_dispatch_flow_id),
+        .dispatch_pkt_opcode(coord_dispatch_opcode),
+        .dispatch_pkt_a(coord_dispatch_a),
+        .dispatch_pkt_b(coord_dispatch_b),
+        .dispatch_pkt_use_immediate(coord_dispatch_use_immediate),
+        .dispatch_pkt_immediate_b(coord_dispatch_immediate_b),
+        .dispatch_pkt_stage_id(coord_dispatch_stage_id),
+        .result_pkt_valid(coord_result_valid),
+        .result_pkt_ready(coord_result_ready),
+        .result_pkt_src_core(coord_result_src_core),
+        .result_pkt_flow_id(coord_result_flow_id),
+        .result_pkt_stage_id(coord_result_stage_id),
+        .result_pkt_value(coord_result_value),
         .core_busy(core_busy)
+    );
+
+    genvar core_i;
+    generate
+        for (core_i = 0; core_i < CORE_COUNT; core_i = core_i + 1) begin : gen_local_binding
+            if (core_i == COORDINATOR_CORE_INDEX) begin : gen_ctrl_ingress
+                assign ctrl_local_in_valid[core_i] = coord_dispatch_valid;
+                assign coord_dispatch_ready = ctrl_local_in_ready[core_i];
+                assign ctrl_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = coord_dispatch_dst_core;
+                assign ctrl_local_in_payload[(core_i*CTRL_PAYLOAD_WIDTH) +: CTRL_PAYLOAD_WIDTH] = {
+                    coord_dispatch_flow_id,
+                    coord_dispatch_opcode,
+                    coord_dispatch_a,
+                    coord_dispatch_b,
+                    coord_dispatch_use_immediate,
+                    coord_dispatch_immediate_b,
+                    coord_dispatch_stage_id
+                };
+            end else begin : gen_ctrl_ingress_zero
+                assign ctrl_local_in_valid[core_i] = 1'b0;
+                assign ctrl_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+                assign ctrl_local_in_payload[(core_i*CTRL_PAYLOAD_WIDTH) +: CTRL_PAYLOAD_WIDTH] = {CTRL_PAYLOAD_WIDTH{1'b0}};
+            end
+
+            assign core_dispatch_valid[core_i] = ctrl_local_out_valid[core_i];
+            assign ctrl_local_out_ready[core_i] = core_dispatch_ready[core_i];
+            assign core_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH] =
+                ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_FLOW_ID_LSB +: FLOW_ID_WIDTH];
+            assign core_dispatch_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH] =
+                ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_OPCODE_LSB +: OPCODE_WIDTH];
+            assign core_dispatch_a[(core_i*DATA_WIDTH) +: DATA_WIDTH] =
+                ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_A_LSB +: DATA_WIDTH];
+            assign core_dispatch_b[(core_i*DATA_WIDTH) +: DATA_WIDTH] =
+                ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_B_LSB +: DATA_WIDTH];
+            assign core_dispatch_use_immediate[core_i] =
+                ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_USE_IMM_LSB +: 1];
+            assign core_dispatch_immediate_b[(core_i*DATA_WIDTH) +: DATA_WIDTH] =
+                ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_IMM_LSB +: DATA_WIDTH];
+            assign core_dispatch_stage_id[(core_i*8) +: 8] =
+                ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_STAGE_LSB +: 8];
+
+            assign data_local_in_valid[core_i] = core_result_valid[core_i];
+            assign core_result_ready[core_i] = data_local_in_ready[core_i];
+            assign data_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+            assign data_local_in_payload[(core_i*DATA_PAYLOAD_WIDTH) +: DATA_PAYLOAD_WIDTH] = {
+                core_i[CORE_ID_WIDTH-1:0],
+                core_result_value[(core_i*DATA_WIDTH) +: DATA_WIDTH],
+                core_result_stage_id[(core_i*8) +: 8],
+                core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]
+            };
+
+            if (core_i == COORDINATOR_CORE_INDEX) begin : gen_data_egress
+                assign coord_result_valid = data_local_out_valid[core_i];
+                assign data_local_out_ready[core_i] = coord_result_ready;
+                assign coord_result_src_core =
+                    data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_SRC_CORE_LSB +: CORE_ID_WIDTH];
+                assign coord_result_value =
+                    data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_VALUE_LSB +: DATA_WIDTH];
+                assign coord_result_stage_id =
+                    data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_STAGE_LSB +: 8];
+                assign coord_result_flow_id =
+                    data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH];
+            end else begin : gen_data_egress_drop
+                assign data_local_out_ready[core_i] = 1'b1;
+            end
+        end
+    endgenerate
+
+    wau_highway_mesh #(
+        .GRID_X(GRID_X),
+        .GRID_Y(GRID_Y),
+        .CORE_COUNT(CORE_COUNT),
+        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+        .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH)
+    ) control_plane_mesh_u (
+        .local_in_valid(ctrl_local_in_valid),
+        .local_in_ready(ctrl_local_in_ready),
+        .local_in_dst(ctrl_local_in_dst),
+        .local_in_payload(ctrl_local_in_payload),
+        .local_out_valid(ctrl_local_out_valid),
+        .local_out_ready(ctrl_local_out_ready),
+        .local_out_dst(ctrl_local_out_dst),
+        .local_out_payload(ctrl_local_out_payload)
+    );
+
+    wau_highway_mesh #(
+        .GRID_X(GRID_X),
+        .GRID_Y(GRID_Y),
+        .CORE_COUNT(CORE_COUNT),
+        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+        .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH)
+    ) data_plane_mesh_u (
+        .local_in_valid(data_local_in_valid),
+        .local_in_ready(data_local_in_ready),
+        .local_in_dst(data_local_in_dst),
+        .local_in_payload(data_local_in_payload),
+        .local_out_valid(data_local_out_valid),
+        .local_out_ready(data_local_out_ready),
+        .local_out_dst(data_local_out_dst),
+        .local_out_payload(data_local_out_payload)
     );
 
     genvar gy;
@@ -781,11 +1592,104 @@ module {module_name} #(
             end
         end
     endgenerate
-
-    // Highway buses are intentionally left as extension points for future revisions.
-    // The current basis routes stage-to-stage traffic through the coordinator.
 endmodule
 """
+    return template.replace("__WAU_TOP_MODULE__", module_name)
+
+def _render_de0_nano_wrapper(project: CompiledProject) -> str:
+    module_name = project.config.output_module_name
+    template = """`timescale 1ns/1ps
+`include "wau_defs.vh"
+
+module wau_de0_nano_top (
+    input wire CLOCK_50,
+    input wire [1:0] KEY,
+    input wire [3:0] SW,
+    output wire [7:0] LED
+);
+    localparam DATA_WIDTH = `WAU_DATA_WIDTH;
+    localparam FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH;
+
+    wire rst_n;
+    assign rst_n = KEY[0];
+
+    reg host_in_valid;
+    wire host_in_ready;
+    reg [FLOW_ID_WIDTH-1:0] host_in_flow_id;
+    reg signed [DATA_WIDTH-1:0] host_in_a;
+    reg signed [DATA_WIDTH-1:0] host_in_b;
+
+    wire host_out_valid;
+    wire [FLOW_ID_WIDTH-1:0] host_out_flow_id;
+    wire signed [DATA_WIDTH-1:0] host_out_value;
+
+    reg key1_d;
+    reg pending_fire;
+    reg signed [DATA_WIDTH-1:0] last_out;
+    reg [FLOW_ID_WIDTH-1:0] last_flow;
+
+    wire trigger_pulse;
+    assign trigger_pulse = key1_d && !KEY[1];
+
+    always @(posedge CLOCK_50 or negedge rst_n) begin
+        if (!rst_n) begin
+            host_in_valid <= 1'b0;
+            host_in_flow_id <= {FLOW_ID_WIDTH{1'b0}};
+            host_in_a <= {DATA_WIDTH{1'b0}};
+            host_in_b <= {DATA_WIDTH{1'b0}};
+            key1_d <= 1'b1;
+            pending_fire <= 1'b0;
+            last_out <= {DATA_WIDTH{1'b0}};
+            last_flow <= {FLOW_ID_WIDTH{1'b0}};
+        end else begin
+            key1_d <= KEY[1];
+
+            if (trigger_pulse) begin
+                host_in_flow_id <= {{(FLOW_ID_WIDTH-4){1'b0}}, SW};
+                host_in_a <= {{(DATA_WIDTH-4){1'b0}}, SW};
+                host_in_b <= {{(DATA_WIDTH-2){1'b0}}, 2'd3};
+                pending_fire <= 1'b1;
+            end
+
+            if (pending_fire && host_in_ready && !host_in_valid) begin
+                host_in_valid <= 1'b1;
+                pending_fire <= 1'b0;
+            end
+
+            if (host_in_valid && host_in_ready) begin
+                host_in_valid <= 1'b0;
+            end
+
+            if (host_out_valid) begin
+                last_out <= host_out_value;
+                last_flow <= host_out_flow_id;
+            end
+        end
+    end
+
+    assign LED[0] = host_out_valid;
+    assign LED[1] = host_in_ready;
+    assign LED[2] = pending_fire;
+    assign LED[3] = SW[0];
+    assign LED[7:4] = last_out[3:0];
+
+    __WAU_TOP_MODULE__ wau_u (
+        .clk(CLOCK_50),
+        .rst_n(rst_n),
+        .host_in_valid(host_in_valid),
+        .host_in_ready(host_in_ready),
+        .host_in_flow_id(host_in_flow_id),
+        .host_in_a(host_in_a),
+        .host_in_b(host_in_b),
+        .host_out_valid(host_out_valid),
+        .host_out_ready(1'b1),
+        .host_out_flow_id(host_out_flow_id),
+        .host_out_value(host_out_value),
+        .enable_auto_adapt(SW[0])
+    );
+endmodule
+"""
+    return template.replace("__WAU_TOP_MODULE__", module_name)
 
 
 def _render_program_json(project: CompiledProject) -> dict:
@@ -942,11 +1846,17 @@ def emit_verilog(project: CompiledProject, schedule: SchedulePlan, out_dir: Path
     outputs: dict[str, str] = {
         "wau_defs.vh": _render_defs(project),
         "wau_operation_alu.v": _render_operation_alu(project),
+        "wau_neighbor_forward.v": _render_neighbor_forward(),
+        "wau_highway_router.v": _render_highway_router(),
+        "wau_highway_mesh.v": _render_highway_mesh(),
         "wau_core_station.v": _render_core_station(project),
         "wau_core.v": _render_core(),
         "wau_coordinator.v": _render_coordinator(project),
         f"{module_name}.v": _render_top(project),
     }
+
+    if project.config.device.name.lower().startswith("intel_de0_nano"):
+        outputs["wau_de0_nano_top.v"] = _render_de0_nano_wrapper(project)
 
     written_paths: list[Path] = []
     for name, content in outputs.items():

@@ -23,21 +23,24 @@ module wau_coordinator #(
 
     input wire enable_auto_adapt,
 
-    output reg [CORE_COUNT-1:0] core_dispatch_valid,
-    input wire [CORE_COUNT-1:0] core_dispatch_ready,
-    output reg [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_dispatch_flow_id,
-    output reg [CORE_COUNT*OPCODE_WIDTH-1:0] core_dispatch_opcode,
-    output reg [CORE_COUNT*DATA_WIDTH-1:0] core_dispatch_a,
-    output reg [CORE_COUNT*DATA_WIDTH-1:0] core_dispatch_b,
-    output reg [CORE_COUNT-1:0] core_dispatch_use_immediate,
-    output reg [CORE_COUNT*DATA_WIDTH-1:0] core_dispatch_immediate_b,
-    output reg [CORE_COUNT*8-1:0] core_dispatch_stage_id,
+    output reg dispatch_pkt_valid,
+    input wire dispatch_pkt_ready,
+    output reg [7:0] dispatch_pkt_dst_core,
+    output reg [FLOW_ID_WIDTH-1:0] dispatch_pkt_flow_id,
+    output reg [OPCODE_WIDTH-1:0] dispatch_pkt_opcode,
+    output reg signed [DATA_WIDTH-1:0] dispatch_pkt_a,
+    output reg signed [DATA_WIDTH-1:0] dispatch_pkt_b,
+    output reg dispatch_pkt_use_immediate,
+    output reg signed [DATA_WIDTH-1:0] dispatch_pkt_immediate_b,
+    output reg [7:0] dispatch_pkt_stage_id,
 
-    input wire [CORE_COUNT-1:0] core_result_valid,
-    output reg [CORE_COUNT-1:0] core_result_ready,
-    input wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_result_flow_id,
-    input wire [CORE_COUNT*8-1:0] core_result_stage_id,
-    input wire [CORE_COUNT*DATA_WIDTH-1:0] core_result_value,
+    input wire result_pkt_valid,
+    output wire result_pkt_ready,
+    input wire [7:0] result_pkt_src_core,
+    input wire [FLOW_ID_WIDTH-1:0] result_pkt_flow_id,
+    input wire [7:0] result_pkt_stage_id,
+    input wire signed [DATA_WIDTH-1:0] result_pkt_value,
+
     input wire [CORE_COUNT-1:0] core_busy
 );
     localparam ST_IDLE = 2'd0;
@@ -61,15 +64,8 @@ module wau_coordinator #(
 
     reg [7:0] chosen_core;
 
-    wire [FLOW_ID_WIDTH-1:0] waiting_result_flow_id;
-    wire [7:0] waiting_result_stage_id;
-    wire signed [DATA_WIDTH-1:0] waiting_result_value;
-
-    assign waiting_result_flow_id = core_result_flow_id[(waiting_core*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH];
-    assign waiting_result_stage_id = core_result_stage_id[(waiting_core*8) +: 8];
-    assign waiting_result_value = core_result_value[(waiting_core*DATA_WIDTH) +: DATA_WIDTH];
-
     assign host_in_ready = (state == ST_IDLE) && !host_out_valid;
+    assign result_pkt_ready = (state == ST_WAIT_RESULT);
 
     function [7:0] flow_slot_from_id;
         input [FLOW_ID_WIDTH-1:0] flow_id;
@@ -207,32 +203,26 @@ module wau_coordinator #(
     end
 
     always @(*) begin
-        core_dispatch_valid = {CORE_COUNT{1'b0}};
-        core_dispatch_flow_id = {CORE_COUNT*FLOW_ID_WIDTH{1'b0}};
-        core_dispatch_opcode = {CORE_COUNT*OPCODE_WIDTH{1'b0}};
-        core_dispatch_a = {CORE_COUNT*DATA_WIDTH{1'b0}};
-        core_dispatch_b = {CORE_COUNT*DATA_WIDTH{1'b0}};
-        core_dispatch_use_immediate = {CORE_COUNT{1'b0}};
-        core_dispatch_immediate_b = {CORE_COUNT*DATA_WIDTH{1'b0}};
-        core_dispatch_stage_id = {CORE_COUNT*8{1'b0}};
-
-        core_result_ready = {CORE_COUNT{1'b0}};
+        dispatch_pkt_valid = 1'b0;
+        dispatch_pkt_dst_core = 8'd0;
+        dispatch_pkt_flow_id = {FLOW_ID_WIDTH{1'b0}};
+        dispatch_pkt_opcode = {OPCODE_WIDTH{1'b0}};
+        dispatch_pkt_a = {DATA_WIDTH{1'b0}};
+        dispatch_pkt_b = {DATA_WIDTH{1'b0}};
+        dispatch_pkt_use_immediate = 1'b0;
+        dispatch_pkt_immediate_b = {DATA_WIDTH{1'b0}};
+        dispatch_pkt_stage_id = 8'd0;
 
         if (state == ST_DISPATCH && current_flow_slot != 8'hFF) begin
-            if (core_dispatch_ready[chosen_core]) begin
-                core_dispatch_valid[chosen_core] = 1'b1;
-                core_dispatch_flow_id[(chosen_core*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH] = current_flow_id;
-                core_dispatch_opcode[(chosen_core*OPCODE_WIDTH) +: OPCODE_WIDTH] = stage_opcode;
-                core_dispatch_a[(chosen_core*DATA_WIDTH) +: DATA_WIDTH] = accumulator;
-                core_dispatch_b[(chosen_core*DATA_WIDTH) +: DATA_WIDTH] = operand_b;
-                core_dispatch_use_immediate[chosen_core] = stage_use_immediate;
-                core_dispatch_immediate_b[(chosen_core*DATA_WIDTH) +: DATA_WIDTH] = stage_immediate_b;
-                core_dispatch_stage_id[(chosen_core*8) +: 8] = current_stage;
-            end
-        end
-
-        if (state == ST_WAIT_RESULT) begin
-            core_result_ready[waiting_core] = 1'b1;
+            dispatch_pkt_valid = 1'b1;
+            dispatch_pkt_dst_core = chosen_core;
+            dispatch_pkt_flow_id = current_flow_id;
+            dispatch_pkt_opcode = stage_opcode;
+            dispatch_pkt_a = accumulator;
+            dispatch_pkt_b = operand_b;
+            dispatch_pkt_use_immediate = stage_use_immediate;
+            dispatch_pkt_immediate_b = stage_immediate_b;
+            dispatch_pkt_stage_id = current_stage;
         end
     end
 
@@ -271,19 +261,23 @@ module wau_coordinator #(
                 ST_DISPATCH: begin
                     if (current_flow_slot == 8'hFF) begin
                         state <= ST_IDLE;
-                    end else if (core_dispatch_ready[chosen_core]) begin
+                    end else if (dispatch_pkt_valid && dispatch_pkt_ready) begin
                         waiting_core <= chosen_core;
                         state <= ST_WAIT_RESULT;
                     end
                 end
 
                 ST_WAIT_RESULT: begin
-                    if (core_result_valid[waiting_core]) begin
-                        accumulator <= waiting_result_value;
+                    if (result_pkt_valid &&
+                        result_pkt_ready &&
+                        (result_pkt_src_core == waiting_core) &&
+                        (result_pkt_flow_id == current_flow_id) &&
+                        (result_pkt_stage_id == current_stage)) begin
+                        accumulator <= result_pkt_value;
                         if (current_stage >= stage_last) begin
                             host_out_valid <= 1'b1;
-                            host_out_flow_id <= waiting_result_flow_id;
-                            host_out_value <= waiting_result_value;
+                            host_out_flow_id <= result_pkt_flow_id;
+                            host_out_value <= result_pkt_value;
                             state <= ST_IDLE;
                         end else begin
                             current_stage <= current_stage + 8'd1;

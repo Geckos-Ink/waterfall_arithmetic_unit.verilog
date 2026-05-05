@@ -9,7 +9,7 @@ This repository now contains a working foundation for:
 - multi-program scheduling with async dependency-aware execution and recurrence support,
 - offline scheduling (cycle timeline + encoded schedule words),
 - constrained pseudo-C accumulator frontend (`compile-pseudoc`) in addition to expression compilation,
-- Verilog emission for coordinator, core/station, ALU and top-level grid.
+- Verilog emission for coordinator, core/station, ALU, explicit highway routers/links, and top-level grid.
 
 ## Quickstart
 From repository root:
@@ -59,7 +59,14 @@ Run all RTL test cases with `iverilog` (generation + compile + simulation):
 
 This runs:
 - `tests/rtl/tb_wau_operation_alu.v` (ALU opcode behavior),
-- `tests/rtl/tb_wau_top_demo.v` (end-to-end flow execution via coordinator/core grid).
+- `tests/rtl/tb_wau_top_demo.v` (end-to-end flow execution via coordinator/highway/core grid),
+- `tests/rtl/tb_wau_highway_mesh.v` (neighbor forwarding and backpressure on the router mesh).
+
+Run randomized multi-flow scheduler stress and emit a coverage-style summary:
+
+```bash
+./scripts/run_randomized_stress.py --start-seed 2000 --count 25 --report .build/randomized_stress_report.json
+```
 
 Optional direct syntax check of generated RTL:
 
@@ -94,10 +101,14 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 A `generate` run emits:
 - `wau_defs.vh`: project/device/operation constants
 - `wau_operation_alu.v`: arithmetic opcode execution unit
-- `wau_core_station.v`: per-core station (dispatch, latency control, input cache)
+- `wau_neighbor_forward.v`: directional valid/ready packet forwarding link
+- `wau_highway_router.v`: per-core XY router with local/neighbor arbitration
+- `wau_highway_mesh.v`: generated 2D router mesh interconnect
+- `wau_core_station.v`: per-core station (dispatch, latency control, multi-entry input/result cache)
 - `wau_core.v`: core wrapper
-- `wau_coordinator.v`: flow orchestrator with runtime adaptive fallback selection
+- `wau_coordinator.v`: flow orchestrator with runtime adaptive fallback selection and packetized dispatch/result channels
 - `<output_module_name>.v` (demo: `wau_top.v`): top-level 2D core grid
+- `wau_de0_nano_top.v` (for DE0-NANO preset): board wrapper with clock/reset/IO hookups
 - `wau_program.json`: compiled flow program
 - `wau_schedule.json`: human-readable schedule timeline
 - `wau_schedule.hex`: encoded 64-bit schedule words
@@ -132,14 +143,14 @@ Main JSON fields:
 
 ## Current Hardware Scope
 This is a robust **basis**, not final silicon architecture:
-- Stage-to-stage transport currently passes through the coordinator (not full highway/router fabric yet).
+- Control-plane dispatch and data-plane results now traverse explicit neighbor-linked highway meshes with valid/ready backpressure.
 - Runtime adaptation is implemented as primary/fallback/candidate core selection per node, constrained by per-core capability metadata.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
 - Current pseudo-C frontend targets accumulator-style pipelines (`acc = a; acc = acc <op> ...`) to stay compatible with the present coordinator execution model.
 
 ## Next Steps
 Recommended follow-ups:
-1. add explicit highway routers + neighbor packet forwarding modules,
-2. extend station caching policy (multi-entry or tag-based cache),
-3. add randomized multi-flow stress tests and coverage reporting,
-4. integrate board-specific wrappers (e.g. DE0-NANO top with clocks/IO).
+1. add runtime observability counters for highway hops/stalls and cache hit-rate,
+2. extend station caching policy with configurable entry count and replacement policy selection,
+3. connect randomized stress script into CI and archive reports as artifacts,
+4. extend board wrappers with memory-mapped host control/status registers.

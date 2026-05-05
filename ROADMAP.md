@@ -13,6 +13,14 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-05-06)
+Implemented this cycle:
+- Phase 1 slice: explicit highway routing RTL (`wau_highway_router`, `wau_neighbor_forward`, `wau_highway_mesh`) integrated into generated top-level.
+- Phase 1 slice: coordinator migrated to packetized dispatch/result channels over separated control/data planes.
+- Phase 5 slice: station cache upgraded from single-entry signature to multi-entry tag/value cache with hit-based reuse.
+- Phase 3 slice: added dedicated RTL mesh forwarding/backpressure test and randomized multi-flow scheduler stress test + report script.
+- Phase 4 slice: added generated DE0-NANO board wrapper (`wau_de0_nano_top.v`) with clock/reset/IO integration scaffold.
+
 ## Guiding Priorities
 1. Keep generator, compiler, scheduler, and emitted RTL behavior consistent.
 2. Improve correctness and observability before aggressive optimization.
