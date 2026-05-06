@@ -43,6 +43,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - Verilog macros in `wau_defs.vh` must match emitted modules.
 - License headers in `src/**/*.py`, `src/**/*.v`, and `src/**/*.vh` are managed by `scripts/sync_license_headers.py`; run it after each implementation and before review.
 - `run_cw_example_benchmark.sh` must produce a valid `benchmarks/example_pogram_benchmark.txt` log with passing RTL tests and CW execution metrics.
+- Whenever new possible future implementations, optimizations, or architecture changes are identified, update `ROADMAP.md` in the same work cycle.
 
 ## CW Benchmark Objective
 - Primary objective for `scripts/run_cw_example_benchmark.sh`: minimize `exec_latency_cycles_avg`.
@@ -82,5 +83,5 @@ Before finalizing changes:
 - `./scripts/run_cw_example_benchmark.sh` succeeds and refreshes benchmark reference log.
 - `tests/python` unit tests pass.
 - `scripts/run_iverilog_tests.sh` passes.
-- README/AGENTS updated if workflow or architecture changed.
+- README/AGENTS/ROADMAP updated if workflow, architecture, or future implementation direction changed.
 - No manual edits left in generated RTL that are not reproducible.

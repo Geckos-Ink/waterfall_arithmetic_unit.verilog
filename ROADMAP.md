@@ -20,6 +20,89 @@ Implemented this cycle:
 - Phase 5 slice: station cache upgraded from single-entry signature to multi-entry tag/value cache with hit-based reuse.
 - Phase 3 slice: added dedicated RTL mesh forwarding/backpressure test and randomized multi-flow scheduler stress test + report script.
 - Phase 4 slice: added generated DE0-NANO board wrapper (`wau_de0_nano_top.v`) with clock/reset/IO integration scaffold.
+- CW benchmark workflow slice: `run_cw_example_benchmark.sh` now executes compile/validate/generate/RTL execution checks and writes persistent latest reference log.
+- CW autotuning slice: benchmark script supports tuning sweeps (`TUNE_MODE=1`) and persists best-run + full sweep summary.
+- CW syntax slice: `.cw` pragma support for lane tuning (`// @wau lane_parallelism=<N>`), with CLI override precedence.
+
+## CW Compiler and Benchmark Next Steps (2026-05-06+)
+Goal: move from reference-level CW lowering to deeper, reproducible, performance-oriented compilation and execution validation.
+
+### Track A: CW Syntax and Grammar Maturity
+Scope:
+- Formalize a minimal `.cw` grammar contract (token/statement rules) beyond regex-symbol presence checks.
+- Add structured pragmas for compilation intent:
+  - `@wau lane_parallelism=<N>` (already supported),
+  - `@wau max_in_flight=<N>`,
+  - `@wau preferred_dtype=<name>`,
+  - `@wau placement_policy=<locality|balance|manual>`.
+- Add parse diagnostics with line-aware errors and suggestion text.
+
+Acceptance:
+- Invalid syntax/pragma inputs produce deterministic, line-located errors.
+- New parser tests cover valid/invalid pragmas and backward compatibility with current `example-pogram.cw`.
+
+### Track B: Deeper CW-to-Flow Lowering
+Scope:
+- Extend lowering from coarse node templates to phase-aware kernel decomposition:
+  - explicit load/compute/store groups,
+  - lane fan-out/fan-in nodes with configurable reduction strategy,
+  - data-movement vs arithmetic op tagging in `cw_hints`.
+- Introduce optional lowering profiles (`reference`, `latency_optimized`, `throughput_optimized`).
+- Add compile-time sanity checks for inferred parallelism vs grid capacity to avoid pathological over-subscription.
+
+Acceptance:
+- Lowered graphs remain valid for `validate`/`generate` across at least two device presets.
+- `cw_hints` include profile, lane source (pragma/CLI/default), and effective lowering decisions.
+- No regressions in existing CW and RTL tests.
+
+### Track C: Scheduler and Placement for CW Workloads
+Scope:
+- Add CW-aware cost heuristics:
+  - lane locality weighting,
+  - fallback penalty minimization,
+  - memory-path pressure balancing.
+- Tune recurrent-node handling to reduce schedule inflation under multiprogram contention.
+- Export additional schedule metrics for CW flows:
+  - per-flow fallback ratio,
+  - estimated transfer-hop count,
+  - critical path by node id.
+
+Acceptance:
+- New metrics are emitted in benchmark logs.
+- Measurable cycle/makespan reduction on `example-pogram.cw` relative to baseline profile.
+
+### Track D: Benchmarking and Performance Quality Gates
+Scope:
+- Extend benchmark output with reproducibility metadata:
+  - selected tuning profile,
+  - compile knobs used,
+  - benchmark ranking score.
+- Add multi-run statistics mode (`N` repeated runs, median/p95 latency) for stability checks.
+- Add optional guardrail thresholds:
+  - fail benchmark if `exec_latency_cycles_avg` regresses over configurable baseline.
+- Persist and compare historical bests in a machine-readable sidecar (JSON) for CI trend checks.
+
+Acceptance:
+- `run_cw_example_benchmark.sh` can run in:
+  - single-run reference mode,
+  - autotune mode,
+  - regression-check mode.
+- CI-ready output is available for parsing pass/fail and score deltas.
+
+### Track E: Execution Correctness Depth
+Scope:
+- Add CW-specific software reference model for smoke vector validation against RTL output values.
+- Expand execution testbench vectors (signed/zero/mixed stress, boundary values, recurrent stress).
+- Add deterministic replay command for best/worst tuning runs from summary files.
+
+Acceptance:
+- CW execution checks validate both timing and value correctness (not timing only).
+- Failing vectors include replay parameters and seed in logs.
+
+### Near-Term Targets
+1. Keep best-known `exec_latency_cycles_avg` at or below `106.67` while preserving pass status for all RTL tests.
+2. Introduce at least one additional grammar pragma and full test coverage for it.
+3. Add one new CW benchmark metric that quantifies placement quality (fallback or hops).
 
 ## Guiding Priorities
 1. Keep generator, compiler, scheduler, and emitted RTL behavior consistent.
