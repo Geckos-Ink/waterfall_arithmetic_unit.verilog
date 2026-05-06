@@ -1,6 +1,7 @@
 // WAU reference program (proposed .cw syntax)
 // Real-life kernel: tiled Conv2D + Bias + Residual + ReLU.
 // Goal: provide compiler-oriented structure for concurrency and memory placement.
+// @wau lane_parallelism=4
 
 void main() {
     int H = 224;

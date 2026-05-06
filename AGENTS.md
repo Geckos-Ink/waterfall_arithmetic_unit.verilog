@@ -21,6 +21,9 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
    - `PYTHONPATH=src/python python3 -m waugen generate --config <config.json> --out src/verilog/generated --summary`
 8. Run RTL tests when RTL, scheduler, or flow semantics change:
    - `./scripts/run_iverilog_tests.sh`
+9. For CW kernel performance validation/tuning, run and persist the benchmark reference:
+   - `./scripts/run_cw_example_benchmark.sh`
+   - optional autotune sweep for best score: `TUNE_MODE=1 ./scripts/run_cw_example_benchmark.sh`
 
 ## Ownership Boundaries
 - `config.py`: schema and validation only.
@@ -39,6 +42,19 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - Compiler core capability constraints must reference existing operations/data types.
 - Verilog macros in `wau_defs.vh` must match emitted modules.
 - License headers in `src/**/*.py`, `src/**/*.v`, and `src/**/*.vh` are managed by `scripts/sync_license_headers.py`; run it after each implementation and before review.
+- `run_cw_example_benchmark.sh` must produce a valid `benchmarks/example_pogram_benchmark.txt` log with passing RTL tests and CW execution metrics.
+
+## CW Benchmark Objective
+- Primary objective for `scripts/run_cw_example_benchmark.sh`: minimize `exec_latency_cycles_avg`.
+- Secondary tie-breakers: lower `makespan_cycles`, then lower `total_ms`.
+- Always keep `benchmarks/example_pogram_benchmark.txt` updated to the latest best known run when tuning is performed.
+- Keep `benchmarks/example_pogram_tuning_latest.txt` as the full sweep/reference summary when autotune mode is used.
+
+Current best-known score (as of 2026-05-06, from `TUNE_MODE=1` sweep):
+- `cw_lane_parallelism_requested=4` (via `.cw` pragma), `program_replicas=2`, `program_max_parallel_flows=1`
+- `exec_latency_cycles_avg=106.67` (min `96`, max `112`)
+- `makespan_cycles=43`
+- `total_ms=1082`
 
 ## Extension Rules
 When adding a new arithmetic operation:
@@ -63,6 +79,7 @@ Before finalizing changes:
 - `python3 scripts/sync_license_headers.py --check` succeeds.
 - `validate` succeeds.
 - `generate` succeeds.
+- `./scripts/run_cw_example_benchmark.sh` succeeds and refreshes benchmark reference log.
 - `tests/python` unit tests pass.
 - `scripts/run_iverilog_tests.sh` passes.
 - README/AGENTS updated if workflow or architecture changed.

@@ -1,0 +1,30 @@
+WAU CW Autotune Summary (latest)
+run_utc: 2026-05-06T12:28:16Z
+search_lanes: 4,6,8,10
+search_program_replicas: 1,2
+search_program_max_parallel: 1,2
+
+Top Candidates (lowest exec latency avg, then makespan, then total_ms)
+1. run=r3_l4_rep2_mp1 lane=4 replicas=2 max_parallel=1 exec_latency_avg=106.67 makespan=43 total_ms=1082
+2. run=r2_l4_rep1_mp2 lane=4 replicas=1 max_parallel=2 exec_latency_avg=106.67 makespan=43 total_ms=1087
+3. run=r1_l4_rep1_mp1 lane=4 replicas=1 max_parallel=1 exec_latency_avg=106.67 makespan=43 total_ms=1181
+4. run=r4_l4_rep2_mp2 lane=4 replicas=2 max_parallel=2 exec_latency_avg=106.67 makespan=78 total_ms=1161
+5. run=r7_l6_rep2_mp1 lane=6 replicas=2 max_parallel=1 exec_latency_avg=145.00 makespan=44 total_ms=1291
+
+All Runs
+run=r1_l4_rep1_mp1 status=pass lane=4 replicas=1 max_parallel=1 exec_latency_avg=106.67 makespan=43 total_ms=1181 bench=.build/cw_tune/r1_l4_rep1_mp1.txt
+run=r2_l4_rep1_mp2 status=pass lane=4 replicas=1 max_parallel=2 exec_latency_avg=106.67 makespan=43 total_ms=1087 bench=.build/cw_tune/r2_l4_rep1_mp2.txt
+run=r3_l4_rep2_mp1 status=pass lane=4 replicas=2 max_parallel=1 exec_latency_avg=106.67 makespan=43 total_ms=1082 bench=.build/cw_tune/r3_l4_rep2_mp1.txt
+run=r4_l4_rep2_mp2 status=pass lane=4 replicas=2 max_parallel=2 exec_latency_avg=106.67 makespan=78 total_ms=1161 bench=.build/cw_tune/r4_l4_rep2_mp2.txt
+run=r5_l6_rep1_mp1 status=pass lane=6 replicas=1 max_parallel=1 exec_latency_avg=145.00 makespan=44 total_ms=1344 bench=.build/cw_tune/r5_l6_rep1_mp1.txt
+run=r6_l6_rep1_mp2 status=pass lane=6 replicas=1 max_parallel=2 exec_latency_avg=145.00 makespan=44 total_ms=1324 bench=.build/cw_tune/r6_l6_rep1_mp2.txt
+run=r7_l6_rep2_mp1 status=pass lane=6 replicas=2 max_parallel=1 exec_latency_avg=145.00 makespan=44 total_ms=1291 bench=.build/cw_tune/r7_l6_rep2_mp1.txt
+run=r8_l6_rep2_mp2 status=pass lane=6 replicas=2 max_parallel=2 exec_latency_avg=145.00 makespan=79 total_ms=1290 bench=.build/cw_tune/r8_l6_rep2_mp2.txt
+run=r9_l8_rep1_mp1 status=pass lane=8 replicas=1 max_parallel=1 exec_latency_avg=181.67 makespan=44 total_ms=1515 bench=.build/cw_tune/r9_l8_rep1_mp1.txt
+run=r10_l8_rep1_mp2 status=pass lane=8 replicas=1 max_parallel=2 exec_latency_avg=181.67 makespan=44 total_ms=1406 bench=.build/cw_tune/r10_l8_rep1_mp2.txt
+run=r11_l8_rep2_mp1 status=pass lane=8 replicas=2 max_parallel=1 exec_latency_avg=181.67 makespan=44 total_ms=1508 bench=.build/cw_tune/r11_l8_rep2_mp1.txt
+run=r12_l8_rep2_mp2 status=pass lane=8 replicas=2 max_parallel=2 exec_latency_avg=181.67 makespan=80 total_ms=1525 bench=.build/cw_tune/r12_l8_rep2_mp2.txt
+run=r13_l10_rep1_mp1 status=pass lane=10 replicas=1 max_parallel=1 exec_latency_avg=220.00 makespan=45 total_ms=1696 bench=.build/cw_tune/r13_l10_rep1_mp1.txt
+run=r14_l10_rep1_mp2 status=pass lane=10 replicas=1 max_parallel=2 exec_latency_avg=220.00 makespan=45 total_ms=1639 bench=.build/cw_tune/r14_l10_rep1_mp2.txt
+run=r15_l10_rep2_mp1 status=pass lane=10 replicas=2 max_parallel=1 exec_latency_avg=220.00 makespan=45 total_ms=1630 bench=.build/cw_tune/r15_l10_rep2_mp1.txt
+run=r16_l10_rep2_mp2 status=pass lane=10 replicas=2 max_parallel=2 exec_latency_avg=220.00 makespan=81 total_ms=1590 bench=.build/cw_tune/r16_l10_rep2_mp2.txt

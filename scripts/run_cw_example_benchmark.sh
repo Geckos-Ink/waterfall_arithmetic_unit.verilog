@@ -8,16 +8,25 @@ CW_FILE="${1:-docs/example-pogram.cw}"
 BASE_CONFIG="${2:-src/python/configs/wau_2d_multiprogram_demo.json}"
 OUT_CONFIG="${3:-src/python/configs/wau_example_pogram_compiled.json}"
 BENCH_FILE="${4:-benchmarks/example_pogram_benchmark.txt}"
-OUT_DIR=".build/cw_example_generated"
+OUT_DIR="${OUT_DIR:-.build/cw_example_generated}"
 
 FLOW_ID="${FLOW_ID:-90}"
 PROGRAM_ID="${PROGRAM_ID:-90}"
 PROGRAM_REPLICAS="${PROGRAM_REPLICAS:-2}"
-PROGRAM_MAX_PARALLEL="${PROGRAM_MAX_PARALLEL:-2}"
+PROGRAM_MAX_PARALLEL="${PROGRAM_MAX_PARALLEL:-1}"
 EXEC_FLOW_ID="${EXEC_FLOW_ID:-$FLOW_ID}"
 EXEC_TIMEOUT_CYCLES="${EXEC_TIMEOUT_CYCLES:-5000}"
+CW_MAX_IN_FLIGHT="${CW_MAX_IN_FLIGHT:-4}"
+CW_LANE_PARALLELISM="${CW_LANE_PARALLELISM:-}"
+CW_DTYPE="${CW_DTYPE:-}"
 
-BUILD_DIR=".build/cw_iverilog"
+TUNE_MODE="${TUNE_MODE:-0}"
+TUNE_LANE_PARALLELISM_SET="${TUNE_LANE_PARALLELISM_SET:-4,6,8,10}"
+TUNE_PROGRAM_REPLICAS_SET="${TUNE_PROGRAM_REPLICAS_SET:-1,2,3}"
+TUNE_PROGRAM_MAX_PARALLEL_SET="${TUNE_PROGRAM_MAX_PARALLEL_SET:-1,2,3}"
+TUNE_SUMMARY_FILE="${TUNE_SUMMARY_FILE:-benchmarks/example_pogram_tuning_latest.txt}"
+
+BUILD_DIR="${BUILD_DIR:-.build/cw_iverilog}"
 ALU_LOG="$BUILD_DIR/tb_wau_operation_alu.run.log"
 MESH_LOG="$BUILD_DIR/tb_wau_highway_mesh.run.log"
 EXEC_LOG="$BUILD_DIR/tb_wau_cw_compiled_exec.run.log"
@@ -54,23 +63,227 @@ run_test() {
   fi
 }
 
+trim_csv_token() {
+  local token="$1"
+  token="${token#"${token%%[![:space:]]*}"}"
+  token="${token%"${token##*[![:space:]]}"}"
+  echo "$token"
+}
+
+if [[ "$TUNE_MODE" == "1" ]]; then
+  echo "[cw-bench] tune mode enabled"
+  TUNE_ROOT=".build/cw_tune"
+  TUNE_ROWS="$TUNE_ROOT/rows.csv"
+  mkdir -p "$TUNE_ROOT" "$(dirname "$TUNE_SUMMARY_FILE")"
+  : > "$TUNE_ROWS"
+
+  IFS=',' read -r -a tune_lanes_raw <<< "$TUNE_LANE_PARALLELISM_SET"
+  IFS=',' read -r -a tune_replicas_raw <<< "$TUNE_PROGRAM_REPLICAS_SET"
+  IFS=',' read -r -a tune_max_parallel_raw <<< "$TUNE_PROGRAM_MAX_PARALLEL_SET"
+
+  run_idx=0
+  for lane_raw in "${tune_lanes_raw[@]}"; do
+    lane="$(trim_csv_token "$lane_raw")"
+    [[ -n "$lane" ]] || continue
+    for rep_raw in "${tune_replicas_raw[@]}"; do
+      rep="$(trim_csv_token "$rep_raw")"
+      [[ -n "$rep" ]] || continue
+      for mp_raw in "${tune_max_parallel_raw[@]}"; do
+        mp="$(trim_csv_token "$mp_raw")"
+        [[ -n "$mp" ]] || continue
+
+        run_idx=$((run_idx + 1))
+        run_name="r${run_idx}_l${lane}_rep${rep}_mp${mp}"
+        run_bench="$TUNE_ROOT/${run_name}.txt"
+        run_out_dir="$TUNE_ROOT/${run_name}_generated"
+        run_build_dir="$TUNE_ROOT/${run_name}_iverilog"
+
+        echo "[cw-bench][tune] run=${run_name}"
+
+        if TUNE_MODE=0 \
+          CW_LANE_PARALLELISM="$lane" \
+          PROGRAM_REPLICAS="$rep" \
+          PROGRAM_MAX_PARALLEL="$mp" \
+          OUT_DIR="$run_out_dir" \
+          BUILD_DIR="$run_build_dir" \
+          "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$run_bench"; then
+          lat_avg="$(awk -F': ' '/^exec_latency_cycles_avg:/{print $2}' "$run_bench" | tail -n 1)"
+          makespan="$(awk -F': ' '/^makespan_cycles:/{print $2}' "$run_bench" | tail -n 1)"
+          total_ms="$(awk -F': ' '/^total_ms:/{print $2}' "$run_bench" | tail -n 1)"
+          echo "${run_name},${lane},${rep},${mp},pass,${lat_avg},${makespan},${total_ms},${run_bench}" >> "$TUNE_ROWS"
+        else
+          echo "${run_name},${lane},${rep},${mp},fail,inf,inf,inf,${run_bench}" >> "$TUNE_ROWS"
+        fi
+      done
+    done
+  done
+
+  export CW_TUNE_ROWS="$TUNE_ROWS"
+  export CW_TUNE_TARGET_BENCH="$BENCH_FILE"
+  export CW_TUNE_SUMMARY_FILE="$TUNE_SUMMARY_FILE"
+  export CW_TUNE_LANE_SET="$TUNE_LANE_PARALLELISM_SET"
+  export CW_TUNE_REPLICA_SET="$TUNE_PROGRAM_REPLICAS_SET"
+  export CW_TUNE_MAX_PARALLEL_SET="$TUNE_PROGRAM_MAX_PARALLEL_SET"
+  python3 - <<'PY'
+from __future__ import annotations
+
+import csv
+import datetime as dt
+import os
+from pathlib import Path
+
+rows_path = Path(os.environ["CW_TUNE_ROWS"])
+target_bench = Path(os.environ["CW_TUNE_TARGET_BENCH"])
+summary_path = Path(os.environ["CW_TUNE_SUMMARY_FILE"])
+lane_set = os.environ["CW_TUNE_LANE_SET"]
+rep_set = os.environ["CW_TUNE_REPLICA_SET"]
+mp_set = os.environ["CW_TUNE_MAX_PARALLEL_SET"]
+
+rows: list[dict[str, str]] = []
+with rows_path.open(newline="") as f:
+    reader = csv.reader(f)
+    for run_name, lane, rep, mp, status, lat_avg, makespan, total_ms, bench_path in reader:
+        rows.append(
+            {
+                "run_name": run_name,
+                "lane": lane,
+                "rep": rep,
+                "mp": mp,
+                "status": status,
+                "lat_avg": lat_avg,
+                "makespan": makespan,
+                "total_ms": total_ms,
+                "bench_path": bench_path,
+            }
+        )
+
+
+def as_float(value: str) -> float:
+    if value == "inf":
+        return float("inf")
+    return float(value)
+
+
+def as_int(value: str) -> int:
+    if value == "inf":
+        return 2**31 - 1
+    return int(float(value))
+
+
+passing = [row for row in rows if row["status"] == "pass"]
+if not passing:
+    raise SystemExit("No successful tuning runs found")
+
+passing_sorted = sorted(
+    passing,
+    key=lambda row: (as_float(row["lat_avg"]), as_int(row["makespan"]), as_int(row["total_ms"])),
+)
+best = passing_sorted[0]
+best_path = Path(best["bench_path"])
+if not best_path.exists():
+    raise SystemExit(f"Best benchmark file missing: {best_path}")
+
+best_text = best_path.read_text()
+tuning_section = [
+    "",
+    "Tuning Selection",
+    "tune_mode: 1",
+    f"search_lanes: {lane_set}",
+    f"search_program_replicas: {rep_set}",
+    f"search_program_max_parallel: {mp_set}",
+    f"best_run: {best['run_name']}",
+    f"best_lane_parallelism: {best['lane']}",
+    f"best_program_replicas: {best['rep']}",
+    f"best_program_max_parallel: {best['mp']}",
+    f"best_exec_latency_cycles_avg: {best['lat_avg']}",
+    f"best_makespan_cycles: {best['makespan']}",
+    f"best_total_ms: {best['total_ms']}",
+]
+target_bench.write_text(best_text.rstrip() + "\n" + "\n".join(tuning_section) + "\n")
+
+summary_lines = [
+    "WAU CW Autotune Summary (latest)",
+    f"run_utc: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')}",
+    f"search_lanes: {lane_set}",
+    f"search_program_replicas: {rep_set}",
+    f"search_program_max_parallel: {mp_set}",
+    "",
+    "Top Candidates (lowest exec latency avg, then makespan, then total_ms)",
+]
+for idx, row in enumerate(passing_sorted[:5], start=1):
+    summary_lines.append(
+        f"{idx}. run={row['run_name']} lane={row['lane']} replicas={row['rep']} "
+        f"max_parallel={row['mp']} exec_latency_avg={row['lat_avg']} "
+        f"makespan={row['makespan']} total_ms={row['total_ms']}"
+    )
+
+summary_lines.append("")
+summary_lines.append("All Runs")
+for row in rows:
+    summary_lines.append(
+        f"run={row['run_name']} status={row['status']} lane={row['lane']} "
+        f"replicas={row['rep']} max_parallel={row['mp']} "
+        f"exec_latency_avg={row['lat_avg']} makespan={row['makespan']} total_ms={row['total_ms']} "
+        f"bench={row['bench_path']}"
+    )
+
+summary_path.write_text("\n".join(summary_lines) + "\n")
+print(
+    "[cw-bench][tune] best "
+    f"lane={best['lane']} replicas={best['rep']} max_parallel={best['mp']} "
+    f"exec_latency_avg={best['lat_avg']} makespan={best['makespan']} total_ms={best['total_ms']}"
+)
+print(f"[cw-bench][tune] wrote latest benchmark: {target_bench}")
+print(f"[cw-bench][tune] wrote tuning summary: {summary_path}")
+PY
+
+  best_lane="$(awk -F': ' '/^best_lane_parallelism:/{print $2}' "$BENCH_FILE" | tail -n 1)"
+  best_rep="$(awk -F': ' '/^best_program_replicas:/{print $2}' "$BENCH_FILE" | tail -n 1)"
+  best_mp="$(awk -F': ' '/^best_program_max_parallel:/{print $2}' "$BENCH_FILE" | tail -n 1)"
+  if [[ -n "$best_lane" && -n "$best_rep" && -n "$best_mp" ]]; then
+    echo "[cw-bench][tune] refreshing OUT_CONFIG with best candidate"
+    TUNE_MODE=0 \
+      CW_LANE_PARALLELISM="$best_lane" \
+      PROGRAM_REPLICAS="$best_rep" \
+      PROGRAM_MAX_PARALLEL="$best_mp" \
+      OUT_DIR="$OUT_DIR" \
+      BUILD_DIR="$BUILD_DIR" \
+      "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$TUNE_ROOT/best_refresh.txt" >/dev/null
+  fi
+
+  echo "[cw-bench] done (tune mode)"
+  exit 0
+fi
+
 echo "[cw-bench] compile-cw"
 t0="$(now_ns)"
-python3 -m waugen compile-cw \
-  --program-file "$CW_FILE" \
-  --flow-id "$FLOW_ID" \
-  --name "cw_conv2d_residual_reference" \
-  --entry "0,0" \
-  --max-in-flight 4 \
-  --base-config "$BASE_CONFIG" \
-  --out-config "$OUT_CONFIG" \
-  --replace-existing \
-  --program-id "$PROGRAM_ID" \
-  --program-name "cw_reference_program" \
-  --program-priority 3 \
-  --program-replicas "$PROGRAM_REPLICAS" \
-  --program-max-parallel-flows "$PROGRAM_MAX_PARALLEL" \
+compile_cmd=(
+  python3 -m waugen compile-cw
+  --program-file "$CW_FILE"
+  --flow-id "$FLOW_ID"
+  --name "cw_conv2d_residual_reference"
+  --entry "0,0"
+  --max-in-flight "$CW_MAX_IN_FLIGHT"
+  --base-config "$BASE_CONFIG"
+  --out-config "$OUT_CONFIG"
+  --replace-existing
+  --program-id "$PROGRAM_ID"
+  --program-name "cw_reference_program"
+  --program-priority 3
+  --program-replicas "$PROGRAM_REPLICAS"
+  --program-max-parallel-flows "$PROGRAM_MAX_PARALLEL"
   --program-load-balance least_busy
+)
+
+if [[ -n "$CW_DTYPE" ]]; then
+  compile_cmd+=(--dtype "$CW_DTYPE")
+fi
+
+if [[ -n "$CW_LANE_PARALLELISM" ]]; then
+  compile_cmd+=(--lane-parallelism "$CW_LANE_PARALLELISM")
+fi
+
+"${compile_cmd[@]}"
 t1="$(now_ns)"
 
 echo "[cw-bench] validate"
@@ -323,7 +536,12 @@ export CW_BENCH_OUT_CONFIG="$OUT_CONFIG"
 export CW_BENCH_OUT_DIR="$OUT_DIR"
 export CW_BENCH_FLOW_ID="$FLOW_ID"
 export CW_BENCH_PROGRAM_ID="$PROGRAM_ID"
+export CW_BENCH_PROGRAM_REPLICAS="$PROGRAM_REPLICAS"
+export CW_BENCH_PROGRAM_MAX_PARALLEL="$PROGRAM_MAX_PARALLEL"
 export CW_BENCH_EXEC_FLOW_ID="$EXEC_FLOW_ID"
+export CW_BENCH_CW_MAX_IN_FLIGHT="$CW_MAX_IN_FLIGHT"
+export CW_BENCH_CW_LANE_PARALLELISM="$CW_LANE_PARALLELISM"
+export CW_BENCH_CW_DTYPE="$CW_DTYPE"
 export CW_BENCH_COMPILE_MS="$compile_ms"
 export CW_BENCH_VALIDATE_MS="$validate_ms"
 export CW_BENCH_GENERATE_MS="$generate_ms"
@@ -395,7 +613,12 @@ out_config = Path(os.environ["CW_BENCH_OUT_CONFIG"])
 out_dir = Path(os.environ["CW_BENCH_OUT_DIR"])
 flow_id = int(os.environ["CW_BENCH_FLOW_ID"])
 program_id = int(os.environ["CW_BENCH_PROGRAM_ID"])
+program_replicas = int(os.environ["CW_BENCH_PROGRAM_REPLICAS"])
+program_max_parallel = int(os.environ["CW_BENCH_PROGRAM_MAX_PARALLEL"])
 exec_flow_id = int(os.environ["CW_BENCH_EXEC_FLOW_ID"])
+cw_max_in_flight = int(os.environ["CW_BENCH_CW_MAX_IN_FLIGHT"])
+cw_lane_parallelism_requested = os.environ["CW_BENCH_CW_LANE_PARALLELISM"] or "auto"
+cw_dtype_requested = os.environ["CW_BENCH_CW_DTYPE"] or "auto"
 
 compile_ms = int(os.environ["CW_BENCH_COMPILE_MS"])
 validate_ms = int(os.environ["CW_BENCH_VALIDATE_MS"])
@@ -477,6 +700,11 @@ lines = [
     "Workload/Program",
     f"flow_id: {flow_id}",
     f"program_id: {program_id}",
+    f"program_replicas: {program_replicas}",
+    f"program_max_parallel_flows: {program_max_parallel}",
+    f"cw_max_in_flight: {cw_max_in_flight}",
+    f"cw_lane_parallelism_requested: {cw_lane_parallelism_requested}",
+    f"cw_dtype_requested: {cw_dtype_requested}",
     f"compiled_nodes: {node_count}",
     f"lane_parallelism_compiled: {lane_parallelism}",
     f"dtype: {dtype}",

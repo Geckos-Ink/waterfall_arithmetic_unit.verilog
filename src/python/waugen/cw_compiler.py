@@ -30,6 +30,7 @@ class CWKernelSpec:
     has_residual: bool
     has_relu: bool
     has_double_buffering: bool
+    preferred_lane_parallelism: int | None
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,17 @@ def _extract_kernel_name(source: str) -> str:
     return match.group(1)
 
 
+def _extract_wau_pragma_int(program: str, key: str) -> int | None:
+    pattern = re.compile(
+        rf"^\s*//\s*@wau\s+{re.escape(key)}\s*=\s*(-?\d+)\s*$",
+        re.MULTILINE,
+    )
+    match = pattern.search(program)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
 def _extract_workload_shape(source: str) -> CWWorkloadShape:
     return CWWorkloadShape(
         h=_extract_int_assignment(source, "H"),
@@ -88,6 +100,7 @@ def _extract_workload_shape(source: str) -> CWWorkloadShape:
 
 def parse_cw_program(program: str) -> tuple[CWKernelSpec, CWWorkloadShape]:
     cleaned = _strip_comments(program)
+    pragma_lane_parallelism = _extract_wau_pragma_int(program, "lane_parallelism")
 
     required_symbols = (
         "load_input_block(",
@@ -119,6 +132,8 @@ def parse_cw_program(program: str) -> tuple[CWKernelSpec, CWWorkloadShape]:
         raise CWCompilerError("CIN_BLOCK and COUT_BLOCK must be >= 1")
     if worker_count < 1:
         raise CWCompilerError("workers[N] must have N >= 1")
+    if pragma_lane_parallelism is not None and pragma_lane_parallelism < 1:
+        raise CWCompilerError("@wau lane_parallelism must be >= 1")
 
     spec = CWKernelSpec(
         kernel_name=kernel_name,
@@ -132,6 +147,7 @@ def parse_cw_program(program: str) -> tuple[CWKernelSpec, CWWorkloadShape]:
         has_residual="residual" in cleaned,
         has_relu=("v < 0.0f" in cleaned) or ("max(" in cleaned),
         has_double_buffering=("input_tile_ping" in cleaned and "input_tile_pong" in cleaned),
+        preferred_lane_parallelism=pragma_lane_parallelism,
     )
     shape = _extract_workload_shape(cleaned)
     return spec, shape
@@ -203,7 +219,15 @@ def build_flow_from_cw_program(
     if grid_x < 1 or grid_y < 1:
         raise CWCompilerError("grid dimensions must be >= 1")
 
-    lanes = lane_parallelism if lane_parallelism is not None else spec.worker_count
+    lanes = (
+        lane_parallelism
+        if lane_parallelism is not None
+        else (
+            spec.preferred_lane_parallelism
+            if spec.preferred_lane_parallelism is not None
+            else spec.worker_count
+        )
+    )
     lanes = max(1, lanes)
     lanes = min(lanes, max(1, grid_x * grid_y * 2))
 
@@ -422,6 +446,7 @@ def build_flow_from_cw_program(
             "cin_block": spec.cin_block,
             "cout_block": spec.cout_block,
             "worker_count_declared": spec.worker_count,
+            "lane_parallelism_preferred": spec.preferred_lane_parallelism,
             "lane_parallelism_compiled": lanes,
             "double_buffering": spec.has_double_buffering,
             "prefetch": spec.has_prefetch,

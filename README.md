@@ -99,6 +99,22 @@ This script updates `benchmarks/example_pogram_benchmark.txt` as the persistent 
 - schedule metrics,
 - effective CW execution smoke-benchmark latency/results from generated RTL simulation.
 
+Run autotune sweep to search best score (lowest `exec_latency_cycles_avg`, then `makespan_cycles`, then `total_ms`):
+
+```bash
+TUNE_MODE=1 ./scripts/run_cw_example_benchmark.sh
+```
+
+Autotune writes:
+- best/latest benchmark log: `benchmarks/example_pogram_benchmark.txt`
+- full sweep summary: `benchmarks/example_pogram_tuning_latest.txt`
+
+Manual tuning knobs are available as environment variables:
+- `CW_LANE_PARALLELISM` (example: `4`)
+- `PROGRAM_REPLICAS` and `PROGRAM_MAX_PARALLEL`
+- `CW_MAX_IN_FLIGHT`
+- `CW_DTYPE`
+
 Optional direct syntax check of generated RTL:
 
 ```bash
@@ -173,6 +189,15 @@ Main JSON fields:
 - `programs`
   - `id`, `name`, `flows`, `priority`, `replicas`, `max_parallel_flows`, `load_balance`
   - `allow_async`, `allow_out_of_order`
+
+## CW Syntax Tuning Hint
+`compile-cw` supports an optional `.cw` pragma comment for practical tuning:
+
+```c
+// @wau lane_parallelism=4
+```
+
+CLI `--lane-parallelism` still overrides the pragma when explicitly set.
 
 ## Current Hardware Scope
 This is a robust **basis**, not final silicon architecture:
