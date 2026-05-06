@@ -212,3 +212,8 @@ Recommended follow-ups:
 2. extend station caching policy with configurable entry count and replacement policy selection,
 3. connect randomized stress script into CI and archive reports as artifacts,
 4. extend board wrappers with memory-mapped host control/status registers.
+
+---
+
+## License
+PolyForm Noncommercial License 1.0.0 - Copyright 2026 Riccardo Cecchini <cekkr>
