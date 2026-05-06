@@ -94,6 +94,11 @@ Run fast end-to-end compile/validate/generate/RTL checks for the `.cw` reference
 ./scripts/run_cw_example_benchmark.sh
 ```
 
+This script updates `benchmarks/example_pogram_benchmark.txt` as the persistent latest-reference log, including:
+- compile/validate/generate timing,
+- schedule metrics,
+- effective CW execution smoke-benchmark latency/results from generated RTL simulation.
+
 Optional direct syntax check of generated RTL:
 
 ```bash

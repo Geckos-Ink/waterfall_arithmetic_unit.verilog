@@ -1,5 +1,9 @@
-WAU CW Example Benchmark Reference
-run_utc: 2026-05-06T00:19:34Z
+WAU CW Example Benchmark Reference (latest)
+run_utc: 2026-05-06T12:13:37Z
+git_commit: 88c0dc4
+git_tree_state: dirty
+python_version: Python 3.12.3
+iverilog_version: Icarus Verilog version 12.0 (stable) ()
 cw_source: docs/example-pogram.cw
 base_config: src/python/configs/wau_2d_multiprogram_demo.json
 compiled_config: src/python/configs/wau_example_pogram_compiled.json
@@ -14,11 +18,21 @@ dtype: float32
 tile_counter_max_iterations: 32
 
 Timing (ms)
-compile_cw_ms: 71
-validate_ms: 79
-generate_ms: 83
-iverilog_tests_ms: 36
-total_ms: 276
+compile_cw_ms: 73
+validate_ms: 71
+generate_ms: 77
+iverilog_tests_ms: 1200
+total_ms: 1453
+
+Effective Execution Benchmark (CW flow smoke)
+exec_flow_id: 90
+exec_case_count: 3
+exec_latency_cycles_min: 153
+exec_latency_cycles_max: 196
+exec_latency_cycles_avg: 181.67
+exec_case_1: flow=90, latency_cycles=196, out_value=1966081
+exec_case_2: flow=90, latency_cycles=196, out_value=6542971
+exec_case_3: flow=90, latency_cycles=153, out_value=0
 
 Schedule Metrics
 makespan_cycles: 80
@@ -28,3 +42,8 @@ unique_core_count: 12
 flow_ids_in_schedule: [10, 11, 12, 90]
 program_ids_in_schedule: [1, 2, 90]
 operations_seen: ['add', 'max', 'mul', 'sub']
+
+RTL Test Results
+tb_wau_operation_alu: pass, finish_ps=145000, log=.build/cw_iverilog/tb_wau_operation_alu.run.log
+tb_wau_highway_mesh: pass, finish_ps=3000, log=.build/cw_iverilog/tb_wau_highway_mesh.run.log
+tb_wau_cw_compiled_exec: pass, finish_ps=5545000, log=.build/cw_iverilog/tb_wau_cw_compiled_exec.run.log
