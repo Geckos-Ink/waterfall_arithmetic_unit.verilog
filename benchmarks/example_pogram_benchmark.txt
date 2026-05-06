@@ -1,0 +1,30 @@
+WAU CW Example Benchmark Reference
+run_utc: 2026-05-06T00:19:34Z
+cw_source: docs/example-pogram.cw
+base_config: src/python/configs/wau_2d_multiprogram_demo.json
+compiled_config: src/python/configs/wau_example_pogram_compiled.json
+schedule_json: .build/cw_example_generated/wau_schedule.json
+
+Workload/Program
+flow_id: 90
+program_id: 90
+compiled_nodes: 47
+lane_parallelism_compiled: 8
+dtype: float32
+tile_counter_max_iterations: 32
+
+Timing (ms)
+compile_cw_ms: 71
+validate_ms: 79
+generate_ms: 83
+iverilog_tests_ms: 36
+total_ms: 276
+
+Schedule Metrics
+makespan_cycles: 80
+instruction_count: 177
+fallback_instruction_count: 69
+unique_core_count: 12
+flow_ids_in_schedule: [10, 11, 12, 90]
+program_ids_in_schedule: [1, 2, 90]
+operations_seen: ['add', 'max', 'mul', 'sub']

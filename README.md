@@ -50,6 +50,26 @@ PYTHONPATH=src/python python3 -m waugen compile-pseudoc \
   --out-config src/python/configs/wau_de0_nano_compiled_expr.json
 ```
 
+Compile an advanced WAU kernel-style `.cw` program into a DAG flow and execution program:
+
+```bash
+PYTHONPATH=src/python python3 -m waugen compile-cw \
+  --program-file docs/example-pogram.cw \
+  --flow-id 90 \
+  --name cw_conv2d_residual_reference \
+  --entry 0,0 \
+  --max-in-flight 4 \
+  --base-config src/python/configs/wau_2d_multiprogram_demo.json \
+  --out-config src/python/configs/wau_example_pogram_compiled.json \
+  --replace-existing \
+  --program-id 90 \
+  --program-name cw_reference_program \
+  --program-priority 3 \
+  --program-replicas 2 \
+  --program-max-parallel-flows 2 \
+  --program-load-balance least_busy
+```
+
 ## Testing
 Run all RTL test cases with `iverilog` (generation + compile + simulation):
 
@@ -66,6 +86,12 @@ Run randomized multi-flow scheduler stress and emit a coverage-style summary:
 
 ```bash
 ./scripts/run_randomized_stress.py --start-seed 2000 --count 25 --report .build/randomized_stress_report.json
+```
+
+Run fast end-to-end compile/validate/generate/RTL checks for the `.cw` reference and write a benchmark snapshot:
+
+```bash
+./scripts/run_cw_example_benchmark.sh
 ```
 
 Optional direct syntax check of generated RTL:
@@ -92,10 +118,12 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `src/python/configs/wau_de0_nano_demo.json`: example configuration
 - `src/python/configs/wau_de0_nano_compiled_expr.json`: example output of `compile-expr`
 - `src/python/configs/wau_de0_nano_compiled_pseudoc.json`: example output of `compile-pseudoc`
+- `src/python/configs/wau_example_pogram_compiled.json`: example output of `compile-cw`
 - `src/python/configs/wau_2d_multiprogram_demo.json`: advanced DAG + multi-program example
 - `src/verilog/generated/`: generated output artifacts
 - `tests/rtl/`: SystemVerilog/Verilog testbenches
 - `tests/python/`: Python unit tests for compiler helpers
+- `benchmarks/example_pogram_benchmark.txt`: tracked benchmark/reference metrics for `.cw` flow compilation
 
 ## Generated Artifacts
 A `generate` run emits:

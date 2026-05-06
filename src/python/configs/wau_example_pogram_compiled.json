@@ -1,0 +1,1704 @@
+{
+  "project": "wau_2d_multiprogram_demo",
+  "output_module_name": "wau_top",
+  "abstraction": {
+    "language": "wau_flow_ir",
+    "version": 1
+  },
+  "device": {
+    "preset": "intel_de0_nano",
+    "grid": {
+      "x": 4,
+      "y": 3
+    },
+    "coordinator_mode": "direct",
+    "enable_runtime_auto_adapt": true,
+    "data_width": 32,
+    "data_types": [
+      "int32",
+      "float16",
+      "float32"
+    ],
+    "flow_id_width": 12,
+    "opcode_width": 8
+  },
+  "operations": {
+    "library": [
+      "add",
+      "sub",
+      "mul",
+      "div",
+      "max"
+    ],
+    "overrides": {
+      "mul": {
+        "latency": 3,
+        "pipelined": true
+      },
+      "div": {
+        "latency": 8,
+        "pipelined": false
+      }
+    }
+  },
+  "compiler": {
+    "routing": "serpentine",
+    "allow_adaptive_reroute": true,
+    "allow_cycle_recurrence": true,
+    "fallback_radius": 2,
+    "core_capabilities": [
+      {
+        "core": {
+          "x": 2,
+          "y": 2
+        },
+        "operations": [
+          "mul"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      },
+      {
+        "core": {
+          "x": 3,
+          "y": 2
+        },
+        "operations": [
+          "max",
+          "sub"
+        ],
+        "data_types": [
+          "int32"
+        ]
+      }
+    ]
+  },
+  "scheduler": {
+    "strategy": "dependency_aware",
+    "program_policy": "weighted_fair",
+    "emit_timeline": true
+  },
+  "flows": [
+    {
+      "id": 10,
+      "name": "fused_filter",
+      "entry": {
+        "x": 0,
+        "y": 0
+      },
+      "nodes": [
+        {
+          "id": "n_add",
+          "op": "add",
+          "dtype": "int32",
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 0,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "n_mul",
+          "op": "mul",
+          "dtype": "int32",
+          "deps": [
+            "n_add"
+          ],
+          "immediate_b": 2,
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "n_sub",
+          "op": "sub",
+          "dtype": "int32",
+          "deps": [
+            "n_mul"
+          ],
+          "placement": {
+            "core": {
+              "x": 2,
+              "y": 1
+            },
+            "fallback_core": {
+              "x": 2,
+              "y": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "name": "async_branches",
+      "entry": {
+        "x": 0,
+        "y": 1
+      },
+      "nodes": [
+        {
+          "id": "left_add",
+          "op": "add",
+          "dtype": "int32",
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 1
+              },
+              {
+                "x": 1,
+                "y": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "right_max",
+          "op": "max",
+          "dtype": "int32",
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              }
+            ]
+          }
+        },
+        {
+          "id": "merge_mul",
+          "op": "mul",
+          "dtype": "int32",
+          "deps": [
+            "left_add",
+            "right_max"
+          ],
+          "placement": {
+            "core": {
+              "x": 2,
+              "y": 2
+            },
+            "fallback_core": {
+              "x": 2,
+              "y": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "name": "recurrent_control_loop",
+      "entry": {
+        "x": 2,
+        "y": 0
+      },
+      "nodes": [
+        {
+          "id": "acc",
+          "op": "add",
+          "dtype": "int32",
+          "deps": [
+            "mix"
+          ],
+          "recurrent": true,
+          "max_iterations": 4,
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 0
+              },
+              {
+                "x": 3,
+                "y": 0
+              }
+            ]
+          }
+        },
+        {
+          "id": "mix",
+          "op": "sub",
+          "dtype": "int32",
+          "deps": [
+            "acc"
+          ],
+          "recurrent": true,
+          "max_iterations": 4,
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "out",
+          "op": "max",
+          "dtype": "int32",
+          "deps": [
+            "acc"
+          ],
+          "placement": {
+            "core": {
+              "x": 3,
+              "y": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 90,
+      "name": "cw_conv2d_residual_reference",
+      "entry": {
+        "x": 0,
+        "y": 0
+      },
+      "max_in_flight": 4,
+      "nodes": [
+        {
+          "id": "load_ifmap",
+          "op": "add",
+          "dtype": "float32",
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 2,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "load_weights",
+          "op": "add",
+          "dtype": "float32",
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 2,
+                "y": 0
+              },
+              {
+                "x": 3,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "prefetch_next_ifmap",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 0
+              },
+              {
+                "x": 3,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "load_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 0
+              },
+              {
+                "x": 0,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane0_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 1
+              },
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane0_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane0_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 1
+              },
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane0_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane0_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 1
+              },
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane0_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane0_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 1
+              },
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane0_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane0_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 1
+              },
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane1_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane1_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane1_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane1_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane1_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane1_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane1_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane1_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane1_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane2_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane2_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane2_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane2_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane2_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane2_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane2_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane2_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane2_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 1
+              },
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane3_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane3_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane3_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane3_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane3_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane3_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane3_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane3_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane3_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane4_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane4_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane4_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane4_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane4_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane4_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane4_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane4_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane4_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane5_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane5_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane5_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane5_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane5_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane5_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane5_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane5_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane5_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane6_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane6_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane6_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane6_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane6_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane6_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane6_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane6_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane6_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane7_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 2,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane7_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane7_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 2,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane7_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane7_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 2,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane7_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane7_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 2,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "lane7_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane7_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 2,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_locality"
+          }
+        },
+        {
+          "id": "store_tile",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane0_relu",
+            "lane1_relu",
+            "lane2_relu",
+            "lane3_relu",
+            "lane4_relu",
+            "lane5_relu",
+            "lane6_relu",
+            "lane7_relu",
+            "prefetch_next_ifmap"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 3,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "tile_counter",
+          "op": "add",
+          "dtype": "float32",
+          "immediate_b": 1,
+          "deps": [
+            "store_tile"
+          ],
+          "recurrent": true,
+          "max_iterations": 32,
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "manual",
+            "fixed": true
+          }
+        },
+        {
+          "id": "tile_done_gate",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "tile_counter"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        }
+      ],
+      "cw_hints": {
+        "kernel_name": "conv2d_residual_kernel",
+        "kernel_size": 3,
+        "tile_h": 16,
+        "tile_w": 16,
+        "cin_block": 16,
+        "cout_block": 8,
+        "worker_count_declared": 8,
+        "lane_parallelism_compiled": 8,
+        "double_buffering": true,
+        "prefetch": true,
+        "residual": true,
+        "relu": true,
+        "dtype": "float32"
+      }
+    }
+  ],
+  "programs": [
+    {
+      "id": 1,
+      "name": "analytics",
+      "flows": [
+        10,
+        11
+      ],
+      "priority": 2,
+      "replicas": 2,
+      "max_parallel_flows": 4,
+      "load_balance": "least_busy",
+      "allow_async": true,
+      "allow_out_of_order": true
+    },
+    {
+      "id": 2,
+      "name": "control",
+      "flows": [
+        12
+      ],
+      "priority": 1,
+      "replicas": 1,
+      "max_parallel_flows": 1,
+      "load_balance": "round_robin",
+      "allow_async": true,
+      "allow_out_of_order": true
+    },
+    {
+      "id": 90,
+      "name": "cw_reference_program",
+      "flows": [
+        90
+      ],
+      "priority": 3,
+      "replicas": 2,
+      "max_parallel_flows": 2,
+      "load_balance": "least_busy",
+      "allow_async": true,
+      "allow_out_of_order": true
+    }
+  ]
+}
