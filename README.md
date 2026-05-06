@@ -1,4 +1,4 @@
-# waterfall-arithmetic-unit-verilog
+# Waterfall Arithmetic Unit - Verilog implementation
 Python-driven generator for a baseline **Waterfall Arithmetic Unit (WAU)** architecture in Verilog/SystemVerilog.
 
 This repository now contains a working foundation for:
