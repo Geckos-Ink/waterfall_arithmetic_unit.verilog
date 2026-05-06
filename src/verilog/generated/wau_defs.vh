@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// See LICENSE at the repository root.
+
 `ifndef WAU_DEFS_VH
 `define WAU_DEFS_VH
 

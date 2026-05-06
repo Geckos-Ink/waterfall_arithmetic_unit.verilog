@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# See LICENSE at the repository root.
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -7,17 +7,19 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 
 ## Core Workflow
 1. Edit source-of-truth files in `src/python/waugen/` and config samples in `src/python/configs/`.
-2. Validate config and pipeline:
+2. Sync SPDX license headers for all source files in `src/`:
+   - `python3 scripts/sync_license_headers.py`
+3. Validate config and pipeline:
    - `PYTHONPATH=src/python python3 -m waugen validate --config <config.json>`
-3. If touching expression-to-flow logic, validate the basic compiler path:
+4. If touching expression-to-flow logic, validate the basic compiler path:
    - `PYTHONPATH=src/python python3 -m waugen compile-expr --expr '((a + b) * 3) - b' --flow-id <id> --base-config <in> --out-config <out>`
-4. If touching pseudo-C lowering, validate the pseudo-C compiler path:
+5. If touching pseudo-C lowering, validate the pseudo-C compiler path:
    - `PYTHONPATH=src/python python3 -m waugen compile-pseudoc --program 'acc = a; acc = acc + b; acc *= 3;' --flow-id <id> --base-config <in> --out-config <out>`
-5. If touching `.cw` kernel lowering, validate the CW compiler path:
+6. If touching `.cw` kernel lowering, validate the CW compiler path:
    - `PYTHONPATH=src/python python3 -m waugen compile-cw --program-file docs/example-pogram.cw --flow-id <id> --base-config <in> --out-config <out> --replace-existing`
-6. Regenerate artifacts when behavior changes:
+7. Regenerate artifacts when behavior changes:
    - `PYTHONPATH=src/python python3 -m waugen generate --config <config.json> --out src/verilog/generated --summary`
-7. Run RTL tests when RTL, scheduler, or flow semantics change:
+8. Run RTL tests when RTL, scheduler, or flow semantics change:
    - `./scripts/run_iverilog_tests.sh`
 
 ## Ownership Boundaries
@@ -36,6 +38,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - Core indices must stay within `grid_x * grid_y`.
 - Compiler core capability constraints must reference existing operations/data types.
 - Verilog macros in `wau_defs.vh` must match emitted modules.
+- License headers in `src/**/*.py`, `src/**/*.v`, and `src/**/*.vh` are managed by `scripts/sync_license_headers.py`; run it after each implementation and before review.
 
 ## Extension Rules
 When adding a new arithmetic operation:
@@ -57,6 +60,7 @@ When changing flow compilation/scheduling behavior:
 
 ## Review Checklist
 Before finalizing changes:
+- `python3 scripts/sync_license_headers.py --check` succeeds.
 - `validate` succeeds.
 - `generate` succeeds.
 - `tests/python` unit tests pass.

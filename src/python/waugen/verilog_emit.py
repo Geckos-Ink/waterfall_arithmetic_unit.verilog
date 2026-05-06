@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# See LICENSE at the repository root.
+
 from __future__ import annotations
 
 import json
@@ -7,9 +10,21 @@ from .compiler import CompiledProject
 from .scheduler import SchedulePlan, core_index
 from .utils import macro_name
 
+_SPDX_IDENTIFIER = "PolyForm-Noncommercial-1.0.0"
+_VERILOG_LICENSE_HEADER = (
+    f"// SPDX-License-Identifier: {_SPDX_IDENTIFIER}\n"
+    "// See LICENSE at the repository root.\n\n"
+)
+
 
 def _op_macro(op_name: str) -> str:
     return macro_name(op_name)
+
+
+def _with_verilog_license_header(content: str) -> str:
+    if content.startswith(_VERILOG_LICENSE_HEADER):
+        return content
+    return _VERILOG_LICENSE_HEADER + content
 
 
 def _render_defs(project: CompiledProject) -> str:
@@ -1861,6 +1876,8 @@ def emit_verilog(project: CompiledProject, schedule: SchedulePlan, out_dir: Path
     written_paths: list[Path] = []
     for name, content in outputs.items():
         path = out_dir / name
+        if path.suffix in {".v", ".vh"}:
+            content = _with_verilog_license_header(content)
         path.write_text(content)
         written_paths.append(path)
 

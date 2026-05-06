@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// See LICENSE at the repository root.
+
 `timescale 1ns/1ps
 `include "wau_defs.vh"
 
