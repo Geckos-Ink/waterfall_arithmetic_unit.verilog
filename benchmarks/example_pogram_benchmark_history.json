@@ -73,6 +73,15 @@
       "run_profile": "autotune_selected",
       "run_utc": "2026-05-06T20:22:41Z",
       "total_ms": 1051
+    },
+    {
+      "benchmark_ranking_score": 106710809.67,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 106.67,
+      "makespan_cycles": 43,
+      "run_profile": "reference",
+      "run_utc": "2026-05-07T22:57:34Z",
+      "total_ms": 1143
     }
   ]
 }

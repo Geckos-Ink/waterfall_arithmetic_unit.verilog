@@ -225,13 +225,18 @@ Main JSON fields:
   - `allow_async`, `allow_out_of_order`
 
 ## CW Syntax Tuning Hint
-`compile-cw` supports an optional `.cw` pragma comment for practical tuning:
+`compile-cw` supports optional `.cw` pragmas for practical tuning:
 
 ```c
 // @wau lane_parallelism=4
+// @wau max_in_flight=4
+// @wau preferred_dtype=float32
 ```
 
-CLI `--lane-parallelism` still overrides the pragma when explicitly set.
+Precedence is:
+- explicit CLI flags (`--lane-parallelism`, `--max-in-flight`, `--dtype`) win,
+- otherwise pragma values are used,
+- otherwise compile defaults apply.
 
 ## Current Hardware Scope
 This is a robust **basis**, not final silicon architecture:

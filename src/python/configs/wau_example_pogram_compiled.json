@@ -1056,11 +1056,18 @@
         "worker_count_declared": 8,
         "lane_parallelism_preferred": 4,
         "lane_parallelism_compiled": 4,
+        "lane_parallelism_source": "pragma",
+        "max_in_flight_preferred": 4,
+        "max_in_flight_compiled": 4,
+        "max_in_flight_source": "cli",
         "double_buffering": true,
         "prefetch": true,
         "residual": true,
         "relu": true,
-        "dtype": "float32"
+        "preferred_dtype": "float32",
+        "dtype": "float32",
+        "dtype_compiled": "float32",
+        "dtype_source": "pragma"
       }
     }
   ],

@@ -132,13 +132,16 @@ def _build_parser() -> argparse.ArgumentParser:
     cw.add_argument(
         "--max-in-flight",
         type=int,
-        default=4,
-        help="Flow max in-flight packets (default: 4)",
+        default=None,
+        help="Optional flow max in-flight packets override (default: @wau pragma or 4)",
     )
     cw.add_argument(
         "--dtype",
         default=None,
-        help="Optional dtype for generated nodes (default: float32 if supported, else first device dtype)",
+        help=(
+            "Optional dtype override for generated nodes "
+            "(default: @wau preferred_dtype pragma, else float32 if supported, else first device dtype)"
+        ),
     )
     cw.add_argument(
         "--lane-parallelism",
@@ -322,7 +325,7 @@ def _run_compile_cw(
     flow_id: int,
     name: str | None,
     entry: str,
-    max_in_flight: int,
+    max_in_flight: int | None,
     dtype: str | None,
     lane_parallelism: int | None,
     base_config: Path,

@@ -2,6 +2,8 @@
 // Real-life kernel: tiled Conv2D + Bias + Residual + ReLU.
 // Goal: provide compiler-oriented structure for concurrency and memory placement.
 // @wau lane_parallelism=4
+// @wau max_in_flight=4
+// @wau preferred_dtype=float32
 
 void main() {
     int H = 224;

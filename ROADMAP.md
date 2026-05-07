@@ -28,6 +28,7 @@ Implemented this cycle:
 - CW benchmark CI sidecar slice: latest/best/history machine-readable JSON sidecars are persisted for trend analysis.
 - CW benchmark tuning update: latest 16-point sweep (`lanes=4,6,8,10`, `replicas=1,2`, `max_parallel=1,2`) reached `exec_latency_cycles_avg=106.67`, `makespan=43`, `total_ms=1051` at `lane=4`, `replicas=2`, `max_parallel=1`.
 - CW syntax slice: `.cw` pragma support for lane tuning (`// @wau lane_parallelism=<N>`), with CLI override precedence.
+- CW syntax slice: added structured pragma parsing with deterministic line-located diagnostics; new pragmas `@wau max_in_flight=<N>` and `@wau preferred_dtype=<name>` are now supported with CLI override precedence and parser test coverage.
 
 ## CW Compiler and Benchmark Next Steps (2026-05-06+)
 Goal: move from reference-level CW lowering to deeper, reproducible, performance-oriented compilation and execution validation.
@@ -37,8 +38,8 @@ Scope:
 - Formalize a minimal `.cw` grammar contract (token/statement rules) beyond regex-symbol presence checks.
 - Add structured pragmas for compilation intent:
   - `@wau lane_parallelism=<N>` (already supported),
-  - `@wau max_in_flight=<N>`,
-  - `@wau preferred_dtype=<name>`,
+  - `@wau max_in_flight=<N>` (supported),
+  - `@wau preferred_dtype=<name>` (supported),
   - `@wau placement_policy=<locality|balance|manual>`.
 - Add parse diagnostics with line-aware errors and suggestion text.
 
@@ -107,7 +108,7 @@ Acceptance:
 
 ### Near-Term Targets
 1. Keep best-known `exec_latency_cycles_avg` at or below `106.67` while preserving pass status for all RTL tests.
-2. Introduce at least one additional grammar pragma and full test coverage for it.
+2. Introduce at least one additional grammar pragma and full test coverage for it. (completed 2026-05-08: `@wau max_in_flight`, `@wau preferred_dtype`, line-aware pragma diagnostics)
 3. Add one new CW benchmark metric that quantifies placement quality (fallback or hops). (completed 2026-05-06: fallback ratios + estimated hops + critical-path tail)
 
 ## Guiding Priorities

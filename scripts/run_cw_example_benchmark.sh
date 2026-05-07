@@ -1040,7 +1040,7 @@ compiled_flow = next(
 node_count = len(compiled_flow.get("nodes", [])) if isinstance(compiled_flow, dict) else 0
 cw_hints = compiled_flow.get("cw_hints", {}) if isinstance(compiled_flow, dict) else {}
 lane_parallelism = cw_hints.get("lane_parallelism_compiled", "n/a")
-dtype = cw_hints.get("dtype", "n/a")
+dtype = cw_hints.get("dtype_compiled", cw_hints.get("dtype", "n/a"))
 tile_iter = next(
     (
         int(node.get("max_iterations", 0))

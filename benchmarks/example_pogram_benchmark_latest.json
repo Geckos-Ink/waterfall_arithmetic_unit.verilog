@@ -1,15 +1,62 @@
 {
   "format_version": 1,
+  "inputs": {
+    "base_config": "src/python/configs/wau_2d_multiprogram_demo.json",
+    "compiled_config": "src/python/configs/wau_example_pogram_compiled.json",
+    "cw_dtype_requested": "auto",
+    "cw_lane_parallelism_requested": "auto",
+    "cw_max_in_flight": 4,
+    "cw_source": "docs/example-pogram.cw",
+    "flow_id": 90,
+    "program_id": 90,
+    "program_max_parallel_flows": 1,
+    "program_replicas": 2
+  },
   "metrics": {
-    "benchmark_ranking_score": 106714051.0,
+    "benchmark_ranking_score": 106710809.67,
+    "estimated_transfer_hops_avg_edge": 1.027397,
+    "estimated_transfer_hops_total": 75,
     "exec_latency_cycles_avg": 106.67,
+    "exec_latency_cycles_max": 112,
+    "exec_latency_cycles_min": 96,
+    "fallback_instruction_count": 27,
+    "fallback_instruction_ratio": 0.341772,
+    "instruction_count": 79,
     "makespan_cycles": 43,
-    "total_ms": 1051
+    "total_ms": 1143
   },
   "paths": {
     "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
-    "tuning_summary": "benchmarks/example_pogram_tuning_latest.txt"
+    "schedule_json": ".build/cw_example_generated/wau_schedule.json"
   },
-  "run_profile": "autotune_selected",
-  "run_utc": "2026-05-06T20:22:41Z"
+  "placement_quality": {
+    "critical_path_tail_by_node": [
+      "node=tile_done_gate program=90:0 flow=90 cycle_end=43",
+      "node=tile_counter program=90:0 flow=90 cycle_end=42",
+      "node=tile_counter program=90:0 flow=90 cycle_end=41",
+      "node=tile_counter program=90:0 flow=90 cycle_end=40",
+      "node=tile_counter program=90:0 flow=90 cycle_end=39"
+    ],
+    "fallback_ratio_by_flow": {
+      "10": 0.833333,
+      "11": 0.333333,
+      "12": 0.555556,
+      "90": 0.258621
+    }
+  },
+  "run_profile": "reference",
+  "run_utc": "2026-05-07T22:57:34Z",
+  "timing_ms": {
+    "compile_cw_ms": 69,
+    "generate_ms": 75,
+    "iverilog_tests_ms": 894,
+    "total_ms": 1143,
+    "validate_ms": 71
+  },
+  "tool_versions": {
+    "git_commit": "8f289cd",
+    "git_tree_state": "dirty",
+    "iverilog_version": "Icarus Verilog version 12.0 (stable) ()",
+    "python_version": "Python 3.12.3"
+  }
 }

@@ -8,6 +8,30 @@ import unittest
 from waugen.cw_compiler import CWCompilerError, merge_cw_into_config, parse_cw_program
 
 
+def _base_payload() -> dict[str, object]:
+    return {
+        "project": "tmp",
+        "device": {
+            "preset": "intel_de0_nano",
+            "grid": {"x": 4, "y": 3},
+            "data_types": ["int32", "float32"],
+        },
+        "operations": {"library": ["add"]},
+        "compiler": {"allow_cycle_recurrence": True},
+        "scheduler": {"strategy": "dependency_aware"},
+        "flows": [],
+        "programs": [],
+    }
+
+
+def _base_program_without_wau_pragmas() -> str:
+    program = Path("docs/example-pogram.cw").read_text()
+    stripped_lines = [
+        line for line in program.splitlines() if not line.lstrip().startswith("// @wau ")
+    ]
+    return "\n".join(stripped_lines) + "\n"
+
+
 class CWCompilerTests(unittest.TestCase):
     def test_parse_reference_example(self) -> None:
         program = Path("docs/example-pogram.cw").read_text()
@@ -25,17 +49,21 @@ class CWCompilerTests(unittest.TestCase):
         self.assertTrue(spec.has_relu)
         self.assertTrue(spec.has_double_buffering)
         self.assertEqual(spec.preferred_lane_parallelism, 4)
+        self.assertEqual(spec.preferred_max_in_flight, 4)
+        self.assertEqual(spec.preferred_dtype, "float32")
         self.assertEqual(shape.h, 224)
         self.assertEqual(shape.w, 224)
         self.assertEqual(shape.cin, 64)
         self.assertEqual(shape.cout, 128)
 
     def test_parse_reference_example_with_lane_pragma(self) -> None:
-        base_program = Path("docs/example-pogram.cw").read_text()
+        base_program = _base_program_without_wau_pragmas()
         program = "// @wau lane_parallelism=6\n" + base_program
         spec, _shape = parse_cw_program(program)
 
         self.assertEqual(spec.preferred_lane_parallelism, 6)
+        self.assertIsNone(spec.preferred_max_in_flight)
+        self.assertIsNone(spec.preferred_dtype)
 
     def test_merge_cw_into_config(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -43,19 +71,7 @@ class CWCompilerTests(unittest.TestCase):
             base_path = td_path / "base.json"
             out_path = td_path / "out.json"
 
-            base_payload = {
-                "project": "tmp",
-                "device": {
-                    "preset": "intel_de0_nano",
-                    "grid": {"x": 4, "y": 3},
-                    "data_types": ["int32", "float32"],
-                },
-                "operations": {"library": ["add"]},
-                "compiler": {"allow_cycle_recurrence": True},
-                "scheduler": {"strategy": "dependency_aware"},
-                "flows": [],
-                "programs": [],
-            }
+            base_payload = _base_payload()
             base_path.write_text(json.dumps(base_payload, indent=2) + "\n")
 
             program = Path("docs/example-pogram.cw").read_text()
@@ -83,6 +99,13 @@ class CWCompilerTests(unittest.TestCase):
             self.assertGreater(len(flow["nodes"]), 20)
             self.assertEqual(program_obj["id"], 19)
             self.assertEqual(program_obj["flows"], [77])
+            hints = flow.get("cw_hints", {})
+            self.assertEqual(hints.get("lane_parallelism_compiled"), 4)
+            self.assertEqual(hints.get("lane_parallelism_source"), "pragma")
+            self.assertEqual(hints.get("max_in_flight_compiled"), 4)
+            self.assertEqual(hints.get("max_in_flight_source"), "cli")
+            self.assertEqual(hints.get("dtype_compiled"), "float32")
+            self.assertEqual(hints.get("dtype_source"), "pragma")
 
             payload = json.loads(out_path.read_text())
             self.assertEqual(len(payload["flows"]), 1)
@@ -103,22 +126,15 @@ class CWCompilerTests(unittest.TestCase):
             base_path = td_path / "base.json"
             out_path = td_path / "out.json"
 
-            base_payload = {
-                "project": "tmp",
-                "device": {
-                    "preset": "intel_de0_nano",
-                    "grid": {"x": 4, "y": 3},
-                    "data_types": ["int32", "float32"],
-                },
-                "operations": {"library": ["add"]},
-                "compiler": {"allow_cycle_recurrence": True},
-                "scheduler": {"strategy": "dependency_aware"},
-                "flows": [],
-                "programs": [],
-            }
+            base_payload = _base_payload()
             base_path.write_text(json.dumps(base_payload, indent=2) + "\n")
 
-            program = "// @wau lane_parallelism=3\n" + Path("docs/example-pogram.cw").read_text()
+            program = (
+                "// @wau lane_parallelism=3\n"
+                "// @wau max_in_flight=7\n"
+                "// @wau preferred_dtype=int32\n"
+                + _base_program_without_wau_pragmas()
+            )
             flow, _program_obj = merge_cw_into_config(
                 base_config_path=base_path,
                 out_config_path=out_path,
@@ -128,7 +144,8 @@ class CWCompilerTests(unittest.TestCase):
                 entry_x=0,
                 entry_y=0,
                 replace_existing=False,
-                max_in_flight=4,
+                max_in_flight=5,
+                dtype="float32",
                 lane_parallelism=5,
                 program_id=18,
                 program_name="cw_program_override",
@@ -141,6 +158,75 @@ class CWCompilerTests(unittest.TestCase):
             hints = flow.get("cw_hints", {})
             self.assertEqual(hints.get("lane_parallelism_preferred"), 3)
             self.assertEqual(hints.get("lane_parallelism_compiled"), 5)
+            self.assertEqual(hints.get("lane_parallelism_source"), "cli")
+            self.assertEqual(hints.get("max_in_flight_preferred"), 7)
+            self.assertEqual(hints.get("max_in_flight_compiled"), 5)
+            self.assertEqual(hints.get("max_in_flight_source"), "cli")
+            self.assertEqual(hints.get("preferred_dtype"), "int32")
+            self.assertEqual(hints.get("dtype_compiled"), "float32")
+            self.assertEqual(hints.get("dtype_source"), "cli")
+
+    def test_merge_cw_pragma_applies_when_cli_omits(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            base_path = td_path / "base.json"
+            out_path = td_path / "out.json"
+
+            base_payload = _base_payload()
+            base_path.write_text(json.dumps(base_payload, indent=2) + "\n")
+
+            program = (
+                "// @wau lane_parallelism=2\n"
+                "// @wau max_in_flight=6\n"
+                "// @wau preferred_dtype=int32\n"
+                + _base_program_without_wau_pragmas()
+            )
+            flow, _program_obj = merge_cw_into_config(
+                base_config_path=base_path,
+                out_config_path=out_path,
+                program=program,
+                flow_id=72,
+                name="cw_pragma_defaults",
+                entry_x=0,
+                entry_y=0,
+                replace_existing=False,
+                program_id=20,
+                program_name="cw_program_defaults",
+                program_priority=2,
+                program_replicas=1,
+                program_max_parallel_flows=1,
+                program_load_balance="least_busy",
+            )
+
+            hints = flow.get("cw_hints", {})
+            self.assertEqual(flow.get("max_in_flight"), 6)
+            self.assertEqual(hints.get("lane_parallelism_compiled"), 2)
+            self.assertEqual(hints.get("lane_parallelism_source"), "pragma")
+            self.assertEqual(hints.get("max_in_flight_compiled"), 6)
+            self.assertEqual(hints.get("max_in_flight_source"), "pragma")
+            self.assertEqual(hints.get("dtype_compiled"), "int32")
+            self.assertEqual(hints.get("dtype_source"), "pragma")
+
+    def test_parse_rejects_invalid_pragma_syntax(self) -> None:
+        with self.assertRaisesRegex(
+            CWCompilerError,
+            r"Invalid @wau pragma syntax at line 1",
+        ):
+            parse_cw_program("// @wau lane_parallelism\nvoid main() {}")
+
+    def test_parse_rejects_unknown_pragma_key(self) -> None:
+        with self.assertRaisesRegex(
+            CWCompilerError,
+            r"Unsupported @wau pragma 'unknown' at line 1",
+        ):
+            parse_cw_program("// @wau unknown=1\nvoid main() {}")
+
+    def test_parse_rejects_invalid_preferred_dtype(self) -> None:
+        with self.assertRaisesRegex(
+            CWCompilerError,
+            r"Invalid @wau preferred_dtype 'Float32' at line 1",
+        ):
+            parse_cw_program("// @wau preferred_dtype=Float32\nvoid main() {}")
 
     def test_parse_rejects_incomplete_program(self) -> None:
         with self.assertRaises(CWCompilerError):

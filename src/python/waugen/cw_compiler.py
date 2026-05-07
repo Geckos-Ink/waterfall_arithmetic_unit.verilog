@@ -31,6 +31,8 @@ class CWKernelSpec:
     has_relu: bool
     has_double_buffering: bool
     preferred_lane_parallelism: int | None
+    preferred_max_in_flight: int | None
+    preferred_dtype: str | None
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,19 @@ class CWWorkloadShape:
     w: int | None
     cin: int | None
     cout: int | None
+
+
+_DEFAULT_CW_MAX_IN_FLIGHT = 4
+_DTYPE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_WAU_PRAGMA_LINE_RE = re.compile(r"^\s*//\s*@wau\b(?P<body>.*)$")
+_WAU_PRAGMA_ASSIGN_RE = re.compile(
+    r"^\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>[^\s]+)\s*$"
+)
+_SUPPORTED_WAU_PRAGMA_KEYS = (
+    "lane_parallelism",
+    "max_in_flight",
+    "preferred_dtype",
+)
 
 
 def _strip_comments(program: str) -> str:
@@ -78,15 +93,71 @@ def _extract_kernel_name(source: str) -> str:
     return match.group(1)
 
 
-def _extract_wau_pragma_int(program: str, key: str) -> int | None:
-    pattern = re.compile(
-        rf"^\s*//\s*@wau\s+{re.escape(key)}\s*=\s*(-?\d+)\s*$",
-        re.MULTILINE,
-    )
-    match = pattern.search(program)
-    if not match:
+def _parse_wau_pragmas(program: str) -> dict[str, tuple[str, int]]:
+    parsed: dict[str, tuple[str, int]] = {}
+    for line_no, line in enumerate(program.splitlines(), start=1):
+        match = _WAU_PRAGMA_LINE_RE.match(line)
+        if not match:
+            continue
+
+        body = match.group("body").strip()
+        assign = _WAU_PRAGMA_ASSIGN_RE.match(body)
+        if assign is None:
+            raise CWCompilerError(
+                "Invalid @wau pragma syntax at line "
+                f"{line_no}: expected '// @wau <key>=<value>'"
+            )
+
+        key = assign.group("key")
+        value = assign.group("value")
+        if key not in _SUPPORTED_WAU_PRAGMA_KEYS:
+            supported = ", ".join(_SUPPORTED_WAU_PRAGMA_KEYS)
+            raise CWCompilerError(
+                f"Unsupported @wau pragma '{key}' at line {line_no}. "
+                f"Supported keys: {supported}"
+            )
+        if key in parsed:
+            prev_line = parsed[key][1]
+            raise CWCompilerError(
+                f"Duplicate @wau pragma '{key}' at line {line_no}; first declared at line {prev_line}"
+            )
+        parsed[key] = (value, line_no)
+    return parsed
+
+
+def _extract_wau_pragma_int(
+    pragmas: dict[str, tuple[str, int]],
+    key: str,
+    *,
+    minimum: int,
+) -> int | None:
+    entry = pragmas.get(key)
+    if entry is None:
         return None
-    return int(match.group(1))
+
+    raw, line_no = entry
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise CWCompilerError(
+            f"Invalid @wau {key} value '{raw}' at line {line_no}: expected integer >= {minimum}"
+        ) from exc
+    if value < minimum:
+        raise CWCompilerError(f"@wau {key} must be >= {minimum} (line {line_no})")
+    return value
+
+
+def _extract_wau_pragma_dtype(pragmas: dict[str, tuple[str, int]]) -> str | None:
+    entry = pragmas.get("preferred_dtype")
+    if entry is None:
+        return None
+    raw, line_no = entry
+    if not _DTYPE_RE.fullmatch(raw):
+        raise CWCompilerError(
+            "Invalid @wau preferred_dtype "
+            f"'{raw}' at line {line_no}: expected lowercase token matching {_DTYPE_RE.pattern!r}"
+        )
+    return raw
 
 
 def _extract_workload_shape(source: str) -> CWWorkloadShape:
@@ -100,7 +171,18 @@ def _extract_workload_shape(source: str) -> CWWorkloadShape:
 
 def parse_cw_program(program: str) -> tuple[CWKernelSpec, CWWorkloadShape]:
     cleaned = _strip_comments(program)
-    pragma_lane_parallelism = _extract_wau_pragma_int(program, "lane_parallelism")
+    pragmas = _parse_wau_pragmas(program)
+    pragma_lane_parallelism = _extract_wau_pragma_int(
+        pragmas,
+        "lane_parallelism",
+        minimum=1,
+    )
+    pragma_max_in_flight = _extract_wau_pragma_int(
+        pragmas,
+        "max_in_flight",
+        minimum=1,
+    )
+    pragma_preferred_dtype = _extract_wau_pragma_dtype(pragmas)
 
     required_symbols = (
         "load_input_block(",
@@ -132,9 +214,6 @@ def parse_cw_program(program: str) -> tuple[CWKernelSpec, CWWorkloadShape]:
         raise CWCompilerError("CIN_BLOCK and COUT_BLOCK must be >= 1")
     if worker_count < 1:
         raise CWCompilerError("workers[N] must have N >= 1")
-    if pragma_lane_parallelism is not None and pragma_lane_parallelism < 1:
-        raise CWCompilerError("@wau lane_parallelism must be >= 1")
-
     spec = CWKernelSpec(
         kernel_name=kernel_name,
         kernel_size=kernel_size,
@@ -148,6 +227,8 @@ def parse_cw_program(program: str) -> tuple[CWKernelSpec, CWWorkloadShape]:
         has_relu=("v < 0.0f" in cleaned) or ("max(" in cleaned),
         has_double_buffering=("input_tile_ping" in cleaned and "input_tile_pong" in cleaned),
         preferred_lane_parallelism=pragma_lane_parallelism,
+        preferred_max_in_flight=pragma_max_in_flight,
+        preferred_dtype=pragma_preferred_dtype,
     )
     shape = _extract_workload_shape(cleaned)
     return spec, shape
@@ -209,8 +290,14 @@ def build_flow_from_cw_program(
     grid_x: int,
     grid_y: int,
     lane_parallelism: int | None = None,
+    parsed_spec_shape: tuple[CWKernelSpec, CWWorkloadShape] | None = None,
+    max_in_flight_source: str = "explicit",
+    dtype_source: str = "explicit",
 ) -> dict[str, Any]:
-    spec, shape = parse_cw_program(program)
+    if parsed_spec_shape is None:
+        spec, shape = parse_cw_program(program)
+    else:
+        spec, shape = parsed_spec_shape
 
     if flow_id < 0:
         raise CWCompilerError("flow_id must be non-negative")
@@ -230,6 +317,11 @@ def build_flow_from_cw_program(
     )
     lanes = max(1, lanes)
     lanes = min(lanes, max(1, grid_x * grid_y * 2))
+    lane_source = (
+        "cli"
+        if lane_parallelism is not None
+        else ("pragma" if spec.preferred_lane_parallelism is not None else "worker_count")
+    )
 
     nodes: list[dict[str, Any]] = []
 
@@ -448,11 +540,18 @@ def build_flow_from_cw_program(
             "worker_count_declared": spec.worker_count,
             "lane_parallelism_preferred": spec.preferred_lane_parallelism,
             "lane_parallelism_compiled": lanes,
+            "lane_parallelism_source": lane_source,
+            "max_in_flight_preferred": spec.preferred_max_in_flight,
+            "max_in_flight_compiled": max_in_flight,
+            "max_in_flight_source": max_in_flight_source,
             "double_buffering": spec.has_double_buffering,
             "prefetch": spec.has_prefetch,
             "residual": spec.has_residual,
             "relu": spec.has_relu,
+            "preferred_dtype": spec.preferred_dtype,
             "dtype": dtype,
+            "dtype_compiled": dtype,
+            "dtype_source": dtype_source,
         },
     }
 
@@ -647,7 +746,7 @@ def merge_cw_into_config(
     entry_x: int,
     entry_y: int,
     replace_existing: bool,
-    max_in_flight: int = 1,
+    max_in_flight: int | None = None,
     dtype: str | None = None,
     lane_parallelism: int | None = None,
     program_id: int | None = None,
@@ -668,13 +767,19 @@ def merge_cw_into_config(
         raise CWCompilerError("Base config root must be a JSON object")
 
     base_device = _load_base_device_profile(payload)
+    spec, shape = parse_cw_program(program)
 
     resolved_dtype = dtype
+    resolved_dtype_source = "cli"
+    if resolved_dtype is None and spec.preferred_dtype is not None:
+        resolved_dtype = spec.preferred_dtype
+        resolved_dtype_source = "pragma"
     if resolved_dtype is None:
         if "float32" in base_device.supported_data_types:
             resolved_dtype = "float32"
         else:
             resolved_dtype = base_device.supported_data_types[0]
+        resolved_dtype_source = "device_default"
 
     if resolved_dtype not in base_device.supported_data_types:
         raise CWCompilerError(
@@ -682,17 +787,30 @@ def merge_cw_into_config(
             f"{list(base_device.supported_data_types)}"
         )
 
+    if max_in_flight is not None:
+        resolved_max_in_flight = max_in_flight
+        resolved_max_in_flight_source = "cli"
+    elif spec.preferred_max_in_flight is not None:
+        resolved_max_in_flight = spec.preferred_max_in_flight
+        resolved_max_in_flight_source = "pragma"
+    else:
+        resolved_max_in_flight = _DEFAULT_CW_MAX_IN_FLIGHT
+        resolved_max_in_flight_source = "default"
+
     flow = build_flow_from_cw_program(
         program=program,
         flow_id=flow_id,
         name=name,
         entry_x=entry_x,
         entry_y=entry_y,
-        max_in_flight=max_in_flight,
+        max_in_flight=resolved_max_in_flight,
         dtype=resolved_dtype,
         grid_x=base_device.grid_x,
         grid_y=base_device.grid_y,
         lane_parallelism=lane_parallelism,
+        parsed_spec_shape=(spec, shape),
+        max_in_flight_source=resolved_max_in_flight_source,
+        dtype_source=resolved_dtype_source,
     )
 
     _upsert_flow(payload=payload, flow=flow, replace_existing=replace_existing)

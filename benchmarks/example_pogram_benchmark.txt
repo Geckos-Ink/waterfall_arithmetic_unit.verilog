@@ -1,18 +1,18 @@
 WAU CW Example Benchmark Reference (latest)
-run_utc: 2026-05-06T20:22:41Z
-git_commit: 716048d
+run_utc: 2026-05-07T22:57:34Z
+git_commit: 8f289cd
 git_tree_state: dirty
 python_version: Python 3.12.3
 iverilog_version: Icarus Verilog version 12.0 (stable) ()
 cw_source: docs/example-pogram.cw
 base_config: src/python/configs/wau_2d_multiprogram_demo.json
 compiled_config: src/python/configs/wau_example_pogram_compiled.json
-schedule_json: .build/cw_tune/r3_l4_rep2_mp1_generated/wau_schedule.json
+schedule_json: .build/cw_example_generated/wau_schedule.json
 
 Benchmark Mode
-run_profile: autotune_candidate
+run_profile: reference
 tune_mode: 0
-update_sidecar: 0
+update_sidecar: 1
 
 Workload/Program
 flow_id: 90
@@ -20,7 +20,7 @@ program_id: 90
 program_replicas: 2
 program_max_parallel_flows: 1
 cw_max_in_flight: 4
-cw_lane_parallelism_requested: 4
+cw_lane_parallelism_requested: auto
 cw_dtype_requested: auto
 compiled_nodes: 27
 lane_parallelism_compiled: 4
@@ -28,11 +28,11 @@ dtype: float32
 tile_counter_max_iterations: 32
 
 Timing (ms)
-compile_cw_ms: 71
+compile_cw_ms: 69
 validate_ms: 71
-generate_ms: 73
-iverilog_tests_ms: 804
-total_ms: 1051
+generate_ms: 75
+iverilog_tests_ms: 894
+total_ms: 1143
 
 Effective Execution Benchmark (CW flow smoke)
 exec_flow_id: 90
@@ -40,7 +40,7 @@ exec_case_count: 3
 exec_latency_cycles_min: 96
 exec_latency_cycles_max: 112
 exec_latency_cycles_avg: 106.67
-benchmark_ranking_score: 106710717.67
+benchmark_ranking_score: 106710809.67
 exec_case_1: flow=90, latency_cycles=112, out_value=7681
 exec_case_2: flow=90, latency_cycles=112, out_value=10471
 exec_case_3: flow=90, latency_cycles=96, out_value=0
@@ -51,8 +51,8 @@ instruction_count: 79
 fallback_instruction_count: 27
 fallback_instruction_ratio: 0.3418
 fallback_ratio_by_flow: {10: 0.833, 11: 0.333, 12: 0.556, 90: 0.259}
-estimated_transfer_hops_total: 73
-estimated_transfer_hops_avg_edge: 1.0000
+estimated_transfer_hops_total: 75
+estimated_transfer_hops_avg_edge: 1.0274
 unique_core_count: 12
 flow_ids_in_schedule: [10, 11, 12, 90]
 program_ids_in_schedule: [1, 2, 90]
@@ -60,19 +60,6 @@ operations_seen: ['add', 'max', 'mul', 'sub']
 critical_path_tail_by_node: ['node=tile_done_gate program=90:0 flow=90 cycle_end=43', 'node=tile_counter program=90:0 flow=90 cycle_end=42', 'node=tile_counter program=90:0 flow=90 cycle_end=41', 'node=tile_counter program=90:0 flow=90 cycle_end=40', 'node=tile_counter program=90:0 flow=90 cycle_end=39']
 
 RTL Test Results
-tb_wau_operation_alu: pass, finish_ps=145000, log=.build/cw_tune/r3_l4_rep2_mp1_iverilog/tb_wau_operation_alu.run.log
-tb_wau_highway_mesh: pass, finish_ps=3000, log=.build/cw_tune/r3_l4_rep2_mp1_iverilog/tb_wau_highway_mesh.run.log
-tb_wau_cw_compiled_exec: pass, finish_ps=3295000, log=.build/cw_tune/r3_l4_rep2_mp1_iverilog/tb_wau_cw_compiled_exec.run.log
-
-Tuning Selection
-tune_mode: 1
-search_lanes: 4,6,8,10
-search_program_replicas: 1,2
-search_program_max_parallel: 1,2
-best_run: r3_l4_rep2_mp1
-best_lane_parallelism: 4
-best_program_replicas: 2
-best_program_max_parallel: 1
-best_exec_latency_cycles_avg: 106.67
-best_makespan_cycles: 43
-best_total_ms: 1051
+tb_wau_operation_alu: pass, finish_ps=145000, log=.build/cw_iverilog/tb_wau_operation_alu.run.log
+tb_wau_highway_mesh: pass, finish_ps=3000, log=.build/cw_iverilog/tb_wau_highway_mesh.run.log
+tb_wau_cw_compiled_exec: pass, finish_ps=3295000, log=.build/cw_iverilog/tb_wau_cw_compiled_exec.run.log
