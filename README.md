@@ -97,7 +97,9 @@ Run fast end-to-end compile/validate/generate/RTL checks for the `.cw` reference
 This script updates `benchmarks/example_pogram_benchmark.txt` as the persistent latest-reference log, including:
 - compile/validate/generate timing,
 - schedule metrics,
-- effective CW execution smoke-benchmark latency/results from generated RTL simulation.
+- effective CW execution smoke-benchmark latency/results from generated RTL simulation,
+- placement-quality metrics (`fallback_instruction_ratio`, per-flow fallback ratio, estimated transfer hops, critical-path tail),
+- reproducibility profile metadata and benchmark ranking score.
 
 Run autotune sweep to search best score (lowest `exec_latency_cycles_avg`, then `makespan_cycles`, then `total_ms`):
 
@@ -108,12 +110,39 @@ TUNE_MODE=1 ./scripts/run_cw_example_benchmark.sh
 Autotune writes:
 - best/latest benchmark log: `benchmarks/example_pogram_benchmark.txt`
 - full sweep summary: `benchmarks/example_pogram_tuning_latest.txt`
+- JSON sidecars:
+  - `benchmarks/example_pogram_benchmark_latest.json`
+  - `benchmarks/example_pogram_benchmark_best.json`
+  - `benchmarks/example_pogram_benchmark_history.json`
+
+Run stability mode with repeated samples (`median` and `p95` latency summary):
+
+```bash
+MULTI_RUNS=5 ./scripts/run_cw_example_benchmark.sh
+```
+
+This writes:
+- `benchmarks/example_pogram_benchmark.txt` (best sample with appended stability section),
+- `benchmarks/example_pogram_multirun_latest.txt` (full multi-run summary).
+
+Run regression-guard mode against the best sidecar baseline:
+
+```bash
+REGRESSION_CHECK=1 ./scripts/run_cw_example_benchmark.sh
+```
+
+Useful guardrail knobs:
+- `REGRESSION_MAX_LATENCY_DELTA` (default `0.00`)
+- `REGRESSION_MAX_MAKESPAN_DELTA` (default `0`)
+- `REGRESSION_MAX_TOTAL_MS_DELTA` (default `250`)
+- `REGRESSION_BASELINE_JSON` (default `benchmarks/example_pogram_benchmark_best.json`)
 
 Manual tuning knobs are available as environment variables:
 - `CW_LANE_PARALLELISM` (example: `4`)
 - `PROGRAM_REPLICAS` and `PROGRAM_MAX_PARALLEL`
 - `CW_MAX_IN_FLIGHT`
 - `CW_DTYPE`
+- `RUN_PROFILE` (tag run intent in benchmark metadata)
 
 Optional direct syntax check of generated RTL:
 
@@ -145,6 +174,11 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `tests/rtl/`: SystemVerilog/Verilog testbenches
 - `tests/python/`: Python unit tests for compiler helpers
 - `benchmarks/example_pogram_benchmark.txt`: tracked benchmark/reference metrics for `.cw` flow compilation
+- `benchmarks/example_pogram_tuning_latest.txt`: latest autotune sweep summary
+- `benchmarks/example_pogram_multirun_latest.txt`: latest multi-run stability summary
+- `benchmarks/example_pogram_benchmark_latest.json`: machine-readable latest benchmark snapshot
+- `benchmarks/example_pogram_benchmark_best.json`: machine-readable best-known benchmark snapshot
+- `benchmarks/example_pogram_benchmark_history.json`: benchmark history for trend checks
 
 ## Generated Artifacts
 A `generate` run emits:

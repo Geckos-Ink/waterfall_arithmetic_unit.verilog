@@ -1,0 +1,78 @@
+{
+  "best_sidecar": "benchmarks/example_pogram_benchmark_best.json",
+  "format_version": 1,
+  "runs": [
+    {
+      "benchmark_ranking_score": 106710803.67,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 106.67,
+      "makespan_cycles": 43,
+      "run_profile": "reference",
+      "run_utc": "2026-05-06T20:17:50Z",
+      "total_ms": 1137
+    },
+    {
+      "benchmark_ranking_score": 106710848.67,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 106.67,
+      "makespan_cycles": 43,
+      "run_profile": "reference",
+      "run_utc": "2026-05-06T20:17:59Z",
+      "total_ms": 1182
+    },
+    {
+      "benchmark_ranking_score": 106710827.67,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 106.67,
+      "makespan_cycles": 43,
+      "run_profile": "reference",
+      "run_utc": "2026-05-06T20:18:11Z",
+      "total_ms": 1161
+    },
+    {
+      "benchmark_ranking_score": 106710874.67,
+      "benchmark_text": ".build/cw_tune/best_refresh.txt",
+      "exec_latency_cycles_avg": 106.67,
+      "makespan_cycles": 43,
+      "run_profile": "autotune_best_refresh",
+      "run_utc": "2026-05-06T20:18:54Z",
+      "total_ms": 1208
+    },
+    {
+      "benchmark_ranking_score": 106714187.0,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 106.67,
+      "makespan_cycles": 43,
+      "run_profile": "autotune_selected",
+      "run_utc": "2026-05-06T20:20:02Z",
+      "total_ms": 1187
+    },
+    {
+      "benchmark_ranking_score": 106714081.0,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 106.67,
+      "makespan_cycles": 43,
+      "run_profile": "autotune_selected",
+      "run_utc": "2026-05-06T20:20:10Z",
+      "total_ms": 1081
+    },
+    {
+      "benchmark_ranking_score": 106710794.67,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 106.67,
+      "makespan_cycles": 43,
+      "run_profile": "reference",
+      "run_utc": "2026-05-06T20:20:56Z",
+      "total_ms": 1128
+    },
+    {
+      "benchmark_ranking_score": 106714051.0,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 106.67,
+      "makespan_cycles": 43,
+      "run_profile": "autotune_selected",
+      "run_utc": "2026-05-06T20:22:41Z",
+      "total_ms": 1051
+    }
+  ]
+}

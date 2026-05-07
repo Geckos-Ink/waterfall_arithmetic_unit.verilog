@@ -24,6 +24,8 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 9. For CW kernel performance validation/tuning, run and persist the benchmark reference:
    - `./scripts/run_cw_example_benchmark.sh`
    - optional autotune sweep for best score: `TUNE_MODE=1 ./scripts/run_cw_example_benchmark.sh`
+   - optional stability run summary: `MULTI_RUNS=5 ./scripts/run_cw_example_benchmark.sh`
+   - optional regression guardrail check: `REGRESSION_CHECK=1 ./scripts/run_cw_example_benchmark.sh`
 
 ## Ownership Boundaries
 - `config.py`: schema and validation only.
@@ -55,7 +57,7 @@ Current best-known score (as of 2026-05-06, from `TUNE_MODE=1` sweep):
 - `cw_lane_parallelism_requested=4` (via `.cw` pragma), `program_replicas=2`, `program_max_parallel_flows=1`
 - `exec_latency_cycles_avg=106.67` (min `96`, max `112`)
 - `makespan_cycles=43`
-- `total_ms=1082`
+- `total_ms=1051`
 
 ## Extension Rules
 When adding a new arithmetic operation:

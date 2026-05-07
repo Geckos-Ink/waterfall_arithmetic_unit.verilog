@@ -25,6 +25,23 @@ TUNE_LANE_PARALLELISM_SET="${TUNE_LANE_PARALLELISM_SET:-4,6,8,10}"
 TUNE_PROGRAM_REPLICAS_SET="${TUNE_PROGRAM_REPLICAS_SET:-1,2,3}"
 TUNE_PROGRAM_MAX_PARALLEL_SET="${TUNE_PROGRAM_MAX_PARALLEL_SET:-1,2,3}"
 TUNE_SUMMARY_FILE="${TUNE_SUMMARY_FILE:-benchmarks/example_pogram_tuning_latest.txt}"
+MULTI_RUNS="${MULTI_RUNS:-1}"
+MULTI_REQUIRE_ALL_PASS="${MULTI_REQUIRE_ALL_PASS:-1}"
+MULTI_SUMMARY_FILE="${MULTI_SUMMARY_FILE:-benchmarks/example_pogram_multirun_latest.txt}"
+
+REGRESSION_CHECK="${REGRESSION_CHECK:-0}"
+REGRESSION_BASELINE_JSON="${REGRESSION_BASELINE_JSON:-benchmarks/example_pogram_benchmark_best.json}"
+REGRESSION_ALLOW_MISSING_BASELINE="${REGRESSION_ALLOW_MISSING_BASELINE:-1}"
+REGRESSION_MAX_LATENCY_DELTA="${REGRESSION_MAX_LATENCY_DELTA:-0.00}"
+REGRESSION_MAX_MAKESPAN_DELTA="${REGRESSION_MAX_MAKESPAN_DELTA:-0}"
+REGRESSION_MAX_TOTAL_MS_DELTA="${REGRESSION_MAX_TOTAL_MS_DELTA:-250}"
+
+SIDECAR_LATEST_JSON="${SIDECAR_LATEST_JSON:-benchmarks/example_pogram_benchmark_latest.json}"
+SIDECAR_BEST_JSON="${SIDECAR_BEST_JSON:-benchmarks/example_pogram_benchmark_best.json}"
+SIDECAR_HISTORY_JSON="${SIDECAR_HISTORY_JSON:-benchmarks/example_pogram_benchmark_history.json}"
+SIDECAR_HISTORY_KEEP="${SIDECAR_HISTORY_KEEP:-200}"
+UPDATE_BENCH_SIDECAR="${UPDATE_BENCH_SIDECAR:-1}"
+RUN_PROFILE="${RUN_PROFILE:-reference}"
 
 BUILD_DIR="${BUILD_DIR:-.build/cw_iverilog}"
 ALU_LOG="$BUILD_DIR/tb_wau_operation_alu.run.log"
@@ -33,7 +50,16 @@ EXEC_LOG="$BUILD_DIR/tb_wau_cw_compiled_exec.run.log"
 TOP_LOG="$BUILD_DIR/tb_wau_top_demo.run.log"
 CW_EXEC_TB="$BUILD_DIR/tb_wau_cw_compiled_exec.v"
 
-mkdir -p "$(dirname "$OUT_CONFIG")" "$(dirname "$BENCH_FILE")" "$OUT_DIR" "$BUILD_DIR"
+mkdir -p \
+  "$(dirname "$OUT_CONFIG")" \
+  "$(dirname "$BENCH_FILE")" \
+  "$(dirname "$TUNE_SUMMARY_FILE")" \
+  "$(dirname "$MULTI_SUMMARY_FILE")" \
+  "$(dirname "$SIDECAR_LATEST_JSON")" \
+  "$(dirname "$SIDECAR_BEST_JSON")" \
+  "$(dirname "$SIDECAR_HISTORY_JSON")" \
+  "$OUT_DIR" \
+  "$BUILD_DIR"
 
 export PYTHONPATH=src/python
 
@@ -70,6 +96,183 @@ trim_csv_token() {
   echo "$token"
 }
 
+bench_field() {
+  local file="$1"
+  local key="$2"
+  awk -F': ' -v key="$key" '$1 == key {print $2}' "$file" | tail -n 1
+}
+
+if [[ "$TUNE_MODE" == "1" && "$MULTI_RUNS" -gt 1 ]]; then
+  echo "[cw-bench] ERROR: TUNE_MODE=1 cannot be combined with MULTI_RUNS>1"
+  exit 2
+fi
+
+if [[ "$TUNE_MODE" != "1" && "$MULTI_RUNS" -gt 1 ]]; then
+  echo "[cw-bench] multi-run mode enabled (runs=${MULTI_RUNS})"
+  MULTI_ROOT=".build/cw_multi"
+  MULTI_ROWS="$MULTI_ROOT/rows.csv"
+  mkdir -p "$MULTI_ROOT" "$(dirname "$MULTI_SUMMARY_FILE")"
+  : > "$MULTI_ROWS"
+
+  for ((run_idx = 1; run_idx <= MULTI_RUNS; run_idx++)); do
+    run_name="run_${run_idx}"
+    run_bench="$MULTI_ROOT/${run_name}.txt"
+    run_out_dir="$MULTI_ROOT/${run_name}_generated"
+    run_build_dir="$MULTI_ROOT/${run_name}_iverilog"
+
+    echo "[cw-bench][multi] run=${run_name}"
+    if TUNE_MODE=0 \
+      MULTI_RUNS=1 \
+      REGRESSION_CHECK=0 \
+      UPDATE_BENCH_SIDECAR=0 \
+      RUN_PROFILE="multi_run_sample" \
+      OUT_DIR="$run_out_dir" \
+      BUILD_DIR="$run_build_dir" \
+      "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$run_bench"; then
+      lat_avg="$(bench_field "$run_bench" "exec_latency_cycles_avg")"
+      makespan="$(bench_field "$run_bench" "makespan_cycles")"
+      total_ms="$(bench_field "$run_bench" "total_ms")"
+      fallback_ratio="$(bench_field "$run_bench" "fallback_instruction_ratio")"
+      hops_total="$(bench_field "$run_bench" "estimated_transfer_hops_total")"
+      echo "${run_name},pass,${lat_avg},${makespan},${total_ms},${fallback_ratio},${hops_total},${run_bench}" >> "$MULTI_ROWS"
+    else
+      echo "${run_name},fail,inf,inf,inf,inf,inf,${run_bench}" >> "$MULTI_ROWS"
+    fi
+  done
+
+  export CW_MULTI_ROWS="$MULTI_ROWS"
+  export CW_MULTI_TARGET_BENCH="$BENCH_FILE"
+  export CW_MULTI_SUMMARY_FILE="$MULTI_SUMMARY_FILE"
+  export CW_MULTI_RUNS="$MULTI_RUNS"
+  export CW_MULTI_REQUIRE_ALL_PASS="$MULTI_REQUIRE_ALL_PASS"
+  python3 - <<'PY'
+from __future__ import annotations
+
+import csv
+import datetime as dt
+import math
+import os
+from pathlib import Path
+
+rows_path = Path(os.environ["CW_MULTI_ROWS"])
+target_bench = Path(os.environ["CW_MULTI_TARGET_BENCH"])
+summary_path = Path(os.environ["CW_MULTI_SUMMARY_FILE"])
+runs_requested = int(os.environ["CW_MULTI_RUNS"])
+require_all_pass = os.environ["CW_MULTI_REQUIRE_ALL_PASS"] == "1"
+
+rows: list[dict[str, str]] = []
+with rows_path.open(newline="") as f:
+    reader = csv.reader(f)
+    for run_name, status, lat_avg, makespan, total_ms, fallback_ratio, hops_total, bench_path in reader:
+        rows.append(
+            {
+                "run_name": run_name,
+                "status": status,
+                "lat_avg": lat_avg,
+                "makespan": makespan,
+                "total_ms": total_ms,
+                "fallback_ratio": fallback_ratio,
+                "hops_total": hops_total,
+                "bench_path": bench_path,
+            }
+        )
+
+
+def as_float(value: str) -> float:
+    if value == "inf":
+        return float("inf")
+    return float(value)
+
+
+def as_int(value: str) -> int:
+    if value == "inf":
+        return 2**31 - 1
+    return int(float(value))
+
+
+def percentile_ceil(values: list[float], p: float) -> float:
+    if not values:
+        return float("inf")
+    ordered = sorted(values)
+    idx = max(0, min(len(ordered) - 1, math.ceil((p / 100.0) * len(ordered)) - 1))
+    return ordered[idx]
+
+
+passing = [row for row in rows if row["status"] == "pass"]
+if not passing:
+    raise SystemExit("No successful multi-run samples")
+if require_all_pass and len(passing) != len(rows):
+    failed = len(rows) - len(passing)
+    raise SystemExit(f"Multi-run required all pass but found {failed} failed run(s)")
+
+passing_sorted = sorted(
+    passing,
+    key=lambda row: (as_float(row["lat_avg"]), as_int(row["makespan"]), as_int(row["total_ms"])),
+)
+best = passing_sorted[0]
+best_path = Path(best["bench_path"])
+if not best_path.exists():
+    raise SystemExit(f"Best benchmark file missing: {best_path}")
+
+lat_values = [as_float(row["lat_avg"]) for row in passing]
+lat_median = percentile_ceil(lat_values, 50.0)
+lat_p95 = percentile_ceil(lat_values, 95.0)
+
+best_text = best_path.read_text()
+stability_section = [
+    "",
+    "Multi-Run Stability",
+    f"multi_runs_requested: {runs_requested}",
+    f"multi_runs_passed: {len(passing)}",
+    f"multi_runs_failed: {len(rows) - len(passing)}",
+    f"exec_latency_cycles_median: {lat_median:.2f}",
+    f"exec_latency_cycles_p95: {lat_p95:.2f}",
+    f"best_sample_run: {best['run_name']}",
+    f"best_sample_exec_latency_cycles_avg: {best['lat_avg']}",
+    f"best_sample_makespan_cycles: {best['makespan']}",
+    f"best_sample_total_ms: {best['total_ms']}",
+]
+target_bench.write_text(best_text.rstrip() + "\n" + "\n".join(stability_section) + "\n")
+
+summary_lines = [
+    "WAU CW Multi-Run Summary (latest)",
+    f"run_utc: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')}",
+    f"multi_runs_requested: {runs_requested}",
+    f"multi_runs_passed: {len(passing)}",
+    f"multi_runs_failed: {len(rows) - len(passing)}",
+    f"exec_latency_cycles_median: {lat_median:.2f}",
+    f"exec_latency_cycles_p95: {lat_p95:.2f}",
+    "",
+    "Top Samples (lowest exec latency avg, then makespan, then total_ms)",
+]
+for idx, row in enumerate(passing_sorted[:5], start=1):
+    summary_lines.append(
+        f"{idx}. run={row['run_name']} exec_latency_avg={row['lat_avg']} makespan={row['makespan']} "
+        f"total_ms={row['total_ms']} fallback_ratio={row['fallback_ratio']} hops_total={row['hops_total']}"
+    )
+
+summary_lines.append("")
+summary_lines.append("All Samples")
+for row in rows:
+    summary_lines.append(
+        f"run={row['run_name']} status={row['status']} exec_latency_avg={row['lat_avg']} "
+        f"makespan={row['makespan']} total_ms={row['total_ms']} fallback_ratio={row['fallback_ratio']} "
+        f"hops_total={row['hops_total']} bench={row['bench_path']}"
+    )
+
+summary_path.write_text("\n".join(summary_lines) + "\n")
+print(
+    "[cw-bench][multi] best "
+    f"run={best['run_name']} exec_latency_avg={best['lat_avg']} makespan={best['makespan']} total_ms={best['total_ms']}"
+)
+print(f"[cw-bench][multi] wrote latest benchmark: {target_bench}")
+print(f"[cw-bench][multi] wrote multi-run summary: {summary_path}")
+PY
+
+  echo "[cw-bench] done (multi-run mode)"
+  exit 0
+fi
+
 if [[ "$TUNE_MODE" == "1" ]]; then
   echo "[cw-bench] tune mode enabled"
   TUNE_ROOT=".build/cw_tune"
@@ -101,15 +304,19 @@ if [[ "$TUNE_MODE" == "1" ]]; then
         echo "[cw-bench][tune] run=${run_name}"
 
         if TUNE_MODE=0 \
+          MULTI_RUNS=1 \
+          REGRESSION_CHECK=0 \
+          UPDATE_BENCH_SIDECAR=0 \
+          RUN_PROFILE="autotune_candidate" \
           CW_LANE_PARALLELISM="$lane" \
           PROGRAM_REPLICAS="$rep" \
           PROGRAM_MAX_PARALLEL="$mp" \
           OUT_DIR="$run_out_dir" \
           BUILD_DIR="$run_build_dir" \
           "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$run_bench"; then
-          lat_avg="$(awk -F': ' '/^exec_latency_cycles_avg:/{print $2}' "$run_bench" | tail -n 1)"
-          makespan="$(awk -F': ' '/^makespan_cycles:/{print $2}' "$run_bench" | tail -n 1)"
-          total_ms="$(awk -F': ' '/^total_ms:/{print $2}' "$run_bench" | tail -n 1)"
+          lat_avg="$(bench_field "$run_bench" "exec_latency_cycles_avg")"
+          makespan="$(bench_field "$run_bench" "makespan_cycles")"
+          total_ms="$(bench_field "$run_bench" "total_ms")"
           echo "${run_name},${lane},${rep},${mp},pass,${lat_avg},${makespan},${total_ms},${run_bench}" >> "$TUNE_ROWS"
         else
           echo "${run_name},${lane},${rep},${mp},fail,inf,inf,inf,${run_bench}" >> "$TUNE_ROWS"
@@ -237,12 +444,122 @@ print(f"[cw-bench][tune] wrote latest benchmark: {target_bench}")
 print(f"[cw-bench][tune] wrote tuning summary: {summary_path}")
 PY
 
-  best_lane="$(awk -F': ' '/^best_lane_parallelism:/{print $2}' "$BENCH_FILE" | tail -n 1)"
-  best_rep="$(awk -F': ' '/^best_program_replicas:/{print $2}' "$BENCH_FILE" | tail -n 1)"
-  best_mp="$(awk -F': ' '/^best_program_max_parallel:/{print $2}' "$BENCH_FILE" | tail -n 1)"
+  if [[ "$UPDATE_BENCH_SIDECAR" == "1" ]]; then
+    export CW_TUNE_SIDE_BENCH="$BENCH_FILE"
+    export CW_TUNE_SIDE_LATEST="$SIDECAR_LATEST_JSON"
+    export CW_TUNE_SIDE_BEST="$SIDECAR_BEST_JSON"
+    export CW_TUNE_SIDE_HISTORY="$SIDECAR_HISTORY_JSON"
+    export CW_TUNE_SIDE_HISTORY_KEEP="$SIDECAR_HISTORY_KEEP"
+    python3 - <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+from pathlib import Path
+
+bench_path = Path(os.environ["CW_TUNE_SIDE_BENCH"])
+latest_path = Path(os.environ["CW_TUNE_SIDE_LATEST"])
+best_path = Path(os.environ["CW_TUNE_SIDE_BEST"])
+history_path = Path(os.environ["CW_TUNE_SIDE_HISTORY"])
+history_keep = max(1, int(os.environ["CW_TUNE_SIDE_HISTORY_KEEP"]))
+
+
+def field(name: str) -> str:
+    prefix = f"{name}: "
+    for line in bench_path.read_text().splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    raise KeyError(f"Missing key '{name}' in {bench_path}")
+
+
+lat = float(field("exec_latency_cycles_avg"))
+makespan = int(float(field("makespan_cycles")))
+total_ms = int(float(field("best_total_ms" if "Tuning Selection" in bench_path.read_text() else "total_ms")))
+score = (lat * 1_000_000.0) + (makespan * 1_000.0) + total_ms
+
+payload = {
+    "format_version": 1,
+    "run_utc": field("run_utc"),
+    "run_profile": "autotune_selected",
+    "metrics": {
+        "exec_latency_cycles_avg": round(lat, 2),
+        "makespan_cycles": makespan,
+        "total_ms": total_ms,
+        "benchmark_ranking_score": round(score, 2),
+    },
+    "paths": {
+        "benchmark_text": str(bench_path),
+        "tuning_summary": str(Path("benchmarks/example_pogram_tuning_latest.txt")),
+    },
+}
+
+latest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def score_tuple(raw: dict) -> tuple[float, int, int]:
+    metrics = raw.get("metrics", {})
+    return (
+        float(metrics.get("exec_latency_cycles_avg", math.inf)),
+        int(metrics.get("makespan_cycles", 2**31 - 1)),
+        int(metrics.get("total_ms", 2**31 - 1)),
+    )
+
+
+best_raw: dict | None = None
+if best_path.exists():
+    try:
+        loaded = json.loads(best_path.read_text())
+        if isinstance(loaded, dict):
+            best_raw = loaded
+    except Exception:  # noqa: BLE001
+        best_raw = None
+
+if best_raw is None or score_tuple(payload) < score_tuple(best_raw):
+    best_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+history_payload: dict = {"format_version": 1, "runs": []}
+if history_path.exists():
+    try:
+        loaded = json.loads(history_path.read_text())
+        if isinstance(loaded, dict):
+            history_payload = loaded
+    except Exception:  # noqa: BLE001
+        history_payload = {"format_version": 1, "runs": []}
+
+runs = history_payload.get("runs", [])
+if not isinstance(runs, list):
+    runs = []
+runs.append(
+    {
+        "run_utc": payload["run_utc"],
+        "run_profile": payload["run_profile"],
+        "benchmark_text": str(bench_path),
+        "exec_latency_cycles_avg": payload["metrics"]["exec_latency_cycles_avg"],
+        "makespan_cycles": payload["metrics"]["makespan_cycles"],
+        "total_ms": payload["metrics"]["total_ms"],
+        "benchmark_ranking_score": payload["metrics"]["benchmark_ranking_score"],
+    }
+)
+if len(runs) > history_keep:
+    runs = runs[-history_keep:]
+history_payload["runs"] = runs
+history_payload["best_sidecar"] = str(best_path)
+history_path.write_text(json.dumps(history_payload, indent=2, sort_keys=True) + "\n")
+print(f"[cw-bench][tune] synced sidecars from selected best benchmark: {bench_path}")
+PY
+  fi
+
+  best_lane="$(bench_field "$BENCH_FILE" "best_lane_parallelism")"
+  best_rep="$(bench_field "$BENCH_FILE" "best_program_replicas")"
+  best_mp="$(bench_field "$BENCH_FILE" "best_program_max_parallel")"
   if [[ -n "$best_lane" && -n "$best_rep" && -n "$best_mp" ]]; then
     echo "[cw-bench][tune] refreshing OUT_CONFIG with best candidate"
     TUNE_MODE=0 \
+      MULTI_RUNS=1 \
+      REGRESSION_CHECK=0 \
+      UPDATE_BENCH_SIDECAR=0 \
+      RUN_PROFILE="autotune_best_refresh" \
       CW_LANE_PARALLELISM="$best_lane" \
       PROGRAM_REPLICAS="$best_rep" \
       PROGRAM_MAX_PARALLEL="$best_mp" \
@@ -556,12 +873,21 @@ export CW_BENCH_GIT_COMMIT="$git_commit"
 export CW_BENCH_GIT_TREE_STATE="$git_tree_state"
 export CW_BENCH_PYTHON_VERSION="$python_version"
 export CW_BENCH_IVERILOG_VERSION="$iverilog_version"
+export CW_BENCH_RUN_PROFILE="$RUN_PROFILE"
+export CW_BENCH_TUNE_MODE="$TUNE_MODE"
+export CW_BENCH_UPDATE_SIDECAR="$UPDATE_BENCH_SIDECAR"
+export CW_BENCH_SIDECAR_LATEST_JSON="$SIDECAR_LATEST_JSON"
+export CW_BENCH_SIDECAR_BEST_JSON="$SIDECAR_BEST_JSON"
+export CW_BENCH_SIDECAR_HISTORY_JSON="$SIDECAR_HISTORY_JSON"
+export CW_BENCH_SIDECAR_HISTORY_KEEP="$SIDECAR_HISTORY_KEEP"
 
 python3 - <<'PY'
 from __future__ import annotations
 
+from collections import defaultdict
 import datetime as dt
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -606,6 +932,14 @@ def parse_exec_metrics(exec_log_path: Path) -> list[dict[str, int]]:
     return sorted(rows, key=lambda row: row["case"])
 
 
+def score_tuple_from_metrics(metrics: dict[str, float | int]) -> tuple[float, int, int]:
+    return (
+        float(metrics.get("exec_latency_cycles_avg", math.inf)),
+        int(metrics.get("makespan_cycles", 2**31 - 1)),
+        int(metrics.get("total_ms", 2**31 - 1)),
+    )
+
+
 bench_path = Path(os.environ["CW_BENCH_FILE"])
 cw_file = os.environ["CW_BENCH_CW_FILE"]
 base_config = os.environ["CW_BENCH_BASE_CONFIG"]
@@ -630,16 +964,73 @@ git_commit = os.environ["CW_BENCH_GIT_COMMIT"]
 git_tree_state = os.environ["CW_BENCH_GIT_TREE_STATE"]
 python_version = os.environ["CW_BENCH_PYTHON_VERSION"]
 iverilog_version = os.environ["CW_BENCH_IVERILOG_VERSION"]
+run_profile = os.environ["CW_BENCH_RUN_PROFILE"]
+tune_mode = os.environ["CW_BENCH_TUNE_MODE"] == "1"
+update_sidecar = os.environ["CW_BENCH_UPDATE_SIDECAR"] == "1"
+sidecar_latest_path = Path(os.environ["CW_BENCH_SIDECAR_LATEST_JSON"])
+sidecar_best_path = Path(os.environ["CW_BENCH_SIDECAR_BEST_JSON"])
+sidecar_history_path = Path(os.environ["CW_BENCH_SIDECAR_HISTORY_JSON"])
+sidecar_history_keep = max(1, int(os.environ["CW_BENCH_SIDECAR_HISTORY_KEEP"]))
 
 schedule_path = out_dir / "wau_schedule.json"
 schedule = json.loads(schedule_path.read_text())
 instructions = schedule.get("instructions", [])
 
 fallback_count = sum(1 for ins in instructions if bool(ins.get("used_fallback", False)))
+instruction_count = len(instructions)
+fallback_ratio = (fallback_count / instruction_count) if instruction_count else 0.0
 core_count = len({int(ins["core_index"]) for ins in instructions})
 ops = sorted({str(ins["op"]) for ins in instructions})
 programs = sorted({int(ins["program_id"]) for ins in instructions})
 flows = sorted({int(ins["flow_id"]) for ins in instructions})
+
+flow_totals: dict[int, int] = defaultdict(int)
+flow_fallback: dict[int, int] = defaultdict(int)
+for ins in instructions:
+    flow = int(ins.get("flow_id", 0))
+    flow_totals[flow] += 1
+    if bool(ins.get("used_fallback", False)):
+        flow_fallback[flow] += 1
+per_flow_fallback_ratio = {
+    flow: (flow_fallback.get(flow, 0) / count) if count else 0.0 for flow, count in sorted(flow_totals.items())
+}
+per_flow_fallback_ratio_repr = "{" + ", ".join(f"{flow}: {ratio:.3f}" for flow, ratio in per_flow_fallback_ratio.items()) + "}"
+
+def core_xy(ins: dict) -> tuple[int, int]:
+    core = ins.get("core")
+    if isinstance(core, dict):
+        return int(core.get("x", ins.get("core_x", 0))), int(core.get("y", ins.get("core_y", 0)))
+    return int(ins.get("core_x", 0)), int(ins.get("core_y", 0))
+
+
+grouped_instructions: dict[tuple[int, int, int], list[dict]] = defaultdict(list)
+for ins in instructions:
+    key = (
+        int(ins.get("program_id", 0)),
+        int(ins.get("program_replica", 0)),
+        int(ins.get("flow_id", 0)),
+    )
+    grouped_instructions[key].append(ins)
+
+estimated_hops_total = 0
+estimated_hop_edges = 0
+for group in grouped_instructions.values():
+    ordered = sorted(
+        group,
+        key=lambda ins: (
+            int(ins.get("iteration", 0)),
+            int(ins.get("cycle_start", 0)),
+            int(ins.get("stage_index", 0)),
+            str(ins.get("node_id", "")),
+        ),
+    )
+    for prev, cur in zip(ordered, ordered[1:]):
+        prev_x, prev_y = core_xy(prev)
+        cur_x, cur_y = core_xy(cur)
+        estimated_hops_total += abs(cur_x - prev_x) + abs(cur_y - prev_y)
+        estimated_hop_edges += 1
+
+estimated_hops_avg = (estimated_hops_total / estimated_hop_edges) if estimated_hop_edges else 0.0
 
 payload = json.loads(out_config.read_text())
 compiled_flow = next(
@@ -684,10 +1075,34 @@ latencies = [row["latency_cycles"] for row in exec_rows]
 lat_min = min(latencies) if latencies else 0
 lat_max = max(latencies) if latencies else 0
 lat_avg = (sum(latencies) / len(latencies)) if latencies else 0.0
+makespan = int(schedule.get("makespan_cycles", 0))
+benchmark_ranking_score = (lat_avg * 1_000_000.0) + (makespan * 1_000.0) + total_ms
+
+critical_tail = sorted(
+    instructions,
+    key=lambda ins: (
+        int(ins.get("cycle_end", 0)),
+        int(ins.get("cycle_start", 0)),
+        int(ins.get("program_id", 0)),
+        int(ins.get("program_replica", 0)),
+        int(ins.get("flow_id", 0)),
+    ),
+    reverse=True,
+)[:5]
+critical_tail_repr = [
+    (
+        f"node={ins.get('node_id', 'n/a')} "
+        f"program={int(ins.get('program_id', 0))}:{int(ins.get('program_replica', 0))} "
+        f"flow={int(ins.get('flow_id', 0))} cycle_end={int(ins.get('cycle_end', 0))}"
+    )
+    for ins in critical_tail
+]
+
+run_utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 lines = [
     "WAU CW Example Benchmark Reference (latest)",
-    f"run_utc: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')}",
+    f"run_utc: {run_utc}",
     f"git_commit: {git_commit}",
     f"git_tree_state: {git_tree_state}",
     f"python_version: {python_version}",
@@ -696,6 +1111,11 @@ lines = [
     f"base_config: {base_config}",
     f"compiled_config: {out_config}",
     f"schedule_json: {schedule_path}",
+    "",
+    "Benchmark Mode",
+    f"run_profile: {run_profile}",
+    f"tune_mode: {1 if tune_mode else 0}",
+    f"update_sidecar: {1 if update_sidecar else 0}",
     "",
     "Workload/Program",
     f"flow_id: {flow_id}",
@@ -723,6 +1143,7 @@ lines = [
     f"exec_latency_cycles_min: {lat_min}",
     f"exec_latency_cycles_max: {lat_max}",
     f"exec_latency_cycles_avg: {lat_avg:.2f}",
+    f"benchmark_ranking_score: {benchmark_ranking_score:.2f}",
 ]
 
 for row in exec_rows:
@@ -734,13 +1155,18 @@ lines.extend(
     [
         "",
         "Schedule Metrics",
-        f"makespan_cycles: {int(schedule.get('makespan_cycles', 0))}",
-        f"instruction_count: {len(instructions)}",
+        f"makespan_cycles: {makespan}",
+        f"instruction_count: {instruction_count}",
         f"fallback_instruction_count: {fallback_count}",
+        f"fallback_instruction_ratio: {fallback_ratio:.4f}",
+        f"fallback_ratio_by_flow: {per_flow_fallback_ratio_repr}",
+        f"estimated_transfer_hops_total: {estimated_hops_total}",
+        f"estimated_transfer_hops_avg_edge: {estimated_hops_avg:.4f}",
         f"unique_core_count: {core_count}",
         f"flow_ids_in_schedule: {flows}",
         f"program_ids_in_schedule: {programs}",
         f"operations_seen: {ops}",
+        f"critical_path_tail_by_node: {critical_tail_repr}",
         "",
         "RTL Test Results",
     ]
@@ -749,6 +1175,215 @@ lines.extend(test_lines)
 
 bench_path.write_text("\n".join(lines) + "\n")
 print(f"[cw-bench] wrote benchmark reference: {bench_path}")
+
+if update_sidecar:
+    metrics_payload = {
+        "exec_latency_cycles_min": lat_min,
+        "exec_latency_cycles_max": lat_max,
+        "exec_latency_cycles_avg": round(lat_avg, 2),
+        "makespan_cycles": makespan,
+        "total_ms": total_ms,
+        "instruction_count": instruction_count,
+        "fallback_instruction_count": fallback_count,
+        "fallback_instruction_ratio": round(fallback_ratio, 6),
+        "estimated_transfer_hops_total": estimated_hops_total,
+        "estimated_transfer_hops_avg_edge": round(estimated_hops_avg, 6),
+        "benchmark_ranking_score": round(benchmark_ranking_score, 2),
+    }
+    latest_payload = {
+        "format_version": 1,
+        "run_utc": run_utc,
+        "run_profile": run_profile,
+        "inputs": {
+            "cw_source": cw_file,
+            "base_config": base_config,
+            "compiled_config": str(out_config),
+            "flow_id": flow_id,
+            "program_id": program_id,
+            "program_replicas": program_replicas,
+            "program_max_parallel_flows": program_max_parallel,
+            "cw_max_in_flight": cw_max_in_flight,
+            "cw_lane_parallelism_requested": cw_lane_parallelism_requested,
+            "cw_dtype_requested": cw_dtype_requested,
+        },
+        "timing_ms": {
+            "compile_cw_ms": compile_ms,
+            "validate_ms": validate_ms,
+            "generate_ms": generate_ms,
+            "iverilog_tests_ms": iverilog_ms,
+            "total_ms": total_ms,
+        },
+        "metrics": metrics_payload,
+        "placement_quality": {
+            "fallback_ratio_by_flow": {str(flow): round(ratio, 6) for flow, ratio in per_flow_fallback_ratio.items()},
+            "critical_path_tail_by_node": critical_tail_repr,
+        },
+        "paths": {
+            "benchmark_text": str(bench_path),
+            "schedule_json": str(schedule_path),
+        },
+        "tool_versions": {
+            "git_commit": git_commit,
+            "git_tree_state": git_tree_state,
+            "python_version": python_version,
+            "iverilog_version": iverilog_version,
+        },
+    }
+
+    sidecar_latest_path.write_text(json.dumps(latest_payload, indent=2, sort_keys=True) + "\n")
+    print(f"[cw-bench] wrote latest sidecar: {sidecar_latest_path}")
+
+    best_updated = False
+    existing_best: dict | None = None
+    if sidecar_best_path.exists():
+        try:
+            raw = json.loads(sidecar_best_path.read_text())
+            if isinstance(raw, dict):
+                existing_best = raw
+        except Exception:  # noqa: BLE001
+            existing_best = None
+
+    if existing_best is None or score_tuple_from_metrics(latest_payload["metrics"]) < score_tuple_from_metrics(
+        existing_best.get("metrics", {})
+    ):
+        sidecar_best_path.write_text(json.dumps(latest_payload, indent=2, sort_keys=True) + "\n")
+        best_updated = True
+    print(f"[cw-bench] wrote best sidecar: {sidecar_best_path} (updated={1 if best_updated else 0})")
+
+    history_payload: dict = {"format_version": 1, "runs": []}
+    if sidecar_history_path.exists():
+        try:
+            loaded = json.loads(sidecar_history_path.read_text())
+            if isinstance(loaded, dict):
+                history_payload = loaded
+        except Exception:  # noqa: BLE001
+            history_payload = {"format_version": 1, "runs": []}
+
+    runs = history_payload.get("runs", [])
+    if not isinstance(runs, list):
+        runs = []
+    runs.append(
+        {
+            "run_utc": run_utc,
+            "run_profile": run_profile,
+            "benchmark_text": str(bench_path),
+            "exec_latency_cycles_avg": round(lat_avg, 2),
+            "makespan_cycles": makespan,
+            "total_ms": total_ms,
+            "benchmark_ranking_score": round(benchmark_ranking_score, 2),
+        }
+    )
+    if len(runs) > sidecar_history_keep:
+        runs = runs[-sidecar_history_keep:]
+    history_payload["runs"] = runs
+    history_payload["best_sidecar"] = str(sidecar_best_path)
+    sidecar_history_path.write_text(json.dumps(history_payload, indent=2, sort_keys=True) + "\n")
+    print(f"[cw-bench] wrote history sidecar: {sidecar_history_path}")
 PY
+
+if [[ "$REGRESSION_CHECK" == "1" ]]; then
+  echo "[cw-bench] regression check enabled"
+  export CW_REG_BENCH_FILE="$BENCH_FILE"
+  export CW_REG_CURRENT_JSON="$SIDECAR_LATEST_JSON"
+  export CW_REG_BASELINE_PATH="$REGRESSION_BASELINE_JSON"
+  export CW_REG_ALLOW_MISSING="$REGRESSION_ALLOW_MISSING_BASELINE"
+  export CW_REG_MAX_LATENCY_DELTA="$REGRESSION_MAX_LATENCY_DELTA"
+  export CW_REG_MAX_MAKESPAN_DELTA="$REGRESSION_MAX_MAKESPAN_DELTA"
+  export CW_REG_MAX_TOTAL_MS_DELTA="$REGRESSION_MAX_TOTAL_MS_DELTA"
+  python3 - <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+from pathlib import Path
+
+
+def parse_bench_metric(path: Path, key: str) -> float:
+    for line in path.read_text().splitlines():
+        if not line.startswith(f"{key}: "):
+            continue
+        return float(line.split(": ", 1)[1].strip())
+    raise KeyError(f"Metric '{key}' not found in {path}")
+
+
+def load_metrics(path: Path, *, fallback_bench: Path) -> dict[str, float]:
+    if path.exists():
+        if path.suffix == ".json":
+            payload = json.loads(path.read_text())
+            if isinstance(payload, dict) and isinstance(payload.get("metrics"), dict):
+                metrics = payload["metrics"]
+                return {
+                    "exec_latency_cycles_avg": float(metrics["exec_latency_cycles_avg"]),
+                    "makespan_cycles": float(metrics["makespan_cycles"]),
+                    "total_ms": float(metrics["total_ms"]),
+                }
+            if isinstance(payload, dict):
+                return {
+                    "exec_latency_cycles_avg": float(payload["exec_latency_cycles_avg"]),
+                    "makespan_cycles": float(payload["makespan_cycles"]),
+                    "total_ms": float(payload["total_ms"]),
+                }
+        else:
+            return {
+                "exec_latency_cycles_avg": parse_bench_metric(path, "exec_latency_cycles_avg"),
+                "makespan_cycles": parse_bench_metric(path, "makespan_cycles"),
+                "total_ms": parse_bench_metric(path, "total_ms"),
+            }
+
+    return {
+        "exec_latency_cycles_avg": parse_bench_metric(fallback_bench, "exec_latency_cycles_avg"),
+        "makespan_cycles": parse_bench_metric(fallback_bench, "makespan_cycles"),
+        "total_ms": parse_bench_metric(fallback_bench, "total_ms"),
+    }
+
+
+bench_file = Path(os.environ["CW_REG_BENCH_FILE"])
+current_json = Path(os.environ["CW_REG_CURRENT_JSON"])
+baseline_path = Path(os.environ["CW_REG_BASELINE_PATH"])
+allow_missing = os.environ["CW_REG_ALLOW_MISSING"] == "1"
+max_latency_delta = float(os.environ["CW_REG_MAX_LATENCY_DELTA"])
+max_makespan_delta = float(os.environ["CW_REG_MAX_MAKESPAN_DELTA"])
+max_total_ms_delta = float(os.environ["CW_REG_MAX_TOTAL_MS_DELTA"])
+
+current = load_metrics(current_json, fallback_bench=bench_file)
+if not baseline_path.exists():
+    if allow_missing:
+        print(f"[cw-bench][regression] baseline not found: {baseline_path} (skipped)")
+        raise SystemExit(0)
+    raise SystemExit(f"[cw-bench][regression] baseline not found: {baseline_path}")
+
+baseline = load_metrics(baseline_path, fallback_bench=bench_file)
+
+latency_delta = current["exec_latency_cycles_avg"] - baseline["exec_latency_cycles_avg"]
+makespan_delta = current["makespan_cycles"] - baseline["makespan_cycles"]
+total_ms_delta = current["total_ms"] - baseline["total_ms"]
+
+failures: list[str] = []
+if latency_delta > max_latency_delta:
+    failures.append(
+        f"exec_latency_cycles_avg delta {latency_delta:.2f} exceeds {max_latency_delta:.2f}"
+    )
+if makespan_delta > max_makespan_delta:
+    failures.append(
+        f"makespan_cycles delta {makespan_delta:.2f} exceeds {max_makespan_delta:.2f}"
+    )
+if total_ms_delta > max_total_ms_delta:
+    failures.append(
+        f"total_ms delta {total_ms_delta:.2f} exceeds {max_total_ms_delta:.2f}"
+    )
+
+if failures:
+    print("[cw-bench][regression] FAIL")
+    for msg in failures:
+        print(f"[cw-bench][regression] {msg}")
+    raise SystemExit(3)
+
+print(
+    "[cw-bench][regression] PASS "
+    f"latency_delta={latency_delta:.2f} makespan_delta={makespan_delta:.2f} total_ms_delta={total_ms_delta:.2f}"
+)
+PY
+fi
 
 echo "[cw-bench] done"

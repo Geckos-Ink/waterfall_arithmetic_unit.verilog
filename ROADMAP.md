@@ -22,6 +22,11 @@ Implemented this cycle:
 - Phase 4 slice: added generated DE0-NANO board wrapper (`wau_de0_nano_top.v`) with clock/reset/IO integration scaffold.
 - CW benchmark workflow slice: `run_cw_example_benchmark.sh` now executes compile/validate/generate/RTL execution checks and writes persistent latest reference log.
 - CW autotuning slice: benchmark script supports tuning sweeps (`TUNE_MODE=1`) and persists best-run + full sweep summary.
+- CW benchmark stability slice: benchmark script supports repeated multi-run mode (`MULTI_RUNS=<N>`) with median/p95 latency statistics and persisted summary log.
+- CW regression-gate slice: benchmark script supports regression-check mode (`REGRESSION_CHECK=1`) with configurable latency/makespan/wall-time thresholds.
+- CW benchmark observability slice: benchmark logs now emit placement-quality metrics (fallback ratio, per-flow fallback ratio, estimated transfer hops, critical-path tail).
+- CW benchmark CI sidecar slice: latest/best/history machine-readable JSON sidecars are persisted for trend analysis.
+- CW benchmark tuning update: latest 16-point sweep (`lanes=4,6,8,10`, `replicas=1,2`, `max_parallel=1,2`) reached `exec_latency_cycles_avg=106.67`, `makespan=43`, `total_ms=1051` at `lane=4`, `replicas=2`, `max_parallel=1`.
 - CW syntax slice: `.cw` pragma support for lane tuning (`// @wau lane_parallelism=<N>`), with CLI override precedence.
 
 ## CW Compiler and Benchmark Next Steps (2026-05-06+)
@@ -85,6 +90,7 @@ Scope:
 Acceptance:
 - `run_cw_example_benchmark.sh` can run in:
   - single-run reference mode,
+  - multi-run stability mode,
   - autotune mode,
   - regression-check mode.
 - CI-ready output is available for parsing pass/fail and score deltas.
@@ -102,7 +108,7 @@ Acceptance:
 ### Near-Term Targets
 1. Keep best-known `exec_latency_cycles_avg` at or below `106.67` while preserving pass status for all RTL tests.
 2. Introduce at least one additional grammar pragma and full test coverage for it.
-3. Add one new CW benchmark metric that quantifies placement quality (fallback or hops).
+3. Add one new CW benchmark metric that quantifies placement quality (fallback or hops). (completed 2026-05-06: fallback ratios + estimated hops + critical-path tail)
 
 ## Guiding Priorities
 1. Keep generator, compiler, scheduler, and emitted RTL behavior consistent.
