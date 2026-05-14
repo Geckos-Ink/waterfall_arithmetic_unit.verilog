@@ -6,10 +6,10 @@
 // @wau preferred_dtype=float32
 
 void main() {
-    int H = 224;
-    int W = 224;
-    int Cin = 64;
-    int Cout = 128;
+    int32 H = 224;
+    int32 W = 224;
+    int32 Cin = 64;
+    int32 Cout = 128;
 
     DRAM float32 input_feature_map[] = system.bind_dram("ifmap");
     DRAM float32 kernel_weights[] = system.bind_dram("weights_3x3");
@@ -34,11 +34,11 @@ void main() {
 
 space conv2d_residual_kernel {
     // Kernel parameters.
-    int K = 3;
-    int TILE_H = 16;
-    int TILE_W = 16;
-    int CIN_BLOCK = 16;
-    int COUT_BLOCK = 8;
+    int32 K = 3;
+    int32 TILE_H = 16;
+    int32 TILE_W = 16;
+    int32 CIN_BLOCK = 16;
+    int32 COUT_BLOCK = 8;
 
     // DRAM-backed tensors (global memory).
     DRAM float32 ifmap[];
@@ -48,10 +48,10 @@ space conv2d_residual_kernel {
     DRAM float32 ofmap[];
 
     // Runtime dimensions.
-    int H;
-    int W;
-    int Cin;
-    int Cout;
+    int32 H;
+    int32 W;
+    int32 Cin;
+    int32 Cout;
 
     // On-chip working set.
     // Two input buffers are used as ping/pong for overlap between load and compute.
@@ -62,11 +62,11 @@ space conv2d_residual_kernel {
     float32 bias_block[8];
 
     // Shared execution state for worker spaces.
-    int current_tile_y;
-    int current_tile_x;
-    int current_cin_base;
-    int current_oc_base;
-    int current_input_buffer;
+    int32 current_tile_y;
+    int32 current_tile_x;
+    int32 current_cin_base;
+    int32 current_oc_base;
+    int32 current_input_buffer;
 
     tile_loader loader;
     tile_writer writer;
@@ -78,10 +78,10 @@ space conv2d_residual_kernel {
         DRAM float32 bias_data[],
         DRAM float32 residual_map[],
         DRAM float32 output_feature_map[],
-        int height,
-        int width,
-        int cin_count,
-        int cout_count
+        int32 height,
+        int32 width,
+        int32 cin_count,
+        int32 cout_count
     ) {
         ifmap = input_feature_map;
         w3x3 = kernel_weights;
@@ -98,21 +98,21 @@ space conv2d_residual_kernel {
     }
 
     void init() {
-        for (int lane = 0; lane < workers.count; lane++) {
+        for (int32 lane = 0; lane < workers.count; lane++) {
             workers[lane].set_lane(lane);
         }
     }
 
     void run() {
-        int tiles_y = ceil_div(H, TILE_H);
-        int tiles_x = ceil_div(W, TILE_W);
+        int32 tiles_y = ceil_div(H, TILE_H);
+        int32 tiles_x = ceil_div(W, TILE_W);
 
-        for (int oc = 0; oc < Cout; oc += COUT_BLOCK) {
+        for (int32 oc = 0; oc < Cout; oc += COUT_BLOCK) {
             current_oc_base = oc;
             loader.load_bias_block(current_oc_base);
 
-            for (int ty = 0; ty < tiles_y; ty++) {
-                for (int tx = 0; tx < tiles_x; tx++) {
+            for (int32 ty = 0; ty < tiles_y; ty++) {
+                for (int32 tx = 0; tx < tiles_x; tx++) {
                     current_tile_y = ty;
                     current_tile_x = tx;
 
@@ -121,13 +121,13 @@ space conv2d_residual_kernel {
                     // Preload first input block for this tile.
                     loader.load_input_block(0, current_tile_y, current_tile_x, 0);
 
-                    for (int cb = 0; cb < Cin; cb += CIN_BLOCK) {
+                    for (int32 cb = 0; cb < Cin; cb += CIN_BLOCK) {
                         current_cin_base = cb;
                         current_input_buffer = (cb / CIN_BLOCK) % 2;
 
-                        int next_cb = cb + CIN_BLOCK;
+                        int32 next_cb = cb + CIN_BLOCK;
                         if (next_cb < Cin) {
-                            // Non-blocking intent: fetch next input block while workers consume current block.
+                            // Non-blocking int32ent: fetch next input block while workers consume current block.
                             loader.prefetch_input_block(1 - current_input_buffer, current_tile_y, current_tile_x, next_cb);
                         }
 
@@ -135,13 +135,13 @@ space conv2d_residual_kernel {
 
                         // Independent per output-channel lane.
                         // Compiler can map these calls to concurrent cores.
-                        for (int lane = 0; lane < workers.count; lane++) {
+                        for (int32 lane = 0; lane < workers.count; lane++) {
                             workers[lane].accumulate_current_block();
                         }
                     }
 
                     // Independent per lane, can be executed concurrently as well.
-                    for (int lane = 0; lane < workers.count; lane++) {
+                    for (int32 lane = 0; lane < workers.count; lane++) {
                         workers[lane].finalize_bias_residual_relu();
                     }
 
@@ -152,35 +152,35 @@ space conv2d_residual_kernel {
     }
 
     void clear_output_tile() {
-        for (int oy = 0; oy < TILE_H; oy++) {
-            for (int ox = 0; ox < TILE_W; ox++) {
-                for (int oc = 0; oc < COUT_BLOCK; oc++) {
+        for (int32 oy = 0; oy < TILE_H; oy++) {
+            for (int32 ox = 0; ox < TILE_W; ox++) {
+                for (int32 oc = 0; oc < COUT_BLOCK; oc++) {
                     output_tile[oy, ox, oc] = 0.0f;
                 }
             }
         }
     }
 
-    int ceil_div(int a, int b) {
+    int32 ceil_div(int32 a, int32 b) {
         return (a + b - 1) / b;
     }
 
-    int ofmap_index(int y, int x, int c) {
+    int32 ofmap_index(int32 y, int32 x, int32 c) {
         return ((y * W + x) * Cout) + c;
     }
 
-    int ifmap_index(int y, int x, int c) {
+    int32 ifmap_index(int32 y, int32 x, int32 c) {
         return ((y * W + x) * Cin) + c;
     }
 
-    int weight_index(int oc, int ic, int ky, int kx) {
+    int32 weight_index(int32 oc, int32 ic, int32 ky, int32 kx) {
         return ((((oc * Cin) + ic) * K + ky) * K) + kx;
     }
 
     space tile_loader {
-        void load_bias_block(int oc_base) {
-            for (int oc = 0; oc < COUT_BLOCK; oc++) {
-                int goc = oc_base + oc;
+        void load_bias_block(int32 oc_base) {
+            for (int32 oc = 0; oc < COUT_BLOCK; oc++) {
+                int32 goc = oc_base + oc;
                 if (goc < Cout) {
                     bias_block[oc] = bias[goc];
                 } else {
@@ -189,18 +189,18 @@ space conv2d_residual_kernel {
             }
         }
 
-        void prefetch_input_block(int buffer_id, int tile_y, int tile_x, int cin_base) {
+        void prefetch_input_block(int32 buffer_id, int32 tile_y, int32 tile_x, int32 cin_base) {
             // Same data movement as load_input_block; scheduler may issue this ahead of compute.
             load_input_block(buffer_id, tile_y, tile_x, cin_base);
         }
 
-        void load_input_block(int buffer_id, int tile_y, int tile_x, int cin_base) {
-            for (int iy = 0; iy < TILE_H + 2; iy++) {
-                for (int ix = 0; ix < TILE_W + 2; ix++) {
-                    for (int ic = 0; ic < CIN_BLOCK; ic++) {
-                        int gy = tile_y * TILE_H + iy - 1;
-                        int gx = tile_x * TILE_W + ix - 1;
-                        int gic = cin_base + ic;
+        void load_input_block(int32 buffer_id, int32 tile_y, int32 tile_x, int32 cin_base) {
+            for (int32 iy = 0; iy < TILE_H + 2; iy++) {
+                for (int32 ix = 0; ix < TILE_W + 2; ix++) {
+                    for (int32 ic = 0; ic < CIN_BLOCK; ic++) {
+                        int32 gy = tile_y * TILE_H + iy - 1;
+                        int32 gx = tile_x * TILE_W + ix - 1;
+                        int32 gic = cin_base + ic;
 
                         float32 v = 0.0f;
                         if (gy >= 0 && gy < H && gx >= 0 && gx < W && gic < Cin) {
@@ -217,13 +217,13 @@ space conv2d_residual_kernel {
             }
         }
 
-        void load_weight_block(int oc_base, int cin_base) {
-            for (int ky = 0; ky < K; ky++) {
-                for (int kx = 0; kx < K; kx++) {
-                    for (int ic = 0; ic < CIN_BLOCK; ic++) {
-                        for (int oc = 0; oc < COUT_BLOCK; oc++) {
-                            int goc = oc_base + oc;
-                            int gic = cin_base + ic;
+        void load_weight_block(int32 oc_base, int32 cin_base) {
+            for (int32 ky = 0; ky < K; ky++) {
+                for (int32 kx = 0; kx < K; kx++) {
+                    for (int32 ic = 0; ic < CIN_BLOCK; ic++) {
+                        for (int32 oc = 0; oc < COUT_BLOCK; oc++) {
+                            int32 goc = oc_base + oc;
+                            int32 gic = cin_base + ic;
 
                             if (goc < Cout && gic < Cin) {
                                 weight_block[ky, kx, ic, oc] = w3x3[weight_index(goc, gic, ky, kx)];
@@ -238,15 +238,15 @@ space conv2d_residual_kernel {
     }
 
     space tile_writer {
-        void store_output_tile(int oc_base, int tile_y, int tile_x) {
-            for (int oy = 0; oy < TILE_H; oy++) {
-                for (int ox = 0; ox < TILE_W; ox++) {
-                    int gy = tile_y * TILE_H + oy;
-                    int gx = tile_x * TILE_W + ox;
+        void store_output_tile(int32 oc_base, int32 tile_y, int32 tile_x) {
+            for (int32 oy = 0; oy < TILE_H; oy++) {
+                for (int32 ox = 0; ox < TILE_W; ox++) {
+                    int32 gy = tile_y * TILE_H + oy;
+                    int32 gx = tile_x * TILE_W + ox;
 
                     if (gy < H && gx < W) {
-                        for (int oc = 0; oc < COUT_BLOCK; oc++) {
-                            int goc = oc_base + oc;
+                        for (int32 oc = 0; oc < COUT_BLOCK; oc++) {
+                            int32 goc = oc_base + oc;
                             if (goc < Cout) {
                                 ofmap[ofmap_index(gy, gx, goc)] = output_tile[oy, ox, oc];
                             }
@@ -258,25 +258,25 @@ space conv2d_residual_kernel {
     }
 
     space channel_worker {
-        int lane;
+        int32 lane;
 
-        void set_lane(int lane_id) {
+        void set_lane(int32 lane_id) {
             lane = lane_id;
         }
 
         void accumulate_current_block() {
-            int goc = current_oc_base + lane;
+            int32 goc = current_oc_base + lane;
             if (goc >= Cout) {
                 return;
             }
 
-            for (int oy = 0; oy < TILE_H; oy++) {
-                for (int ox = 0; ox < TILE_W; ox++) {
+            for (int32 oy = 0; oy < TILE_H; oy++) {
+                for (int32 ox = 0; ox < TILE_W; ox++) {
                     float32 sum = output_tile[oy, ox, lane];
 
-                    for (int ky = 0; ky < K; ky++) {
-                        for (int kx = 0; kx < K; kx++) {
-                            for (int ic = 0; ic < CIN_BLOCK; ic++) {
+                    for (int32 ky = 0; ky < K; ky++) {
+                        for (int32 kx = 0; kx < K; kx++) {
+                            for (int32 ic = 0; ic < CIN_BLOCK; ic++) {
                                 float32 in_v = 0.0f;
                                 if (current_input_buffer == 0) {
                                     in_v = input_tile_ping[oy + ky, ox + kx, ic];
@@ -296,18 +296,18 @@ space conv2d_residual_kernel {
         }
 
         void finalize_bias_residual_relu() {
-            int goc = current_oc_base + lane;
+            int32 goc = current_oc_base + lane;
             if (goc >= Cout) {
                 return;
             }
 
-            for (int oy = 0; oy < TILE_H; oy++) {
-                for (int ox = 0; ox < TILE_W; ox++) {
-                    int gy = current_tile_y * TILE_H + oy;
-                    int gx = current_tile_x * TILE_W + ox;
+            for (int32 oy = 0; oy < TILE_H; oy++) {
+                for (int32 ox = 0; ox < TILE_W; ox++) {
+                    int32 gy = current_tile_y * TILE_H + oy;
+                    int32 gx = current_tile_x * TILE_W + ox;
 
                     if (gy < H && gx < W) {
-                        int idx = ofmap_index(gy, gx, goc);
+                        int32 idx = ofmap_index(gy, gx, goc);
                         float32 v = output_tile[oy, ox, lane];
                         v = v + bias_block[lane];
                         v = v + residual[idx];
