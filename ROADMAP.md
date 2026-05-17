@@ -266,3 +266,6 @@ Possible work:
 2. Phase 2 (compiler/scheduler power-up with robust tests).
 3. Phase 4 (real host/device usability).
 4. Phase 5 and 6 as optimization/productivity tracks.
+
+## Reference todos
+- Supporting 3D layering is important not only for chips those effectively supports three dimensions of circuits, but may be very useful also on classic 2D circuits for creating very fast lane for major combinations of paths, even if with a more confusing and condensed synthetized circuit.
