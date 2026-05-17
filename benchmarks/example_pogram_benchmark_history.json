@@ -82,6 +82,24 @@
       "run_profile": "reference",
       "run_utc": "2026-05-07T22:57:34Z",
       "total_ms": 1143
+    },
+    {
+      "benchmark_ranking_score": 108798732.0,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 108.75,
+      "makespan_cycles": 44,
+      "run_profile": "reference",
+      "run_utc": "2026-05-17T23:17:11Z",
+      "total_ms": 4732
+    },
+    {
+      "benchmark_ranking_score": 68045530.0,
+      "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 68.0,
+      "makespan_cycles": 42,
+      "run_profile": "autotune_selected",
+      "run_utc": "2026-05-17T23:24:06Z",
+      "total_ms": 3530
     }
   ]
 }

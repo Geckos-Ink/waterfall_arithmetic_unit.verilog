@@ -4,6 +4,10 @@
 // @wau lane_parallelism=4
 // @wau max_in_flight=4
 // @wau preferred_dtype=float32
+// @wau placement_policy=locality
+// @wau lowering_profile=latency_optimized
+// @wau program_priority=4
+// @wau program_load_balance=least_busy
 
 void main() {
     int32 H = 224;

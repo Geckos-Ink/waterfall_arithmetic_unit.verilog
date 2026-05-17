@@ -4,59 +4,91 @@
     "base_config": "src/python/configs/wau_2d_multiprogram_demo.json",
     "compiled_config": "src/python/configs/wau_example_pogram_compiled.json",
     "cw_dtype_requested": "auto",
-    "cw_lane_parallelism_requested": "auto",
-    "cw_max_in_flight": 4,
+    "cw_lane_parallelism_requested": "2",
+    "cw_lowering_profile_requested": "throughput_optimized",
+    "cw_max_in_flight": 2,
+    "cw_placement_policy_requested": "balance",
     "cw_source": "docs/example-pogram.cw",
+    "effective_base_config": "src/python/configs/wau_2d_multiprogram_demo.json",
     "flow_id": 90,
     "program_id": 90,
+    "program_load_balance_requested": "auto",
     "program_max_parallel_flows": 1,
-    "program_replicas": 2
+    "program_priority_requested": "4",
+    "program_replicas": 2,
+    "scheduler_program_policy_requested": "auto"
   },
   "metrics": {
-    "benchmark_ranking_score": 106710809.67,
-    "estimated_transfer_hops_avg_edge": 1.027397,
-    "estimated_transfer_hops_total": 75,
-    "exec_latency_cycles_avg": 106.67,
-    "exec_latency_cycles_max": 112,
-    "exec_latency_cycles_min": 96,
-    "fallback_instruction_count": 27,
-    "fallback_instruction_ratio": 0.341772,
-    "instruction_count": 79,
-    "makespan_cycles": 43,
-    "total_ms": 1143
+    "benchmark_ranking_score": 68045530.0,
+    "busiest_core_busy_cycles": 38,
+    "busiest_core_index": 8,
+    "busiest_core_issue_count": 36,
+    "estimated_transfer_hops_avg_edge": 0.857143,
+    "estimated_transfer_hops_total": 54,
+    "exec_latency_cycles_avg": 68.0,
+    "exec_latency_cycles_max": 70,
+    "exec_latency_cycles_min": 58,
+    "exec_latency_cycles_p50": 70.0,
+    "exec_latency_cycles_p95": 70.0,
+    "fallback_instruction_count": 20,
+    "fallback_instruction_ratio": 0.289855,
+    "instruction_count": 69,
+    "makespan_cycles": 42,
+    "total_ms": 3530
   },
   "paths": {
     "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
     "schedule_json": ".build/cw_example_generated/wau_schedule.json"
   },
   "placement_quality": {
+    "core_issue_hotspots": [
+      "core=8 issues=36 busy_cycles=38",
+      "core=2 issues=5 busy_cycles=5",
+      "core=6 issues=5 busy_cycles=5",
+      "core=7 issues=4 busy_cycles=4",
+      "core=9 issues=4 busy_cycles=4"
+    ],
     "critical_path_tail_by_node": [
-      "node=tile_done_gate program=90:0 flow=90 cycle_end=43",
-      "node=tile_counter program=90:0 flow=90 cycle_end=42",
+      "node=tile_done_gate program=90:0 flow=90 cycle_end=42",
       "node=tile_counter program=90:0 flow=90 cycle_end=41",
       "node=tile_counter program=90:0 flow=90 cycle_end=40",
-      "node=tile_counter program=90:0 flow=90 cycle_end=39"
+      "node=tile_counter program=90:0 flow=90 cycle_end=39",
+      "node=tile_counter program=90:0 flow=90 cycle_end=38"
+    ],
+    "dependency_hotspots": [
+      "node=store_tile max_dependencies=3",
+      "node=acc max_dependencies=2",
+      "node=lane0_bias max_dependencies=2",
+      "node=lane0_mul max_dependencies=2",
+      "node=lane1_bias max_dependencies=2"
     ],
     "fallback_ratio_by_flow": {
-      "10": 0.833333,
-      "11": 0.333333,
+      "10": 0.666667,
+      "11": 0.0,
       "12": 0.555556,
-      "90": 0.258621
-    }
+      "90": 0.229167
+    },
+    "node_latency_hotspots": [
+      "node=tile_counter total_latency=32 issues=32",
+      "node=merge_mul total_latency=6 issues=2",
+      "node=n_mul total_latency=6 issues=2",
+      "node=acc total_latency=4 issues=4",
+      "node=mix total_latency=4 issues=4"
+    ]
   },
-  "run_profile": "reference",
-  "run_utc": "2026-05-07T22:57:34Z",
+  "run_profile": "autotune_selected",
+  "run_utc": "2026-05-17T23:24:06Z",
   "timing_ms": {
-    "compile_cw_ms": 69,
-    "generate_ms": 75,
-    "iverilog_tests_ms": 894,
-    "total_ms": 1143,
-    "validate_ms": 71
+    "compile_cw_ms": 534,
+    "generate_ms": 458,
+    "iverilog_tests_ms": 1644,
+    "total_ms": 3530,
+    "validate_ms": 460
   },
   "tool_versions": {
-    "git_commit": "8f289cd",
+    "git_commit": "e59010d",
     "git_tree_state": "dirty",
     "iverilog_version": "Icarus Verilog version 12.0 (stable) ()",
-    "python_version": "Python 3.12.3"
+    "python_version": "Python 3.13.9"
   }
 }

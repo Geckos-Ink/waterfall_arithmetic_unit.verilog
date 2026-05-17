@@ -13,7 +13,7 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
-## Progress Update (2026-05-06)
+## Progress Update (2026-05-18)
 Implemented this cycle:
 - Phase 1 slice: explicit highway routing RTL (`wau_highway_router`, `wau_neighbor_forward`, `wau_highway_mesh`) integrated into generated top-level.
 - Phase 1 slice: coordinator migrated to packetized dispatch/result channels over separated control/data planes.
@@ -26,12 +26,49 @@ Implemented this cycle:
 - CW regression-gate slice: benchmark script supports regression-check mode (`REGRESSION_CHECK=1`) with configurable latency/makespan/wall-time thresholds.
 - CW benchmark observability slice: benchmark logs now emit placement-quality metrics (fallback ratio, per-flow fallback ratio, estimated transfer hops, critical-path tail).
 - CW benchmark CI sidecar slice: latest/best/history machine-readable JSON sidecars are persisted for trend analysis.
-- CW benchmark tuning update: latest 16-point sweep (`lanes=4,6,8,10`, `replicas=1,2`, `max_parallel=1,2`) reached `exec_latency_cycles_avg=106.67`, `makespan=43`, `total_ms=1051` at `lane=4`, `replicas=2`, `max_parallel=1`.
+- CW compiler slice: `.cw` integer constant parsing now accepts typed declarations such as `int32 K = 3;`, keeping the example kernel parser/compiler path coherent with the documented syntax.
 - CW syntax slice: `.cw` pragma support for lane tuning (`// @wau lane_parallelism=<N>`), with CLI override precedence.
 - CW syntax slice: added structured pragma parsing with deterministic line-located diagnostics; new pragmas `@wau max_in_flight=<N>` and `@wau preferred_dtype=<name>` are now supported with CLI override precedence and parser test coverage.
+- CW syntax slice: added structured tuning/placement pragmas `@wau placement_policy=<locality|balance>`, `@wau lowering_profile=<reference|latency_optimized|throughput_optimized>`, `@wau program_priority=<N>`, and `@wau program_load_balance=<least_busy|round_robin>`.
+- CW lowering slice: lane parallelism is now capped by declared workers/output-channel block/device capacity, and lowering profiles now emit materially different locality/balance candidate sets instead of only changing lane count.
+- CW benchmark observability slice: benchmark logs now emit stress-latency percentiles (`p50`, `p95`) plus bottleneck summaries (`busiest_core`, core issue hotspots, node latency hotspots, dependency hotspots).
+- CW autotune slice: default tuning moved from a fixed exhaustive 3-knob sweep to a staged coordinate search across topology, program policy, and scheduler policy knobs to keep search cost bounded while widening the architecture space explored.
+- CW benchmark tuning update: staged autotune on 2026-05-17 UTC selected `lane=2`, `placement=balance`, `profile=throughput_optimized`, `priority=4`, `replicas=2`, `max_parallel=1`, `max_in_flight=2`, `load_balance=least_busy`, `scheduler_policy=weighted_fair`, reaching `exec_latency_cycles_avg=68.00`, `exec_latency_cycles_p95=70.00`, `makespan=42`, `fallback_ratio=0.2899`, `estimated_transfer_hops_total=54`.
+- CW stability update: a 5-run stability pass on 2026-05-17 UTC held `exec_latency_cycles_median=68.00` and `exec_latency_cycles_p95=68.00` with all 5 runs passing.
 
-## CW Compiler and Benchmark Next Steps (2026-05-06+)
+## CW Compiler and Benchmark Next Steps (2026-05-18+)
 Goal: move from reference-level CW lowering to deeper, reproducible, performance-oriented compilation and execution validation.
+
+### Essential Goal: Closed-Loop Verilog + Real-Hardware Benchmarking
+Scope:
+- Make real-time benchmarking an essential workflow, not a developer-only manual tuning activity.
+- Add a Verilog-native benchmark/control harness that can continuously inject workloads, capture latency/throughput/utilization counters, and apply updated schedules/programs without requiring full developer-driven restart/rebuild loops between each trial.
+- Add an FPGA board execution path with ad hoc runtime remapping so the tuner can retarget program/core placement decisions on real hardware, measure the result immediately, and iterate automatically.
+- Add closed-loop tuning for runtime program decisions:
+  - flow/core mapping,
+  - operation distribution across cores,
+  - runtime parallelism / in-flight depth,
+  - scheduler/load-balance policy,
+  - adaptive/predictive reroute or locality heuristics,
+  - local station/cache and in-circuit memory usage vs shared on-chip memory vs external DRAM traffic.
+- Add closed-loop architecture exploration for synthesis-time WAU variants targeted at programmable FPGA users:
+  - core-grid shape and physical disposition,
+  - operation specialization/distribution across the fabric,
+  - amount of lightweight vs predictive/adaptive control logic inside the design,
+  - BRAM/LUTRAM/register usage per core vs shared memory pools,
+  - external DRAM dependence,
+  - highway/router path bandwidth and buffering depth,
+  - area/fmax/power/performance tradeoffs across device presets.
+- Ensure the same benchmark description can drive:
+  - RTL simulation,
+  - board-level execution on real FPGA hardware,
+  - architecture search / synthesis candidate ranking.
+
+Acceptance:
+- A developer can launch a benchmark/tuning session that automatically replays workloads, updates mapping/program parameters, and reports ranked improvements without manual trial-and-error between each attempt.
+- Real-hardware benchmark runs expose machine-readable counters and score deltas comparable to the Verilog/simulation path.
+- Runtime tuning can improve an already loaded design without requiring full FPGA reflashing for each small mapping/schedule change.
+- Architecture search produces a ranked synthesis report for FPGA deployments covering performance, resource use, and bandwidth/memory tradeoffs, so users can choose or synthesize the best WAU architecture for their workload.
 
 ### Track A: CW Syntax and Grammar Maturity
 Scope:
@@ -40,7 +77,10 @@ Scope:
   - `@wau lane_parallelism=<N>` (already supported),
   - `@wau max_in_flight=<N>` (supported),
   - `@wau preferred_dtype=<name>` (supported),
-  - `@wau placement_policy=<locality|balance|manual>`.
+  - `@wau placement_policy=<locality|balance>` (supported),
+  - `@wau lowering_profile=<reference|latency_optimized|throughput_optimized>` (supported),
+  - `@wau program_priority=<N>` (supported),
+  - `@wau program_load_balance=<least_busy|round_robin>` (supported).
 - Add parse diagnostics with line-aware errors and suggestion text.
 
 Acceptance:
@@ -53,8 +93,9 @@ Scope:
   - explicit load/compute/store groups,
   - lane fan-out/fan-in nodes with configurable reduction strategy,
   - data-movement vs arithmetic op tagging in `cw_hints`.
-- Introduce optional lowering profiles (`reference`, `latency_optimized`, `throughput_optimized`).
-- Add compile-time sanity checks for inferred parallelism vs grid capacity to avoid pathological over-subscription.
+- Introduce optional lowering profiles (`reference`, `latency_optimized`, `throughput_optimized`). (supported)
+- Add compile-time sanity checks for inferred parallelism vs grid capacity to avoid pathological over-subscription. (supported for worker/COUT/device-capacity caps; still open for capability-aware preflight)
+- Add capability-aware candidate pruning during CW lowering so invalid candidate sets are avoided before `validate`.
 
 Acceptance:
 - Lowered graphs remain valid for `validate`/`generate` across at least two device presets.
@@ -71,7 +112,8 @@ Scope:
 - Export additional schedule metrics for CW flows:
   - per-flow fallback ratio,
   - estimated transfer-hop count,
-  - critical path by node id.
+  - critical path by node id,
+  - busiest-core/core-hotspot summaries.
 
 Acceptance:
 - New metrics are emitted in benchmark logs.
@@ -83,10 +125,16 @@ Scope:
   - selected tuning profile,
   - compile knobs used,
   - benchmark ranking score.
-- Add multi-run statistics mode (`N` repeated runs, median/p95 latency) for stability checks.
+- Add a shared benchmark descriptor/runtime so the same workload can be executed in:
+  - Verilog simulation,
+  - closed-loop board benchmarking,
+  - synthesis-time architecture search.
+- Add multi-run statistics mode (`N` repeated runs, median/p95 latency) for stability checks. (supported)
 - Add optional guardrail thresholds:
-  - fail benchmark if `exec_latency_cycles_avg` regresses over configurable baseline.
-- Persist and compare historical bests in a machine-readable sidecar (JSON) for CI trend checks.
+  - fail benchmark if `exec_latency_cycles_avg` regresses over configurable baseline. (supported)
+- Persist and compare historical bests in a machine-readable sidecar (JSON) for CI trend checks. (supported)
+- Add a low-noise autotune replay mode that can rerun only the saved winning candidate and stage winners from `example_pogram_tuning_latest.txt`.
+- Add persistent hardware-run history and score sidecars so simulator vs real-board vs synthesized-architecture results can be compared over time.
 
 Acceptance:
 - `run_cw_example_benchmark.sh` can run in:
@@ -95,11 +143,12 @@ Acceptance:
   - autotune mode,
   - regression-check mode.
 - CI-ready output is available for parsing pass/fail and score deltas.
+- Real-board benchmark output is normalized enough to compare directly against simulation/reference runs.
 
 ### Track E: Execution Correctness Depth
 Scope:
 - Add CW-specific software reference model for smoke vector validation against RTL output values.
-- Expand execution testbench vectors (signed/zero/mixed stress, boundary values, recurrent stress).
+- Expand execution testbench vectors (signed/zero/mixed stress, boundary values, recurrent stress). (partially supported: wider deterministic stress vector set now in benchmark TB)
 - Add deterministic replay command for best/worst tuning runs from summary files.
 
 Acceptance:
@@ -107,14 +156,17 @@ Acceptance:
 - Failing vectors include replay parameters and seed in logs.
 
 ### Near-Term Targets
-1. Keep best-known `exec_latency_cycles_avg` at or below `106.67` while preserving pass status for all RTL tests.
-2. Introduce at least one additional grammar pragma and full test coverage for it. (completed 2026-05-08: `@wau max_in_flight`, `@wau preferred_dtype`, line-aware pragma diagnostics)
-3. Add one new CW benchmark metric that quantifies placement quality (fallback or hops). (completed 2026-05-06: fallback ratios + estimated hops + critical-path tail)
+1. Keep best-known `exec_latency_cycles_avg` at or below `68.00` while preserving pass status for all RTL tests and multirun stability.
+2. Add capability-aware CW candidate generation so known-invalid topology combinations fail earlier and less often during autotune.
+3. Add a CW software reference/value scoreboard so benchmark execution checks cover correctness, not timing shape alone.
+4. Stand up a first closed-loop FPGA benchmark path that can re-run workloads and remap programs on real hardware without full restart between each tuning attempt.
+5. Stand up a first architecture-search report that ranks at least core disposition, operation distribution, on-chip memory split, and external-DRAM usage for synthesis candidates.
 
 ## Guiding Priorities
 1. Keep generator, compiler, scheduler, and emitted RTL behavior consistent.
 2. Improve correctness and observability before aggressive optimization.
-3. Preserve device portability (board wrappers stay separate from core WAU logic).
+3. Treat closed-loop measurement on Verilog and real FPGA hardware as essential for performance work; do not rely only on manual developer trial-and-error.
+4. Preserve device portability (board wrappers stay separate from core WAU logic).
 
 ## Phase 1 (Required): Architecture Hardening
 Goal: move from a coordinator-mediated basis to a real WAU interconnect model.
@@ -163,11 +215,13 @@ Scope:
 - Define stable host/Coordinator interface (inject, retrieve, status, interrupts).
 - Provide board wrappers (starting with DE0-NANO) and memory-mapped control registers.
 - Add runtime protocol docs and example host driver stubs.
+- Add runtime benchmark/control hooks so host software can update program/schedule mappings and collect live performance counters during board execution.
 
 Acceptance:
 - Board-specific top integrates generated WAU module cleanly.
 - Host can load flow program + schedule and execute sample workloads.
-- Documentation includes register map and timing expectations.
+- Host can run iterative benchmark/tuning sessions without manual restart-heavy workflows for each mapping attempt.
+- Documentation includes register map, timing expectations, and benchmark/control protocol expectations.
 
 ## Phase 5 (Possible): Performance and Efficiency Optimization
 Goal: improve throughput, power behavior, and scalability.
@@ -178,10 +232,18 @@ Possible work:
 - Flow batching and multi-packet in-flight orchestration.
 - Adaptive reroute policy beyond primary/fallback (N candidates).
 - Quantitative area/timing analysis scripts per device preset.
+- Automatic design-space exploration for FPGA synthesis candidates:
+  - core disposition / grid reshaping,
+  - operation specialization balance,
+  - predictive/adaptive logic budget,
+  - BRAM/LUTRAM/shared-memory partitioning,
+  - external DRAM reliance,
+  - highway path bandwidth/buffering tradeoffs.
 
 Success indicators:
 - Better throughput and/or lower cycle count on benchmark flows.
 - Bounded impact on LUT/FF/BRAM usage for target devices.
+- Ranked architecture candidates can be selected based on measured board/runtime behavior plus synthesis metrics, not ad hoc manual guessing.
 
 ## Phase 6 (Possible): Ecosystem and Developer UX
 Goal: make the project easier to use and extend.

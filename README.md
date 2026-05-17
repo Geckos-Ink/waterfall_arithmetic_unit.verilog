@@ -58,15 +58,18 @@ PYTHONPATH=src/python python3 -m waugen compile-cw \
   --flow-id 90 \
   --name cw_conv2d_residual_reference \
   --entry 0,0 \
-  --max-in-flight 4 \
+  --max-in-flight 2 \
+  --lane-parallelism 2 \
+  --placement-policy balance \
+  --lowering-profile throughput_optimized \
   --base-config src/python/configs/wau_2d_multiprogram_demo.json \
   --out-config src/python/configs/wau_example_pogram_compiled.json \
   --replace-existing \
   --program-id 90 \
   --program-name cw_reference_program \
-  --program-priority 3 \
+  --program-priority 4 \
   --program-replicas 2 \
-  --program-max-parallel-flows 2 \
+  --program-max-parallel-flows 1 \
   --program-load-balance least_busy
 ```
 
@@ -97,9 +100,17 @@ Run fast end-to-end compile/validate/generate/RTL checks for the `.cw` reference
 This script updates `benchmarks/example_pogram_benchmark.txt` as the persistent latest-reference log, including:
 - compile/validate/generate timing,
 - schedule metrics,
-- effective CW execution smoke-benchmark latency/results from generated RTL simulation,
+- effective CW execution stress-benchmark latency/results from generated RTL simulation,
+- stress latency percentiles (`p50`, `p95`),
 - placement-quality metrics (`fallback_instruction_ratio`, per-flow fallback ratio, estimated transfer hops, critical-path tail),
+- bottleneck summaries (`busiest_core`, core hotspots, node latency hotspots, dependency hotspots),
 - reproducibility profile metadata and benchmark ranking score.
+
+Latest tuned result as of 2026-05-17 UTC:
+- selected tuning point: `lane=2`, `placement=balance`, `profile=throughput_optimized`, `priority=4`, `replicas=2`, `max_parallel=1`, `max_in_flight=2`
+- `exec_latency_cycles_avg=68.00`, `exec_latency_cycles_p95=70.00`, `makespan_cycles=42`
+- `fallback_instruction_ratio=0.2899`, `estimated_transfer_hops_total=54`
+- 5-run stability check: `median=68.00`, `p95=68.00`, `5/5` passing
 
 Run autotune sweep to search best score (lowest `exec_latency_cycles_avg`, then `makespan_cycles`, then `total_ms`):
 
@@ -114,6 +125,11 @@ Autotune writes:
   - `benchmarks/example_pogram_benchmark_latest.json`
   - `benchmarks/example_pogram_benchmark_best.json`
   - `benchmarks/example_pogram_benchmark_history.json`
+
+Default autotune now uses a staged coordinate search rather than one flat exhaustive grid:
+- topology stage: `lane_parallelism`, `placement_policy`, `lowering_profile`
+- program stage: `replicas`, `max_parallel_flows`, `priority`, `max_in_flight`
+- scheduler stage: `load_balance`, `scheduler.program_policy`
 
 Run stability mode with repeated samples (`median` and `p95` latency summary):
 
@@ -139,7 +155,11 @@ Useful guardrail knobs:
 
 Manual tuning knobs are available as environment variables:
 - `CW_LANE_PARALLELISM` (example: `4`)
+- `CW_PLACEMENT_POLICY` (`locality` or `balance`)
+- `CW_LOWERING_PROFILE` (`reference`, `latency_optimized`, `throughput_optimized`)
 - `PROGRAM_REPLICAS` and `PROGRAM_MAX_PARALLEL`
+- `PROGRAM_PRIORITY` and `PROGRAM_LOAD_BALANCE`
+- `SCHEDULER_PROGRAM_POLICY`
 - `CW_MAX_IN_FLIGHT`
 - `CW_DTYPE`
 - `RUN_PROFILE` (tag run intent in benchmark metadata)
@@ -231,6 +251,10 @@ Main JSON fields:
 // @wau lane_parallelism=4
 // @wau max_in_flight=4
 // @wau preferred_dtype=float32
+// @wau placement_policy=locality
+// @wau lowering_profile=latency_optimized
+// @wau program_priority=4
+// @wau program_load_balance=least_busy
 ```
 
 Precedence is:

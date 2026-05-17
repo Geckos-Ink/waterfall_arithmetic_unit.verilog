@@ -150,6 +150,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional override for number of channel lanes compiled into the flow",
     )
     cw.add_argument(
+        "--placement-policy",
+        choices=["locality", "balance"],
+        default=None,
+        help="Optional placement-policy override for generated CW nodes (default: @wau pragma or balance)",
+    )
+    cw.add_argument(
+        "--lowering-profile",
+        choices=["reference", "latency_optimized", "throughput_optimized"],
+        default=None,
+        help="Optional lowering-profile override for CW lowering shape (default: @wau pragma or reference)",
+    )
+    cw.add_argument(
         "--base-config",
         required=True,
         type=Path,
@@ -180,8 +192,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cw.add_argument(
         "--program-priority",
         type=int,
-        default=2,
-        help="Program priority (default: 2)",
+        default=None,
+        help="Program priority override (default: @wau pragma or 2)",
     )
     cw.add_argument(
         "--program-replicas",
@@ -198,8 +210,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cw.add_argument(
         "--program-load-balance",
         choices=["round_robin", "least_busy"],
-        default="least_busy",
-        help="Program load balance policy (default: least_busy)",
+        default=None,
+        help="Program load balance override (default: @wau pragma or least_busy)",
     )
 
     sub.add_parser("list-devices", help="list built-in real device presets")
@@ -328,15 +340,17 @@ def _run_compile_cw(
     max_in_flight: int | None,
     dtype: str | None,
     lane_parallelism: int | None,
+    placement_policy: str | None,
+    lowering_profile: str | None,
     base_config: Path,
     out_config: Path,
     replace_existing: bool,
     program_id: int | None,
     program_name: str | None,
-    program_priority: int,
+    program_priority: int | None,
     program_replicas: int,
     program_max_parallel_flows: int | None,
-    program_load_balance: str,
+    program_load_balance: str | None,
 ) -> int:
     entry_x, entry_y = _parse_entry(entry)
     resolved_name = name or f"cw_flow_{flow_id}"
@@ -353,6 +367,8 @@ def _run_compile_cw(
         max_in_flight=max_in_flight,
         dtype=dtype,
         lane_parallelism=lane_parallelism,
+        placement_policy=placement_policy,
+        lowering_profile=lowering_profile,
         program_id=program_id,
         program_name=program_name,
         program_priority=program_priority,
@@ -440,6 +456,8 @@ def main(argv: list[str] | None = None) -> int:
                 max_in_flight=args.max_in_flight,
                 dtype=args.dtype,
                 lane_parallelism=args.lane_parallelism,
+                placement_policy=args.placement_policy,
+                lowering_profile=args.lowering_profile,
                 base_config=args.base_config,
                 out_config=args.out_config,
                 replace_existing=args.replace_existing,

@@ -293,7 +293,7 @@
         "x": 0,
         "y": 0
       },
-      "max_in_flight": 4,
+      "max_in_flight": 2,
       "nodes": [
         {
           "id": "load_ifmap",
@@ -314,7 +314,7 @@
                 "y": 0
               }
             ],
-            "directive": "prefer_locality"
+            "directive": "prefer_balance"
           }
         },
         {
@@ -324,19 +324,19 @@
           "placement": {
             "candidate_cores": [
               {
-                "x": 1,
-                "y": 0
-              },
-              {
                 "x": 2,
                 "y": 0
               },
               {
                 "x": 3,
                 "y": 0
+              },
+              {
+                "x": 0,
+                "y": 1
               }
             ],
-            "directive": "prefer_locality"
+            "directive": "prefer_balance"
           }
         },
         {
@@ -349,12 +349,16 @@
           "placement": {
             "candidate_cores": [
               {
-                "x": 2,
-                "y": 0
+                "x": 0,
+                "y": 1
               },
               {
-                "x": 3,
-                "y": 0
+                "x": 1,
+                "y": 1
+              },
+              {
+                "x": 2,
+                "y": 1
               }
             ],
             "directive": "prefer_balance"
@@ -370,12 +374,16 @@
           "placement": {
             "candidate_cores": [
               {
+                "x": 2,
+                "y": 1
+              },
+              {
                 "x": 3,
-                "y": 0
+                "y": 1
               },
               {
                 "x": 0,
-                "y": 1
+                "y": 2
               }
             ],
             "directive": "prefer_balance"
@@ -406,6 +414,10 @@
               {
                 "x": 3,
                 "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
               }
             ],
             "directive": "prefer_balance"
@@ -435,9 +447,13 @@
               {
                 "x": 3,
                 "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
               }
             ],
-            "directive": "prefer_locality"
+            "directive": "prefer_balance"
           }
         },
         {
@@ -465,9 +481,13 @@
               {
                 "x": 3,
                 "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
               }
             ],
-            "directive": "prefer_locality"
+            "directive": "prefer_balance"
           }
         },
         {
@@ -494,9 +514,13 @@
               {
                 "x": 3,
                 "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
               }
             ],
-            "directive": "prefer_locality"
+            "directive": "prefer_balance"
           }
         },
         {
@@ -524,9 +548,13 @@
               {
                 "x": 3,
                 "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
               }
             ],
-            "directive": "prefer_locality"
+            "directive": "prefer_balance"
           }
         },
         {
@@ -540,10 +568,6 @@
           "placement": {
             "candidate_cores": [
               {
-                "x": 1,
-                "y": 1
-              },
-              {
                 "x": 2,
                 "y": 1
               },
@@ -553,6 +577,14 @@
               },
               {
                 "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
                 "y": 2
               }
             ],
@@ -569,10 +601,6 @@
           "placement": {
             "candidate_cores": [
               {
-                "x": 1,
-                "y": 1
-              },
-              {
                 "x": 2,
                 "y": 1
               },
@@ -583,9 +611,17 @@
               {
                 "x": 0,
                 "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
               }
             ],
-            "directive": "prefer_locality"
+            "directive": "prefer_balance"
           }
         },
         {
@@ -599,10 +635,6 @@
           "placement": {
             "candidate_cores": [
               {
-                "x": 1,
-                "y": 1
-              },
-              {
                 "x": 2,
                 "y": 1
               },
@@ -613,9 +645,17 @@
               {
                 "x": 0,
                 "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
               }
             ],
-            "directive": "prefer_locality"
+            "directive": "prefer_balance"
           }
         },
         {
@@ -628,10 +668,6 @@
           "placement": {
             "candidate_cores": [
               {
-                "x": 1,
-                "y": 1
-              },
-              {
                 "x": 2,
                 "y": 1
               },
@@ -642,9 +678,17 @@
               {
                 "x": 0,
                 "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
+                "y": 2
               }
             ],
-            "directive": "prefer_locality"
+            "directive": "prefer_balance"
           }
         },
         {
@@ -658,183 +702,9 @@
           "placement": {
             "candidate_cores": [
               {
-                "x": 1,
-                "y": 1
-              },
-              {
                 "x": 2,
                 "y": 1
               },
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_locality"
-          }
-        },
-        {
-          "id": "lane2_mul",
-          "op": "mul",
-          "dtype": "float32",
-          "deps": [
-            "load_ifmap",
-            "load_weights"
-          ],
-          "placement": {
-            "candidate_cores": [
-              {
-                "x": 2,
-                "y": 1
-              },
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              },
-              {
-                "x": 1,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_balance"
-          }
-        },
-        {
-          "id": "lane2_acc",
-          "op": "add",
-          "dtype": "float32",
-          "deps": [
-            "lane2_mul"
-          ],
-          "placement": {
-            "candidate_cores": [
-              {
-                "x": 2,
-                "y": 1
-              },
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              },
-              {
-                "x": 1,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_locality"
-          }
-        },
-        {
-          "id": "lane2_bias",
-          "op": "add",
-          "dtype": "float32",
-          "deps": [
-            "lane2_acc",
-            "load_bias"
-          ],
-          "placement": {
-            "candidate_cores": [
-              {
-                "x": 2,
-                "y": 1
-              },
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              },
-              {
-                "x": 1,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_locality"
-          }
-        },
-        {
-          "id": "lane2_residual",
-          "op": "add",
-          "dtype": "float32",
-          "deps": [
-            "lane2_bias"
-          ],
-          "placement": {
-            "candidate_cores": [
-              {
-                "x": 2,
-                "y": 1
-              },
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              },
-              {
-                "x": 1,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_locality"
-          }
-        },
-        {
-          "id": "lane2_relu",
-          "op": "max",
-          "dtype": "float32",
-          "immediate_b": 0,
-          "deps": [
-            "lane2_residual"
-          ],
-          "placement": {
-            "candidate_cores": [
-              {
-                "x": 2,
-                "y": 1
-              },
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              },
-              {
-                "x": 1,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_locality"
-          }
-        },
-        {
-          "id": "lane3_mul",
-          "op": "mul",
-          "dtype": "float32",
-          "deps": [
-            "load_ifmap",
-            "load_weights"
-          ],
-          "placement": {
-            "candidate_cores": [
               {
                 "x": 3,
                 "y": 1
@@ -853,124 +723,6 @@
               }
             ],
             "directive": "prefer_balance"
-          }
-        },
-        {
-          "id": "lane3_acc",
-          "op": "add",
-          "dtype": "float32",
-          "deps": [
-            "lane3_mul"
-          ],
-          "placement": {
-            "candidate_cores": [
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              },
-              {
-                "x": 1,
-                "y": 2
-              },
-              {
-                "x": 2,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_locality"
-          }
-        },
-        {
-          "id": "lane3_bias",
-          "op": "add",
-          "dtype": "float32",
-          "deps": [
-            "lane3_acc",
-            "load_bias"
-          ],
-          "placement": {
-            "candidate_cores": [
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              },
-              {
-                "x": 1,
-                "y": 2
-              },
-              {
-                "x": 2,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_locality"
-          }
-        },
-        {
-          "id": "lane3_residual",
-          "op": "add",
-          "dtype": "float32",
-          "deps": [
-            "lane3_bias"
-          ],
-          "placement": {
-            "candidate_cores": [
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              },
-              {
-                "x": 1,
-                "y": 2
-              },
-              {
-                "x": 2,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_locality"
-          }
-        },
-        {
-          "id": "lane3_relu",
-          "op": "max",
-          "dtype": "float32",
-          "immediate_b": 0,
-          "deps": [
-            "lane3_residual"
-          ],
-          "placement": {
-            "candidate_cores": [
-              {
-                "x": 3,
-                "y": 1
-              },
-              {
-                "x": 0,
-                "y": 2
-              },
-              {
-                "x": 1,
-                "y": 2
-              },
-              {
-                "x": 2,
-                "y": 2
-              }
-            ],
-            "directive": "prefer_locality"
           }
         },
         {
@@ -980,22 +732,20 @@
           "deps": [
             "lane0_relu",
             "lane1_relu",
-            "lane2_relu",
-            "lane3_relu",
             "prefetch_next_ifmap"
           ],
           "placement": {
             "candidate_cores": [
-              {
-                "x": 3,
-                "y": 1
-              },
               {
                 "x": 0,
                 "y": 2
               },
               {
                 "x": 1,
+                "y": 2
+              },
+              {
+                "x": 2,
                 "y": 2
               }
             ],
@@ -1016,7 +766,7 @@
             "candidate_cores": [
               {
                 "x": 0,
-                "y": 0
+                "y": 2
               }
             ],
             "directive": "manual",
@@ -1034,11 +784,15 @@
           "placement": {
             "candidate_cores": [
               {
-                "x": 0,
+                "x": 1,
                 "y": 2
               },
               {
-                "x": 1,
+                "x": 2,
+                "y": 2
+              },
+              {
+                "x": 3,
                 "y": 2
               }
             ],
@@ -1055,10 +809,10 @@
         "cout_block": 8,
         "worker_count_declared": 8,
         "lane_parallelism_preferred": 4,
-        "lane_parallelism_compiled": 4,
-        "lane_parallelism_source": "pragma",
+        "lane_parallelism_compiled": 2,
+        "lane_parallelism_source": "cli",
         "max_in_flight_preferred": 4,
-        "max_in_flight_compiled": 4,
+        "max_in_flight_compiled": 2,
         "max_in_flight_source": "cli",
         "double_buffering": true,
         "prefetch": true,
@@ -1067,7 +821,15 @@
         "preferred_dtype": "float32",
         "dtype": "float32",
         "dtype_compiled": "float32",
-        "dtype_source": "pragma"
+        "dtype_source": "pragma",
+        "placement_policy_preferred": "locality",
+        "placement_policy_compiled": "balance",
+        "lowering_profile_preferred": "latency_optimized",
+        "lowering_profile_compiled": "throughput_optimized",
+        "program_priority_preferred": 4,
+        "program_priority_compiled": 4,
+        "program_load_balance_preferred": "least_busy",
+        "program_load_balance_compiled": "least_busy"
       }
     }
   ],
@@ -1105,7 +867,7 @@
       "flows": [
         90
       ],
-      "priority": 3,
+      "priority": 4,
       "replicas": 2,
       "max_parallel_flows": 1,
       "load_balance": "least_busy",

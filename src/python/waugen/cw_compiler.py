@@ -33,6 +33,10 @@ class CWKernelSpec:
     preferred_lane_parallelism: int | None
     preferred_max_in_flight: int | None
     preferred_dtype: str | None
+    preferred_placement_policy: str | None
+    preferred_lowering_profile: str | None
+    preferred_program_priority: int | None
+    preferred_program_load_balance: str | None
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,8 @@ class CWWorkloadShape:
 
 
 _DEFAULT_CW_MAX_IN_FLIGHT = 4
+_DEFAULT_CW_PROGRAM_PRIORITY = 2
+_DEFAULT_CW_PROGRAM_LOAD_BALANCE = "least_busy"
 _DTYPE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _WAU_PRAGMA_LINE_RE = re.compile(r"^\s*//\s*@wau\b(?P<body>.*)$")
 _WAU_PRAGMA_ASSIGN_RE = re.compile(
@@ -53,7 +59,18 @@ _SUPPORTED_WAU_PRAGMA_KEYS = (
     "lane_parallelism",
     "max_in_flight",
     "preferred_dtype",
+    "placement_policy",
+    "lowering_profile",
+    "program_priority",
+    "program_load_balance",
 )
+_SUPPORTED_WAU_PLACEMENT_POLICIES = ("locality", "balance")
+_SUPPORTED_WAU_LOWERING_PROFILES = (
+    "reference",
+    "latency_optimized",
+    "throughput_optimized",
+)
+_SUPPORTED_WAU_PROGRAM_LOAD_BALANCE = ("least_busy", "round_robin")
 
 
 def _strip_comments(program: str) -> str:
@@ -65,7 +82,7 @@ def _strip_comments(program: str) -> str:
 
 
 def _extract_int_assignment(source: str, name: str) -> int | None:
-    pattern = re.compile(rf"\bint\s+{re.escape(name)}\s*=\s*(-?\d+)\s*;")
+    pattern = re.compile(rf"\bint(?:[0-9]+)?\s+{re.escape(name)}\s*=\s*(-?\d+)\s*;")
     match = pattern.search(source)
     if not match:
         return None
@@ -160,6 +177,26 @@ def _extract_wau_pragma_dtype(pragmas: dict[str, tuple[str, int]]) -> str | None
     return raw
 
 
+def _extract_wau_pragma_choice(
+    pragmas: dict[str, tuple[str, int]],
+    key: str,
+    *,
+    supported: tuple[str, ...],
+) -> str | None:
+    entry = pragmas.get(key)
+    if entry is None:
+        return None
+
+    raw, line_no = entry
+    if raw not in supported:
+        supported_text = ", ".join(supported)
+        raise CWCompilerError(
+            f"Invalid @wau {key} value '{raw}' at line {line_no}: "
+            f"expected one of {supported_text}"
+        )
+    return raw
+
+
 def _extract_workload_shape(source: str) -> CWWorkloadShape:
     return CWWorkloadShape(
         h=_extract_int_assignment(source, "H"),
@@ -183,6 +220,26 @@ def parse_cw_program(program: str) -> tuple[CWKernelSpec, CWWorkloadShape]:
         minimum=1,
     )
     pragma_preferred_dtype = _extract_wau_pragma_dtype(pragmas)
+    pragma_placement_policy = _extract_wau_pragma_choice(
+        pragmas,
+        "placement_policy",
+        supported=_SUPPORTED_WAU_PLACEMENT_POLICIES,
+    )
+    pragma_lowering_profile = _extract_wau_pragma_choice(
+        pragmas,
+        "lowering_profile",
+        supported=_SUPPORTED_WAU_LOWERING_PROFILES,
+    )
+    pragma_program_priority = _extract_wau_pragma_int(
+        pragmas,
+        "program_priority",
+        minimum=1,
+    )
+    pragma_program_load_balance = _extract_wau_pragma_choice(
+        pragmas,
+        "program_load_balance",
+        supported=_SUPPORTED_WAU_PROGRAM_LOAD_BALANCE,
+    )
 
     required_symbols = (
         "load_input_block(",
@@ -229,6 +286,10 @@ def parse_cw_program(program: str) -> tuple[CWKernelSpec, CWWorkloadShape]:
         preferred_lane_parallelism=pragma_lane_parallelism,
         preferred_max_in_flight=pragma_max_in_flight,
         preferred_dtype=pragma_preferred_dtype,
+        preferred_placement_policy=pragma_placement_policy,
+        preferred_lowering_profile=pragma_lowering_profile,
+        preferred_program_priority=pragma_program_priority,
+        preferred_program_load_balance=pragma_program_load_balance,
     )
     shape = _extract_workload_shape(cleaned)
     return spec, shape
@@ -290,6 +351,8 @@ def build_flow_from_cw_program(
     grid_x: int,
     grid_y: int,
     lane_parallelism: int | None = None,
+    placement_policy: str | None = None,
+    lowering_profile: str | None = None,
     parsed_spec_shape: tuple[CWKernelSpec, CWWorkloadShape] | None = None,
     max_in_flight_source: str = "explicit",
     dtype_source: str = "explicit",
@@ -306,6 +369,7 @@ def build_flow_from_cw_program(
     if grid_x < 1 or grid_y < 1:
         raise CWCompilerError("grid dimensions must be >= 1")
 
+    available_cores = max(1, grid_x * grid_y)
     lanes = (
         lane_parallelism
         if lane_parallelism is not None
@@ -316,12 +380,58 @@ def build_flow_from_cw_program(
         )
     )
     lanes = max(1, lanes)
-    lanes = min(lanes, max(1, grid_x * grid_y * 2))
+    lanes = min(lanes, spec.worker_count, spec.cout_block, available_cores)
     lane_source = (
         "cli"
         if lane_parallelism is not None
         else ("pragma" if spec.preferred_lane_parallelism is not None else "worker_count")
     )
+
+    resolved_placement_policy = (
+        placement_policy
+        if placement_policy is not None
+        else (spec.preferred_placement_policy or "balance")
+    )
+    if resolved_placement_policy not in _SUPPORTED_WAU_PLACEMENT_POLICIES:
+        raise CWCompilerError(
+            f"placement_policy must be one of {', '.join(_SUPPORTED_WAU_PLACEMENT_POLICIES)}"
+        )
+
+    resolved_lowering_profile = (
+        lowering_profile
+        if lowering_profile is not None
+        else (spec.preferred_lowering_profile or "reference")
+    )
+    if resolved_lowering_profile not in _SUPPORTED_WAU_LOWERING_PROFILES:
+        raise CWCompilerError(
+            f"lowering_profile must be one of {', '.join(_SUPPORTED_WAU_LOWERING_PROFILES)}"
+        )
+
+    directive_local = "prefer_locality"
+    directive_balance = "prefer_balance"
+    if resolved_placement_policy == "locality":
+        default_compute_directive = directive_local
+        default_transfer_directive = (
+            directive_local
+            if resolved_lowering_profile != "throughput_optimized"
+            else directive_balance
+        )
+        lane_candidate_count = 2 if resolved_lowering_profile == "latency_optimized" else 3
+        transfer_candidate_count = 2
+        lane_stride = 1 if resolved_lowering_profile != "throughput_optimized" else 2
+    else:
+        default_compute_directive = directive_balance
+        default_transfer_directive = directive_balance
+        lane_candidate_count = (
+            min(5, available_cores)
+            if resolved_lowering_profile == "throughput_optimized"
+            else min(4, available_cores)
+        )
+        transfer_candidate_count = 3 if resolved_lowering_profile == "throughput_optimized" else 2
+        lane_stride = 2 if resolved_lowering_profile == "throughput_optimized" else 1
+
+    entry_index = entry_y * grid_x + entry_x
+    counter_anchor = entry_index + 4 + max(1, lanes * max(1, lane_stride // 1))
 
     nodes: list[dict[str, Any]] = []
 
@@ -332,12 +442,12 @@ def build_flow_from_cw_program(
             "dtype": dtype,
             "placement": {
                 "candidate_cores": _candidate_cores(
-                    base_index=(entry_y * grid_x + entry_x),
+                    base_index=entry_index,
                     grid_x=grid_x,
                     grid_y=grid_y,
-                    count=min(3, grid_x * grid_y),
+                    count=min(max(2, transfer_candidate_count), available_cores),
                 ),
-                "directive": "prefer_locality",
+                "directive": default_transfer_directive,
             },
         }
     )
@@ -348,12 +458,12 @@ def build_flow_from_cw_program(
             "dtype": dtype,
             "placement": {
                 "candidate_cores": _candidate_cores(
-                    base_index=(entry_y * grid_x + entry_x + 1),
+                    base_index=entry_index + lane_stride,
                     grid_x=grid_x,
                     grid_y=grid_y,
-                    count=min(3, grid_x * grid_y),
+                    count=min(max(2, transfer_candidate_count), available_cores),
                 ),
-                "directive": "prefer_locality",
+                "directive": default_transfer_directive,
             },
         }
     )
@@ -365,12 +475,12 @@ def build_flow_from_cw_program(
             "deps": ["load_ifmap"],
             "placement": {
                 "candidate_cores": _candidate_cores(
-                    base_index=(entry_y * grid_x + entry_x + 2),
+                    base_index=entry_index + (2 * lane_stride),
                     grid_x=grid_x,
                     grid_y=grid_y,
-                    count=min(2, grid_x * grid_y),
+                    count=min(max(2, transfer_candidate_count), available_cores),
                 ),
-                "directive": "prefer_balance",
+                "directive": default_transfer_directive,
             },
         }
     )
@@ -382,24 +492,24 @@ def build_flow_from_cw_program(
             "deps": ["load_weights"],
             "placement": {
                 "candidate_cores": _candidate_cores(
-                    base_index=(entry_y * grid_x + entry_x + 3),
+                    base_index=entry_index + (3 * lane_stride),
                     grid_x=grid_x,
                     grid_y=grid_y,
-                    count=min(2, grid_x * grid_y),
+                    count=min(max(2, transfer_candidate_count), available_cores),
                 ),
-                "directive": "prefer_balance",
+                "directive": default_transfer_directive,
             },
         }
     )
 
     relu_nodes: list[str] = []
     for lane in range(lanes):
-        lane_seed = (entry_y * grid_x + entry_x + 4 + lane) % max(1, grid_x * grid_y)
+        lane_seed = (entry_index + 4 + (lane * lane_stride)) % available_cores
         lane_candidates = _candidate_cores(
             base_index=lane_seed,
             grid_x=grid_x,
             grid_y=grid_y,
-            count=min(4, max(1, grid_x * grid_y)),
+            count=min(max(2, lane_candidate_count), available_cores),
         )
 
         mul_id = f"lane{lane}_mul"
@@ -416,7 +526,7 @@ def build_flow_from_cw_program(
                 "deps": ["load_ifmap", "load_weights"],
                 "placement": {
                     "candidate_cores": lane_candidates,
-                    "directive": "prefer_balance",
+                    "directive": default_compute_directive,
                 },
             }
         )
@@ -428,7 +538,7 @@ def build_flow_from_cw_program(
                 "deps": [mul_id],
                 "placement": {
                     "candidate_cores": lane_candidates,
-                    "directive": "prefer_locality",
+                    "directive": default_compute_directive,
                 },
             }
         )
@@ -440,7 +550,7 @@ def build_flow_from_cw_program(
                 "deps": [acc_id, "load_bias"],
                 "placement": {
                     "candidate_cores": lane_candidates,
-                    "directive": "prefer_locality",
+                    "directive": default_compute_directive,
                 },
             }
         )
@@ -452,7 +562,7 @@ def build_flow_from_cw_program(
                 "deps": [bias_id],
                 "placement": {
                     "candidate_cores": lane_candidates,
-                    "directive": "prefer_locality",
+                    "directive": default_compute_directive,
                 },
             }
         )
@@ -465,7 +575,7 @@ def build_flow_from_cw_program(
                 "deps": [residual_id],
                 "placement": {
                     "candidate_cores": lane_candidates,
-                    "directive": "prefer_locality",
+                    "directive": default_compute_directive,
                 },
             }
         )
@@ -479,12 +589,12 @@ def build_flow_from_cw_program(
             "deps": relu_nodes + ["prefetch_next_ifmap"],
             "placement": {
                 "candidate_cores": _candidate_cores(
-                    base_index=(entry_y * grid_x + entry_x + 7),
+                    base_index=counter_anchor,
                     grid_x=grid_x,
                     grid_y=grid_y,
-                    count=min(3, grid_x * grid_y),
+                    count=min(max(2, transfer_candidate_count), available_cores),
                 ),
-                "directive": "prefer_balance",
+                "directive": default_transfer_directive,
             },
         }
     )
@@ -499,7 +609,9 @@ def build_flow_from_cw_program(
             "recurrent": True,
             "max_iterations": _tile_iteration_hint(spec, shape),
             "placement": {
-                "candidate_cores": [_core_from_index(0, grid_x=grid_x, grid_y=grid_y)],
+                "candidate_cores": [
+                    _core_from_index(counter_anchor, grid_x=grid_x, grid_y=grid_y)
+                ],
                 "directive": "manual",
                 "fixed": True,
             },
@@ -514,12 +626,12 @@ def build_flow_from_cw_program(
             "deps": ["tile_counter"],
             "placement": {
                 "candidate_cores": _candidate_cores(
-                    base_index=(entry_y * grid_x + entry_x + 8),
+                    base_index=counter_anchor + 1,
                     grid_x=grid_x,
                     grid_y=grid_y,
-                    count=min(2, grid_x * grid_y),
+                    count=min(max(1, transfer_candidate_count), available_cores),
                 ),
-                "directive": "prefer_balance",
+                "directive": default_transfer_directive,
             },
         }
     )
@@ -552,6 +664,10 @@ def build_flow_from_cw_program(
             "dtype": dtype,
             "dtype_compiled": dtype,
             "dtype_source": dtype_source,
+            "placement_policy_preferred": spec.preferred_placement_policy,
+            "placement_policy_compiled": resolved_placement_policy,
+            "lowering_profile_preferred": spec.preferred_lowering_profile,
+            "lowering_profile_compiled": resolved_lowering_profile,
         },
     }
 
@@ -749,12 +865,14 @@ def merge_cw_into_config(
     max_in_flight: int | None = None,
     dtype: str | None = None,
     lane_parallelism: int | None = None,
+    placement_policy: str | None = None,
+    lowering_profile: str | None = None,
     program_id: int | None = None,
     program_name: str | None = None,
-    program_priority: int = 2,
+    program_priority: int | None = None,
     program_replicas: int = 1,
     program_max_parallel_flows: int | None = None,
-    program_load_balance: str = "least_busy",
+    program_load_balance: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         payload = json.loads(base_config_path.read_text())
@@ -808,6 +926,8 @@ def merge_cw_into_config(
         grid_x=base_device.grid_x,
         grid_y=base_device.grid_y,
         lane_parallelism=lane_parallelism,
+        placement_policy=placement_policy,
+        lowering_profile=lowering_profile,
         parsed_spec_shape=(spec, shape),
         max_in_flight_source=resolved_max_in_flight_source,
         dtype_source=resolved_dtype_source,
@@ -818,8 +938,26 @@ def merge_cw_into_config(
 
     resolved_program_id = flow_id if program_id is None else program_id
     resolved_program_name = program_name or f"cw_program_{resolved_program_id}"
+    resolved_program_priority = (
+        program_priority
+        if program_priority is not None
+        else (
+            spec.preferred_program_priority
+            if spec.preferred_program_priority is not None
+            else _DEFAULT_CW_PROGRAM_PRIORITY
+        )
+    )
     resolved_max_parallel = (
         program_replicas if program_max_parallel_flows is None else program_max_parallel_flows
+    )
+    resolved_program_load_balance = (
+        program_load_balance
+        if program_load_balance is not None
+        else (
+            spec.preferred_program_load_balance
+            if spec.preferred_program_load_balance is not None
+            else _DEFAULT_CW_PROGRAM_LOAD_BALANCE
+        )
     )
 
     program_obj = _upsert_program(
@@ -827,10 +965,19 @@ def merge_cw_into_config(
         flow_id=flow_id,
         program_id=resolved_program_id,
         program_name=resolved_program_name,
-        program_priority=program_priority,
+        program_priority=resolved_program_priority,
         program_replicas=program_replicas,
         program_max_parallel_flows=max(1, resolved_max_parallel),
-        program_load_balance=program_load_balance,
+        program_load_balance=resolved_program_load_balance,
+    )
+    flow.setdefault("cw_hints", {})
+    flow["cw_hints"].update(
+        {
+            "program_priority_preferred": spec.preferred_program_priority,
+            "program_priority_compiled": resolved_program_priority,
+            "program_load_balance_preferred": spec.preferred_program_load_balance,
+            "program_load_balance_compiled": resolved_program_load_balance,
+        }
     )
 
     out_config_path.parent.mkdir(parents=True, exist_ok=True)

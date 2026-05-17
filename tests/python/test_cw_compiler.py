@@ -51,6 +51,10 @@ class CWCompilerTests(unittest.TestCase):
         self.assertEqual(spec.preferred_lane_parallelism, 4)
         self.assertEqual(spec.preferred_max_in_flight, 4)
         self.assertEqual(spec.preferred_dtype, "float32")
+        self.assertEqual(spec.preferred_placement_policy, "locality")
+        self.assertEqual(spec.preferred_lowering_profile, "latency_optimized")
+        self.assertEqual(spec.preferred_program_priority, 4)
+        self.assertEqual(spec.preferred_program_load_balance, "least_busy")
         self.assertEqual(shape.h, 224)
         self.assertEqual(shape.w, 224)
         self.assertEqual(shape.cin, 64)
@@ -106,6 +110,12 @@ class CWCompilerTests(unittest.TestCase):
             self.assertEqual(hints.get("max_in_flight_source"), "cli")
             self.assertEqual(hints.get("dtype_compiled"), "float32")
             self.assertEqual(hints.get("dtype_source"), "pragma")
+            self.assertEqual(hints.get("placement_policy_compiled"), "locality")
+            self.assertEqual(hints.get("lowering_profile_compiled"), "latency_optimized")
+            self.assertEqual(hints.get("program_priority_compiled"), 3)
+            self.assertEqual(hints.get("program_load_balance_compiled"), "least_busy")
+            self.assertEqual(program_obj["priority"], 3)
+            self.assertEqual(program_obj["load_balance"], "least_busy")
 
             payload = json.loads(out_path.read_text())
             self.assertEqual(len(payload["flows"]), 1)
@@ -133,6 +143,10 @@ class CWCompilerTests(unittest.TestCase):
                 "// @wau lane_parallelism=3\n"
                 "// @wau max_in_flight=7\n"
                 "// @wau preferred_dtype=int32\n"
+                "// @wau placement_policy=balance\n"
+                "// @wau lowering_profile=throughput_optimized\n"
+                "// @wau program_priority=5\n"
+                "// @wau program_load_balance=round_robin\n"
                 + _base_program_without_wau_pragmas()
             )
             flow, _program_obj = merge_cw_into_config(
@@ -147,6 +161,8 @@ class CWCompilerTests(unittest.TestCase):
                 max_in_flight=5,
                 dtype="float32",
                 lane_parallelism=5,
+                placement_policy="locality",
+                lowering_profile="latency_optimized",
                 program_id=18,
                 program_name="cw_program_override",
                 program_priority=2,
@@ -165,6 +181,14 @@ class CWCompilerTests(unittest.TestCase):
             self.assertEqual(hints.get("preferred_dtype"), "int32")
             self.assertEqual(hints.get("dtype_compiled"), "float32")
             self.assertEqual(hints.get("dtype_source"), "cli")
+            self.assertEqual(hints.get("placement_policy_preferred"), "balance")
+            self.assertEqual(hints.get("placement_policy_compiled"), "locality")
+            self.assertEqual(hints.get("lowering_profile_preferred"), "throughput_optimized")
+            self.assertEqual(hints.get("lowering_profile_compiled"), "latency_optimized")
+            self.assertEqual(hints.get("program_priority_preferred"), 5)
+            self.assertEqual(hints.get("program_priority_compiled"), 2)
+            self.assertEqual(hints.get("program_load_balance_preferred"), "round_robin")
+            self.assertEqual(hints.get("program_load_balance_compiled"), "least_busy")
 
     def test_merge_cw_pragma_applies_when_cli_omits(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -179,9 +203,13 @@ class CWCompilerTests(unittest.TestCase):
                 "// @wau lane_parallelism=2\n"
                 "// @wau max_in_flight=6\n"
                 "// @wau preferred_dtype=int32\n"
+                "// @wau placement_policy=balance\n"
+                "// @wau lowering_profile=throughput_optimized\n"
+                "// @wau program_priority=6\n"
+                "// @wau program_load_balance=round_robin\n"
                 + _base_program_without_wau_pragmas()
             )
-            flow, _program_obj = merge_cw_into_config(
+            flow, program_obj = merge_cw_into_config(
                 base_config_path=base_path,
                 out_config_path=out_path,
                 program=program,
@@ -192,10 +220,8 @@ class CWCompilerTests(unittest.TestCase):
                 replace_existing=False,
                 program_id=20,
                 program_name="cw_program_defaults",
-                program_priority=2,
                 program_replicas=1,
                 program_max_parallel_flows=1,
-                program_load_balance="least_busy",
             )
 
             hints = flow.get("cw_hints", {})
@@ -206,6 +232,12 @@ class CWCompilerTests(unittest.TestCase):
             self.assertEqual(hints.get("max_in_flight_source"), "pragma")
             self.assertEqual(hints.get("dtype_compiled"), "int32")
             self.assertEqual(hints.get("dtype_source"), "pragma")
+            self.assertEqual(hints.get("placement_policy_compiled"), "balance")
+            self.assertEqual(hints.get("lowering_profile_compiled"), "throughput_optimized")
+            self.assertEqual(hints.get("program_priority_compiled"), 6)
+            self.assertEqual(hints.get("program_load_balance_compiled"), "round_robin")
+            self.assertEqual(program_obj["priority"], 6)
+            self.assertEqual(program_obj["load_balance"], "round_robin")
 
     def test_parse_rejects_invalid_pragma_syntax(self) -> None:
         with self.assertRaisesRegex(
@@ -227,6 +259,20 @@ class CWCompilerTests(unittest.TestCase):
             r"Invalid @wau preferred_dtype 'Float32' at line 1",
         ):
             parse_cw_program("// @wau preferred_dtype=Float32\nvoid main() {}")
+
+    def test_parse_rejects_invalid_placement_policy(self) -> None:
+        with self.assertRaisesRegex(
+            CWCompilerError,
+            r"Invalid @wau placement_policy value 'spread' at line 1",
+        ):
+            parse_cw_program("// @wau placement_policy=spread\nvoid main() {}")
+
+    def test_parse_rejects_invalid_program_load_balance(self) -> None:
+        with self.assertRaisesRegex(
+            CWCompilerError,
+            r"Invalid @wau program_load_balance value 'fifo' at line 1",
+        ):
+            parse_cw_program("// @wau program_load_balance=fifo\nvoid main() {}")
 
     def test_parse_rejects_incomplete_program(self) -> None:
         with self.assertRaises(CWCompilerError):

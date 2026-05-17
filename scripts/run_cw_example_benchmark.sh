@@ -12,18 +12,30 @@ OUT_DIR="${OUT_DIR:-.build/cw_example_generated}"
 
 FLOW_ID="${FLOW_ID:-90}"
 PROGRAM_ID="${PROGRAM_ID:-90}"
+PROGRAM_PRIORITY="${PROGRAM_PRIORITY:-}"
 PROGRAM_REPLICAS="${PROGRAM_REPLICAS:-2}"
 PROGRAM_MAX_PARALLEL="${PROGRAM_MAX_PARALLEL:-1}"
+PROGRAM_LOAD_BALANCE="${PROGRAM_LOAD_BALANCE:-}"
+SCHEDULER_PROGRAM_POLICY="${SCHEDULER_PROGRAM_POLICY:-}"
 EXEC_FLOW_ID="${EXEC_FLOW_ID:-$FLOW_ID}"
 EXEC_TIMEOUT_CYCLES="${EXEC_TIMEOUT_CYCLES:-5000}"
 CW_MAX_IN_FLIGHT="${CW_MAX_IN_FLIGHT:-4}"
 CW_LANE_PARALLELISM="${CW_LANE_PARALLELISM:-}"
 CW_DTYPE="${CW_DTYPE:-}"
+CW_PLACEMENT_POLICY="${CW_PLACEMENT_POLICY:-}"
+CW_LOWERING_PROFILE="${CW_LOWERING_PROFILE:-}"
 
 TUNE_MODE="${TUNE_MODE:-0}"
-TUNE_LANE_PARALLELISM_SET="${TUNE_LANE_PARALLELISM_SET:-4,6,8,10}"
-TUNE_PROGRAM_REPLICAS_SET="${TUNE_PROGRAM_REPLICAS_SET:-1,2,3}"
-TUNE_PROGRAM_MAX_PARALLEL_SET="${TUNE_PROGRAM_MAX_PARALLEL_SET:-1,2,3}"
+TUNE_SEARCH_MODE="${TUNE_SEARCH_MODE:-coordinate}"
+TUNE_LANE_PARALLELISM_SET="${TUNE_LANE_PARALLELISM_SET:-2,4,6}"
+TUNE_PROGRAM_REPLICAS_SET="${TUNE_PROGRAM_REPLICAS_SET:-1,2}"
+TUNE_PROGRAM_MAX_PARALLEL_SET="${TUNE_PROGRAM_MAX_PARALLEL_SET:-1,2}"
+TUNE_PROGRAM_PRIORITY_SET="${TUNE_PROGRAM_PRIORITY_SET:-3,4,5}"
+TUNE_PROGRAM_LOAD_BALANCE_SET="${TUNE_PROGRAM_LOAD_BALANCE_SET:-least_busy,round_robin}"
+TUNE_SCHEDULER_PROGRAM_POLICY_SET="${TUNE_SCHEDULER_PROGRAM_POLICY_SET:-weighted_fair,strict_priority,round_robin}"
+TUNE_CW_MAX_IN_FLIGHT_SET="${TUNE_CW_MAX_IN_FLIGHT_SET:-2,4}"
+TUNE_PLACEMENT_POLICY_SET="${TUNE_PLACEMENT_POLICY_SET:-locality,balance}"
+TUNE_LOWERING_PROFILE_SET="${TUNE_LOWERING_PROFILE_SET:-latency_optimized,reference,throughput_optimized}"
 TUNE_SUMMARY_FILE="${TUNE_SUMMARY_FILE:-benchmarks/example_pogram_tuning_latest.txt}"
 MULTI_RUNS="${MULTI_RUNS:-1}"
 MULTI_REQUIRE_ALL_PASS="${MULTI_REQUIRE_ALL_PASS:-1}"
@@ -100,6 +112,233 @@ bench_field() {
   local file="$1"
   local key="$2"
   awk -F': ' -v key="$key" '$1 == key {print $2}' "$file" | tail -n 1
+}
+
+render_knob_value() {
+  local value="${1:-}"
+  if [[ -n "$value" ]]; then
+    echo "$value"
+  else
+    echo "auto"
+  fi
+}
+
+prepare_effective_base_config() {
+  local source_config="$1"
+  local target_config="$2"
+
+  if [[ -z "$SCHEDULER_PROGRAM_POLICY" ]]; then
+    echo "$source_config"
+    return 0
+  fi
+
+  export CW_BENCH_BASE_SOURCE="$source_config"
+  export CW_BENCH_BASE_TARGET="$target_config"
+  export CW_BENCH_SCHEDULER_POLICY="$SCHEDULER_PROGRAM_POLICY"
+  python3 - <<'PY'
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+source = Path(os.environ["CW_BENCH_BASE_SOURCE"])
+target = Path(os.environ["CW_BENCH_BASE_TARGET"])
+policy = os.environ["CW_BENCH_SCHEDULER_POLICY"]
+
+payload = json.loads(source.read_text())
+scheduler = payload.setdefault("scheduler", {})
+if not isinstance(scheduler, dict):
+    raise SystemExit("scheduler must be an object in base config")
+scheduler["program_policy"] = policy
+
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_text(json.dumps(payload, indent=2) + "\n")
+print(target)
+PY
+}
+
+run_tune_candidate() {
+  local stage="$1"
+  local run_name="$2"
+  local run_bench="$3"
+  local run_out_dir="$4"
+  local run_build_dir="$5"
+  local lane="$6"
+  local rep="$7"
+  local mp="$8"
+  local priority="$9"
+  local load_balance="${10}"
+  local scheduler_policy="${11}"
+  local max_in_flight="${12}"
+  local placement_policy="${13}"
+  local lowering_profile="${14}"
+  local rows_file="${15}"
+
+  echo "[cw-bench][tune] stage=${stage} run=${run_name}"
+
+  if TUNE_MODE=0 \
+    MULTI_RUNS=1 \
+    REGRESSION_CHECK=0 \
+    UPDATE_BENCH_SIDECAR=0 \
+    RUN_PROFILE="autotune_candidate" \
+    CW_LANE_PARALLELISM="$lane" \
+    PROGRAM_REPLICAS="$rep" \
+    PROGRAM_MAX_PARALLEL="$mp" \
+    PROGRAM_PRIORITY="$priority" \
+    PROGRAM_LOAD_BALANCE="$load_balance" \
+    SCHEDULER_PROGRAM_POLICY="$scheduler_policy" \
+    CW_MAX_IN_FLIGHT="$max_in_flight" \
+    CW_PLACEMENT_POLICY="$placement_policy" \
+    CW_LOWERING_PROFILE="$lowering_profile" \
+    OUT_DIR="$run_out_dir" \
+    BUILD_DIR="$run_build_dir" \
+    "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$run_bench"; then
+    local lat_avg
+    local lat_p95
+    local makespan
+    local fallback_ratio
+    local hops_total
+    local total_ms
+    lat_avg="$(bench_field "$run_bench" "exec_latency_cycles_avg")"
+    lat_p95="$(bench_field "$run_bench" "exec_latency_cycles_p95")"
+    makespan="$(bench_field "$run_bench" "makespan_cycles")"
+    fallback_ratio="$(bench_field "$run_bench" "fallback_instruction_ratio")"
+    hops_total="$(bench_field "$run_bench" "estimated_transfer_hops_total")"
+    total_ms="$(bench_field "$run_bench" "total_ms")"
+    echo "${stage},${run_name},pass,${lane},${rep},${mp},${priority},${load_balance},${scheduler_policy},${max_in_flight},${placement_policy},${lowering_profile},${lat_avg},${lat_p95},${makespan},${fallback_ratio},${hops_total},${total_ms},${run_bench}" >> "$rows_file"
+  else
+    echo "${stage},${run_name},fail,${lane},${rep},${mp},${priority},${load_balance},${scheduler_policy},${max_in_flight},${placement_policy},${lowering_profile},inf,inf,inf,inf,inf,inf,${run_bench}" >> "$rows_file"
+  fi
+}
+
+pick_best_tune_row() {
+  local rows_file="$1"
+  local stage_filter="$2"
+  export CW_TUNE_PICK_ROWS="$rows_file"
+  export CW_TUNE_PICK_STAGE="$stage_filter"
+  python3 - <<'PY'
+from __future__ import annotations
+
+import csv
+import math
+import os
+
+rows_path = os.environ["CW_TUNE_PICK_ROWS"]
+stage_filter = os.environ["CW_TUNE_PICK_STAGE"]
+
+rows: list[dict[str, str]] = []
+with open(rows_path, newline="") as f:
+    reader = csv.reader(f)
+    for row in reader:
+        if len(row) != 19:
+            continue
+        (
+            stage,
+            run_name,
+            status,
+            lane,
+            rep,
+            mp,
+            priority,
+            load_balance,
+            scheduler_policy,
+            max_in_flight,
+            placement_policy,
+            lowering_profile,
+            lat_avg,
+            lat_p95,
+            makespan,
+            fallback_ratio,
+            hops_total,
+            total_ms,
+            bench_path,
+        ) = row
+        if stage_filter != "all" and stage != stage_filter:
+            continue
+        rows.append(
+            {
+                "stage": stage,
+                "run_name": run_name,
+                "status": status,
+                "lane": lane,
+                "rep": rep,
+                "mp": mp,
+                "priority": priority,
+                "load_balance": load_balance,
+                "scheduler_policy": scheduler_policy,
+                "max_in_flight": max_in_flight,
+                "placement_policy": placement_policy,
+                "lowering_profile": lowering_profile,
+                "lat_avg": lat_avg,
+                "lat_p95": lat_p95,
+                "makespan": makespan,
+                "fallback_ratio": fallback_ratio,
+                "hops_total": hops_total,
+                "total_ms": total_ms,
+                "bench_path": bench_path,
+            }
+        )
+
+if not rows:
+    raise SystemExit("No tuning rows available")
+
+
+def as_float(value: str) -> float:
+    if value == "inf":
+        return math.inf
+    return float(value)
+
+
+def as_int(value: str) -> int:
+    if value == "inf":
+        return 2**31 - 1
+    return int(float(value))
+
+
+def show(value: str) -> str:
+    return value if value else "auto"
+
+
+passing = [row for row in rows if row["status"] == "pass"]
+if not passing:
+    raise SystemExit("No successful tuning rows available")
+
+best = min(
+    passing,
+    key=lambda row: (
+        as_float(row["lat_avg"]),
+        as_float(row["lat_p95"]),
+        as_int(row["makespan"]),
+        as_float(row["fallback_ratio"]),
+        as_int(row["hops_total"]),
+        as_int(row["total_ms"]),
+    ),
+)
+print(
+    "|".join(
+        [
+            best["lane"],
+            best["rep"],
+            best["mp"],
+            best["priority"],
+            best["load_balance"],
+            best["scheduler_policy"],
+            best["max_in_flight"],
+            best["placement_policy"],
+            best["lowering_profile"],
+            best["lat_avg"],
+            best["lat_p95"],
+            best["makespan"],
+            best["fallback_ratio"],
+            best["hops_total"],
+            best["total_ms"],
+            best["bench_path"],
+            best["run_name"],
+        ]
+    )
+)
+PY
 }
 
 if [[ "$TUNE_MODE" == "1" && "$MULTI_RUNS" -gt 1 ]]; then
@@ -274,7 +513,12 @@ PY
 fi
 
 if [[ "$TUNE_MODE" == "1" ]]; then
-  echo "[cw-bench] tune mode enabled"
+  if [[ "$TUNE_SEARCH_MODE" != "coordinate" ]]; then
+    echo "[cw-bench] ERROR: unsupported TUNE_SEARCH_MODE=${TUNE_SEARCH_MODE} (supported: coordinate)"
+    exit 2
+  fi
+
+  echo "[cw-bench] tune mode enabled (search_mode=${TUNE_SEARCH_MODE})"
   TUNE_ROOT=".build/cw_tune"
   TUNE_ROWS="$TUNE_ROOT/rows.csv"
   mkdir -p "$TUNE_ROOT" "$(dirname "$TUNE_SUMMARY_FILE")"
@@ -283,82 +527,211 @@ if [[ "$TUNE_MODE" == "1" ]]; then
   IFS=',' read -r -a tune_lanes_raw <<< "$TUNE_LANE_PARALLELISM_SET"
   IFS=',' read -r -a tune_replicas_raw <<< "$TUNE_PROGRAM_REPLICAS_SET"
   IFS=',' read -r -a tune_max_parallel_raw <<< "$TUNE_PROGRAM_MAX_PARALLEL_SET"
+  IFS=',' read -r -a tune_priorities_raw <<< "$TUNE_PROGRAM_PRIORITY_SET"
+  IFS=',' read -r -a tune_load_balance_raw <<< "$TUNE_PROGRAM_LOAD_BALANCE_SET"
+  IFS=',' read -r -a tune_scheduler_policy_raw <<< "$TUNE_SCHEDULER_PROGRAM_POLICY_SET"
+  IFS=',' read -r -a tune_max_in_flight_raw <<< "$TUNE_CW_MAX_IN_FLIGHT_SET"
+  IFS=',' read -r -a tune_placement_policy_raw <<< "$TUNE_PLACEMENT_POLICY_SET"
+  IFS=',' read -r -a tune_lowering_profile_raw <<< "$TUNE_LOWERING_PROFILE_SET"
+
+  best_lane="$CW_LANE_PARALLELISM"
+  best_rep="$PROGRAM_REPLICAS"
+  best_mp="$PROGRAM_MAX_PARALLEL"
+  best_priority="$PROGRAM_PRIORITY"
+  best_load_balance="$PROGRAM_LOAD_BALANCE"
+  best_scheduler_policy="$SCHEDULER_PROGRAM_POLICY"
+  best_max_in_flight="$CW_MAX_IN_FLIGHT"
+  best_placement_policy="$CW_PLACEMENT_POLICY"
+  best_lowering_profile="$CW_LOWERING_PROFILE"
 
   run_idx=0
   for lane_raw in "${tune_lanes_raw[@]}"; do
     lane="$(trim_csv_token "$lane_raw")"
     [[ -n "$lane" ]] || continue
-    for rep_raw in "${tune_replicas_raw[@]}"; do
-      rep="$(trim_csv_token "$rep_raw")"
-      [[ -n "$rep" ]] || continue
-      for mp_raw in "${tune_max_parallel_raw[@]}"; do
-        mp="$(trim_csv_token "$mp_raw")"
-        [[ -n "$mp" ]] || continue
-
+    for placement_raw in "${tune_placement_policy_raw[@]}"; do
+      placement="$(trim_csv_token "$placement_raw")"
+      [[ -n "$placement" ]] || continue
+      for profile_raw in "${tune_lowering_profile_raw[@]}"; do
+        profile="$(trim_csv_token "$profile_raw")"
+        [[ -n "$profile" ]] || continue
         run_idx=$((run_idx + 1))
-        run_name="r${run_idx}_l${lane}_rep${rep}_mp${mp}"
+        run_name="r${run_idx}_topology"
         run_bench="$TUNE_ROOT/${run_name}.txt"
         run_out_dir="$TUNE_ROOT/${run_name}_generated"
         run_build_dir="$TUNE_ROOT/${run_name}_iverilog"
-
-        echo "[cw-bench][tune] run=${run_name}"
-
-        if TUNE_MODE=0 \
-          MULTI_RUNS=1 \
-          REGRESSION_CHECK=0 \
-          UPDATE_BENCH_SIDECAR=0 \
-          RUN_PROFILE="autotune_candidate" \
-          CW_LANE_PARALLELISM="$lane" \
-          PROGRAM_REPLICAS="$rep" \
-          PROGRAM_MAX_PARALLEL="$mp" \
-          OUT_DIR="$run_out_dir" \
-          BUILD_DIR="$run_build_dir" \
-          "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$run_bench"; then
-          lat_avg="$(bench_field "$run_bench" "exec_latency_cycles_avg")"
-          makespan="$(bench_field "$run_bench" "makespan_cycles")"
-          total_ms="$(bench_field "$run_bench" "total_ms")"
-          echo "${run_name},${lane},${rep},${mp},pass,${lat_avg},${makespan},${total_ms},${run_bench}" >> "$TUNE_ROWS"
-        else
-          echo "${run_name},${lane},${rep},${mp},fail,inf,inf,inf,${run_bench}" >> "$TUNE_ROWS"
-        fi
+        run_tune_candidate \
+          "stage1_topology" \
+          "$run_name" \
+          "$run_bench" \
+          "$run_out_dir" \
+          "$run_build_dir" \
+          "$lane" \
+          "$best_rep" \
+          "$best_mp" \
+          "$best_priority" \
+          "$best_load_balance" \
+          "$best_scheduler_policy" \
+          "$best_max_in_flight" \
+          "$placement" \
+          "$profile" \
+          "$TUNE_ROWS"
       done
     done
   done
 
+  IFS='|' read -r best_lane best_rep best_mp best_priority best_load_balance best_scheduler_policy best_max_in_flight best_placement_policy best_lowering_profile _best_lat _best_p95 _best_makespan _best_fallback _best_hops _best_total _best_bench _best_run <<< "$(pick_best_tune_row "$TUNE_ROWS" "stage1_topology")"
+
+  for rep_raw in "${tune_replicas_raw[@]}"; do
+    rep="$(trim_csv_token "$rep_raw")"
+    [[ -n "$rep" ]] || continue
+    for mp_raw in "${tune_max_parallel_raw[@]}"; do
+      mp="$(trim_csv_token "$mp_raw")"
+      [[ -n "$mp" ]] || continue
+      for priority_raw in "${tune_priorities_raw[@]}"; do
+        priority="$(trim_csv_token "$priority_raw")"
+        [[ -n "$priority" ]] || continue
+        for max_in_flight_raw in "${tune_max_in_flight_raw[@]}"; do
+          max_in_flight="$(trim_csv_token "$max_in_flight_raw")"
+          [[ -n "$max_in_flight" ]] || continue
+          run_idx=$((run_idx + 1))
+          run_name="r${run_idx}_program"
+          run_bench="$TUNE_ROOT/${run_name}.txt"
+          run_out_dir="$TUNE_ROOT/${run_name}_generated"
+          run_build_dir="$TUNE_ROOT/${run_name}_iverilog"
+          run_tune_candidate \
+            "stage2_program" \
+            "$run_name" \
+            "$run_bench" \
+            "$run_out_dir" \
+            "$run_build_dir" \
+            "$best_lane" \
+            "$rep" \
+            "$mp" \
+            "$priority" \
+            "$best_load_balance" \
+            "$best_scheduler_policy" \
+            "$max_in_flight" \
+            "$best_placement_policy" \
+            "$best_lowering_profile" \
+            "$TUNE_ROWS"
+        done
+      done
+    done
+  done
+
+  IFS='|' read -r best_lane best_rep best_mp best_priority best_load_balance best_scheduler_policy best_max_in_flight best_placement_policy best_lowering_profile _best_lat _best_p95 _best_makespan _best_fallback _best_hops _best_total _best_bench _best_run <<< "$(pick_best_tune_row "$TUNE_ROWS" "stage2_program")"
+
+  for load_balance_raw in "${tune_load_balance_raw[@]}"; do
+    load_balance="$(trim_csv_token "$load_balance_raw")"
+    [[ -n "$load_balance" ]] || continue
+    for scheduler_policy_raw in "${tune_scheduler_policy_raw[@]}"; do
+      scheduler_policy="$(trim_csv_token "$scheduler_policy_raw")"
+      [[ -n "$scheduler_policy" ]] || continue
+      run_idx=$((run_idx + 1))
+      run_name="r${run_idx}_scheduler"
+      run_bench="$TUNE_ROOT/${run_name}.txt"
+      run_out_dir="$TUNE_ROOT/${run_name}_generated"
+      run_build_dir="$TUNE_ROOT/${run_name}_iverilog"
+      run_tune_candidate \
+        "stage3_scheduler" \
+        "$run_name" \
+        "$run_bench" \
+        "$run_out_dir" \
+        "$run_build_dir" \
+        "$best_lane" \
+        "$best_rep" \
+        "$best_mp" \
+        "$best_priority" \
+        "$load_balance" \
+        "$scheduler_policy" \
+        "$best_max_in_flight" \
+        "$best_placement_policy" \
+        "$best_lowering_profile" \
+        "$TUNE_ROWS"
+    done
+  done
+
+  IFS='|' read -r best_lane best_rep best_mp best_priority best_load_balance best_scheduler_policy best_max_in_flight best_placement_policy best_lowering_profile best_lat best_p95 best_makespan best_fallback best_hops best_total best_bench best_run <<< "$(pick_best_tune_row "$TUNE_ROWS" "all")"
+
   export CW_TUNE_ROWS="$TUNE_ROWS"
   export CW_TUNE_TARGET_BENCH="$BENCH_FILE"
   export CW_TUNE_SUMMARY_FILE="$TUNE_SUMMARY_FILE"
+  export CW_TUNE_SEARCH_MODE="$TUNE_SEARCH_MODE"
   export CW_TUNE_LANE_SET="$TUNE_LANE_PARALLELISM_SET"
   export CW_TUNE_REPLICA_SET="$TUNE_PROGRAM_REPLICAS_SET"
   export CW_TUNE_MAX_PARALLEL_SET="$TUNE_PROGRAM_MAX_PARALLEL_SET"
+  export CW_TUNE_PRIORITY_SET="$TUNE_PROGRAM_PRIORITY_SET"
+  export CW_TUNE_LOAD_BALANCE_SET="$TUNE_PROGRAM_LOAD_BALANCE_SET"
+  export CW_TUNE_SCHEDULER_POLICY_SET="$TUNE_SCHEDULER_PROGRAM_POLICY_SET"
+  export CW_TUNE_MAX_IN_FLIGHT_SET="$TUNE_CW_MAX_IN_FLIGHT_SET"
+  export CW_TUNE_PLACEMENT_POLICY_SET="$TUNE_PLACEMENT_POLICY_SET"
+  export CW_TUNE_LOWERING_PROFILE_SET="$TUNE_LOWERING_PROFILE_SET"
   python3 - <<'PY'
 from __future__ import annotations
 
 import csv
 import datetime as dt
+import math
 import os
 from pathlib import Path
 
 rows_path = Path(os.environ["CW_TUNE_ROWS"])
 target_bench = Path(os.environ["CW_TUNE_TARGET_BENCH"])
 summary_path = Path(os.environ["CW_TUNE_SUMMARY_FILE"])
+search_mode = os.environ["CW_TUNE_SEARCH_MODE"]
 lane_set = os.environ["CW_TUNE_LANE_SET"]
 rep_set = os.environ["CW_TUNE_REPLICA_SET"]
 mp_set = os.environ["CW_TUNE_MAX_PARALLEL_SET"]
+priority_set = os.environ["CW_TUNE_PRIORITY_SET"]
+load_balance_set = os.environ["CW_TUNE_LOAD_BALANCE_SET"]
+scheduler_policy_set = os.environ["CW_TUNE_SCHEDULER_POLICY_SET"]
+max_in_flight_set = os.environ["CW_TUNE_MAX_IN_FLIGHT_SET"]
+placement_policy_set = os.environ["CW_TUNE_PLACEMENT_POLICY_SET"]
+lowering_profile_set = os.environ["CW_TUNE_LOWERING_PROFILE_SET"]
 
 rows: list[dict[str, str]] = []
 with rows_path.open(newline="") as f:
     reader = csv.reader(f)
-    for run_name, lane, rep, mp, status, lat_avg, makespan, total_ms, bench_path in reader:
+    for (
+        stage,
+        run_name,
+        status,
+        lane,
+        rep,
+        mp,
+        priority,
+        load_balance,
+        scheduler_policy,
+        max_in_flight,
+        placement_policy,
+        lowering_profile,
+        lat_avg,
+        lat_p95,
+        makespan,
+        fallback_ratio,
+        hops_total,
+        total_ms,
+        bench_path,
+    ) in reader:
         rows.append(
             {
+                "stage": stage,
                 "run_name": run_name,
+                "status": status,
                 "lane": lane,
                 "rep": rep,
                 "mp": mp,
-                "status": status,
+                "priority": priority,
+                "load_balance": load_balance,
+                "scheduler_policy": scheduler_policy,
+                "max_in_flight": max_in_flight,
+                "placement_policy": placement_policy,
+                "lowering_profile": lowering_profile,
                 "lat_avg": lat_avg,
+                "lat_p95": lat_p95,
                 "makespan": makespan,
+                "fallback_ratio": fallback_ratio,
+                "hops_total": hops_total,
                 "total_ms": total_ms,
                 "bench_path": bench_path,
             }
@@ -367,7 +740,7 @@ with rows_path.open(newline="") as f:
 
 def as_float(value: str) -> float:
     if value == "inf":
-        return float("inf")
+        return math.inf
     return float(value)
 
 
@@ -377,13 +750,24 @@ def as_int(value: str) -> int:
     return int(float(value))
 
 
+def show(value: str) -> str:
+    return value if value else "auto"
+
+
 passing = [row for row in rows if row["status"] == "pass"]
 if not passing:
     raise SystemExit("No successful tuning runs found")
 
 passing_sorted = sorted(
     passing,
-    key=lambda row: (as_float(row["lat_avg"]), as_int(row["makespan"]), as_int(row["total_ms"])),
+    key=lambda row: (
+        as_float(row["lat_avg"]),
+        as_float(row["lat_p95"]),
+        as_int(row["makespan"]),
+        as_float(row["fallback_ratio"]),
+        as_int(row["hops_total"]),
+        as_int(row["total_ms"]),
+    ),
 )
 best = passing_sorted[0]
 best_path = Path(best["bench_path"])
@@ -395,15 +779,32 @@ tuning_section = [
     "",
     "Tuning Selection",
     "tune_mode: 1",
+    f"tune_search_mode: {search_mode}",
     f"search_lanes: {lane_set}",
     f"search_program_replicas: {rep_set}",
     f"search_program_max_parallel: {mp_set}",
+    f"search_program_priority: {priority_set}",
+    f"search_program_load_balance: {load_balance_set}",
+    f"search_scheduler_program_policy: {scheduler_policy_set}",
+    f"search_cw_max_in_flight: {max_in_flight_set}",
+    f"search_placement_policy: {placement_policy_set}",
+    f"search_lowering_profile: {lowering_profile_set}",
     f"best_run: {best['run_name']}",
-    f"best_lane_parallelism: {best['lane']}",
+    f"best_stage: {best['stage']}",
+    f"best_lane_parallelism: {show(best['lane'])}",
     f"best_program_replicas: {best['rep']}",
     f"best_program_max_parallel: {best['mp']}",
+    f"best_program_priority: {show(best['priority'])}",
+    f"best_program_load_balance: {show(best['load_balance'])}",
+    f"best_scheduler_program_policy: {show(best['scheduler_policy'])}",
+    f"best_cw_max_in_flight: {best['max_in_flight']}",
+    f"best_placement_policy: {show(best['placement_policy'])}",
+    f"best_lowering_profile: {show(best['lowering_profile'])}",
     f"best_exec_latency_cycles_avg: {best['lat_avg']}",
+    f"best_exec_latency_cycles_p95: {best['lat_p95']}",
     f"best_makespan_cycles: {best['makespan']}",
+    f"best_fallback_instruction_ratio: {best['fallback_ratio']}",
+    f"best_estimated_transfer_hops_total: {best['hops_total']}",
     f"best_total_ms: {best['total_ms']}",
 ]
 target_bench.write_text(best_text.rstrip() + "\n" + "\n".join(tuning_section) + "\n")
@@ -411,34 +812,69 @@ target_bench.write_text(best_text.rstrip() + "\n" + "\n".join(tuning_section) + 
 summary_lines = [
     "WAU CW Autotune Summary (latest)",
     f"run_utc: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')}",
+    f"search_mode: {search_mode}",
     f"search_lanes: {lane_set}",
     f"search_program_replicas: {rep_set}",
     f"search_program_max_parallel: {mp_set}",
+    f"search_program_priority: {priority_set}",
+    f"search_program_load_balance: {load_balance_set}",
+    f"search_scheduler_program_policy: {scheduler_policy_set}",
+    f"search_cw_max_in_flight: {max_in_flight_set}",
+    f"search_placement_policy: {placement_policy_set}",
+    f"search_lowering_profile: {lowering_profile_set}",
     "",
-    "Top Candidates (lowest exec latency avg, then makespan, then total_ms)",
+    "Top Candidates (avg latency, p95 latency, makespan, fallback ratio, hops, total_ms)",
 ]
 for idx, row in enumerate(passing_sorted[:5], start=1):
     summary_lines.append(
-        f"{idx}. run={row['run_name']} lane={row['lane']} replicas={row['rep']} "
-        f"max_parallel={row['mp']} exec_latency_avg={row['lat_avg']} "
-        f"makespan={row['makespan']} total_ms={row['total_ms']}"
+        f"{idx}. run={row['run_name']} stage={row['stage']} lane={show(row['lane'])} replicas={row['rep']} "
+        f"max_parallel={row['mp']} priority={show(row['priority'])} load_balance={show(row['load_balance'])} "
+        f"scheduler_policy={show(row['scheduler_policy'])} max_in_flight={row['max_in_flight']} "
+        f"placement={show(row['placement_policy'])} profile={show(row['lowering_profile'])} "
+        f"exec_latency_avg={row['lat_avg']} exec_latency_p95={row['lat_p95']} "
+        f"makespan={row['makespan']} fallback_ratio={row['fallback_ratio']} "
+        f"hops_total={row['hops_total']} total_ms={row['total_ms']}"
+    )
+
+summary_lines.append("")
+summary_lines.append("Stage Winners")
+for stage in ("stage1_topology", "stage2_program", "stage3_scheduler"):
+    stage_rows = [row for row in passing_sorted if row["stage"] == stage]
+    if not stage_rows:
+        continue
+    row = stage_rows[0]
+    summary_lines.append(
+        f"{stage}: run={row['run_name']} lane={show(row['lane'])} replicas={row['rep']} max_parallel={row['mp']} "
+        f"priority={show(row['priority'])} load_balance={show(row['load_balance'])} scheduler_policy={show(row['scheduler_policy'])} "
+        f"max_in_flight={row['max_in_flight']} placement={show(row['placement_policy'])} profile={show(row['lowering_profile'])} "
+        f"exec_latency_avg={row['lat_avg']} exec_latency_p95={row['lat_p95']} makespan={row['makespan']} "
+        f"fallback_ratio={row['fallback_ratio']} hops_total={row['hops_total']} total_ms={row['total_ms']}"
     )
 
 summary_lines.append("")
 summary_lines.append("All Runs")
 for row in rows:
     summary_lines.append(
-        f"run={row['run_name']} status={row['status']} lane={row['lane']} "
-        f"replicas={row['rep']} max_parallel={row['mp']} "
-        f"exec_latency_avg={row['lat_avg']} makespan={row['makespan']} total_ms={row['total_ms']} "
-        f"bench={row['bench_path']}"
+        f"run={row['run_name']} stage={row['stage']} status={row['status']} lane={show(row['lane'])} "
+        f"replicas={row['rep']} max_parallel={row['mp']} priority={show(row['priority'])} "
+        f"load_balance={show(row['load_balance'])} scheduler_policy={show(row['scheduler_policy'])} "
+        f"max_in_flight={row['max_in_flight']} placement={show(row['placement_policy'])} "
+        f"profile={show(row['lowering_profile'])} exec_latency_avg={row['lat_avg']} "
+        f"exec_latency_p95={row['lat_p95']} makespan={row['makespan']} "
+        f"fallback_ratio={row['fallback_ratio']} hops_total={row['hops_total']} "
+        f"total_ms={row['total_ms']} bench={row['bench_path']}"
     )
 
 summary_path.write_text("\n".join(summary_lines) + "\n")
 print(
     "[cw-bench][tune] best "
-    f"lane={best['lane']} replicas={best['rep']} max_parallel={best['mp']} "
-    f"exec_latency_avg={best['lat_avg']} makespan={best['makespan']} total_ms={best['total_ms']}"
+    f"lane={show(best['lane'])} replicas={best['rep']} max_parallel={best['mp']} "
+    f"priority={show(best['priority'])} load_balance={show(best['load_balance'])} "
+    f"scheduler_policy={show(best['scheduler_policy'])} max_in_flight={best['max_in_flight']} "
+    f"placement={show(best['placement_policy'])} profile={show(best['lowering_profile'])} "
+    f"exec_latency_avg={best['lat_avg']} exec_latency_p95={best['lat_p95']} "
+    f"makespan={best['makespan']} fallback_ratio={best['fallback_ratio']} "
+    f"hops_total={best['hops_total']} total_ms={best['total_ms']}"
 )
 print(f"[cw-bench][tune] wrote latest benchmark: {target_bench}")
 print(f"[cw-bench][tune] wrote tuning summary: {summary_path}")
@@ -550,9 +986,6 @@ print(f"[cw-bench][tune] synced sidecars from selected best benchmark: {bench_pa
 PY
   fi
 
-  best_lane="$(bench_field "$BENCH_FILE" "best_lane_parallelism")"
-  best_rep="$(bench_field "$BENCH_FILE" "best_program_replicas")"
-  best_mp="$(bench_field "$BENCH_FILE" "best_program_max_parallel")"
   if [[ -n "$best_lane" && -n "$best_rep" && -n "$best_mp" ]]; then
     echo "[cw-bench][tune] refreshing OUT_CONFIG with best candidate"
     TUNE_MODE=0 \
@@ -561,8 +994,14 @@ PY
       UPDATE_BENCH_SIDECAR=0 \
       RUN_PROFILE="autotune_best_refresh" \
       CW_LANE_PARALLELISM="$best_lane" \
+      CW_MAX_IN_FLIGHT="$best_max_in_flight" \
+      CW_PLACEMENT_POLICY="$best_placement_policy" \
+      CW_LOWERING_PROFILE="$best_lowering_profile" \
       PROGRAM_REPLICAS="$best_rep" \
       PROGRAM_MAX_PARALLEL="$best_mp" \
+      PROGRAM_PRIORITY="$best_priority" \
+      PROGRAM_LOAD_BALANCE="$best_load_balance" \
+      SCHEDULER_PROGRAM_POLICY="$best_scheduler_policy" \
       OUT_DIR="$OUT_DIR" \
       BUILD_DIR="$BUILD_DIR" \
       "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$TUNE_ROOT/best_refresh.txt" >/dev/null
@@ -574,6 +1013,7 @@ fi
 
 echo "[cw-bench] compile-cw"
 t0="$(now_ns)"
+EFFECTIVE_BASE_CONFIG="$(prepare_effective_base_config "$BASE_CONFIG" "$BUILD_DIR/benchmark_base_config.json")"
 compile_cmd=(
   python3 -m waugen compile-cw
   --program-file "$CW_FILE"
@@ -581,15 +1021,13 @@ compile_cmd=(
   --name "cw_conv2d_residual_reference"
   --entry "0,0"
   --max-in-flight "$CW_MAX_IN_FLIGHT"
-  --base-config "$BASE_CONFIG"
+  --base-config "$EFFECTIVE_BASE_CONFIG"
   --out-config "$OUT_CONFIG"
   --replace-existing
   --program-id "$PROGRAM_ID"
   --program-name "cw_reference_program"
-  --program-priority 3
   --program-replicas "$PROGRAM_REPLICAS"
   --program-max-parallel-flows "$PROGRAM_MAX_PARALLEL"
-  --program-load-balance least_busy
 )
 
 if [[ -n "$CW_DTYPE" ]]; then
@@ -598,6 +1036,22 @@ fi
 
 if [[ -n "$CW_LANE_PARALLELISM" ]]; then
   compile_cmd+=(--lane-parallelism "$CW_LANE_PARALLELISM")
+fi
+
+if [[ -n "$CW_PLACEMENT_POLICY" ]]; then
+  compile_cmd+=(--placement-policy "$CW_PLACEMENT_POLICY")
+fi
+
+if [[ -n "$CW_LOWERING_PROFILE" ]]; then
+  compile_cmd+=(--lowering-profile "$CW_LOWERING_PROFILE")
+fi
+
+if [[ -n "$PROGRAM_PRIORITY" ]]; then
+  compile_cmd+=(--program-priority "$PROGRAM_PRIORITY")
+fi
+
+if [[ -n "$PROGRAM_LOAD_BALANCE" ]]; then
+  compile_cmd+=(--program-load-balance "$PROGRAM_LOAD_BALANCE")
 fi
 
 "${compile_cmd[@]}"
@@ -645,6 +1099,11 @@ cases = [
     (1, 10, 4),
     (2, -7, 5),
     (3, 21, -3),
+    (4, 0, 0),
+    (5, 31, 31),
+    (6, -15, -9),
+    (7, 127, -11),
+    (8, -64, 17),
 ]
 
 
@@ -849,16 +1308,22 @@ iverilog_version="$(iverilog -V 2>/dev/null | head -n 1 || echo unknown)"
 export CW_BENCH_FILE="$BENCH_FILE"
 export CW_BENCH_CW_FILE="$CW_FILE"
 export CW_BENCH_BASE_CONFIG="$BASE_CONFIG"
+export CW_BENCH_EFFECTIVE_BASE_CONFIG="$EFFECTIVE_BASE_CONFIG"
 export CW_BENCH_OUT_CONFIG="$OUT_CONFIG"
 export CW_BENCH_OUT_DIR="$OUT_DIR"
 export CW_BENCH_FLOW_ID="$FLOW_ID"
 export CW_BENCH_PROGRAM_ID="$PROGRAM_ID"
+export CW_BENCH_PROGRAM_PRIORITY="$PROGRAM_PRIORITY"
 export CW_BENCH_PROGRAM_REPLICAS="$PROGRAM_REPLICAS"
 export CW_BENCH_PROGRAM_MAX_PARALLEL="$PROGRAM_MAX_PARALLEL"
+export CW_BENCH_PROGRAM_LOAD_BALANCE="$PROGRAM_LOAD_BALANCE"
+export CW_BENCH_SCHEDULER_PROGRAM_POLICY="$SCHEDULER_PROGRAM_POLICY"
 export CW_BENCH_EXEC_FLOW_ID="$EXEC_FLOW_ID"
 export CW_BENCH_CW_MAX_IN_FLIGHT="$CW_MAX_IN_FLIGHT"
 export CW_BENCH_CW_LANE_PARALLELISM="$CW_LANE_PARALLELISM"
 export CW_BENCH_CW_DTYPE="$CW_DTYPE"
+export CW_BENCH_CW_PLACEMENT_POLICY="$CW_PLACEMENT_POLICY"
+export CW_BENCH_CW_LOWERING_PROFILE="$CW_LOWERING_PROFILE"
 export CW_BENCH_COMPILE_MS="$compile_ms"
 export CW_BENCH_VALIDATE_MS="$validate_ms"
 export CW_BENCH_GENERATE_MS="$generate_ms"
@@ -940,19 +1405,33 @@ def score_tuple_from_metrics(metrics: dict[str, float | int]) -> tuple[float, in
     )
 
 
+def percentile_ceil(values: list[int], p: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    idx = max(0, min(len(ordered) - 1, math.ceil((p / 100.0) * len(ordered)) - 1))
+    return float(ordered[idx])
+
+
 bench_path = Path(os.environ["CW_BENCH_FILE"])
 cw_file = os.environ["CW_BENCH_CW_FILE"]
 base_config = os.environ["CW_BENCH_BASE_CONFIG"]
+effective_base_config = os.environ["CW_BENCH_EFFECTIVE_BASE_CONFIG"]
 out_config = Path(os.environ["CW_BENCH_OUT_CONFIG"])
 out_dir = Path(os.environ["CW_BENCH_OUT_DIR"])
 flow_id = int(os.environ["CW_BENCH_FLOW_ID"])
 program_id = int(os.environ["CW_BENCH_PROGRAM_ID"])
+program_priority_requested = os.environ["CW_BENCH_PROGRAM_PRIORITY"] or "auto"
 program_replicas = int(os.environ["CW_BENCH_PROGRAM_REPLICAS"])
 program_max_parallel = int(os.environ["CW_BENCH_PROGRAM_MAX_PARALLEL"])
+program_load_balance_requested = os.environ["CW_BENCH_PROGRAM_LOAD_BALANCE"] or "auto"
+scheduler_program_policy_requested = os.environ["CW_BENCH_SCHEDULER_PROGRAM_POLICY"] or "auto"
 exec_flow_id = int(os.environ["CW_BENCH_EXEC_FLOW_ID"])
 cw_max_in_flight = int(os.environ["CW_BENCH_CW_MAX_IN_FLIGHT"])
 cw_lane_parallelism_requested = os.environ["CW_BENCH_CW_LANE_PARALLELISM"] or "auto"
 cw_dtype_requested = os.environ["CW_BENCH_CW_DTYPE"] or "auto"
+cw_placement_policy_requested = os.environ["CW_BENCH_CW_PLACEMENT_POLICY"] or "auto"
+cw_lowering_profile_requested = os.environ["CW_BENCH_CW_LOWERING_PROFILE"] or "auto"
 
 compile_ms = int(os.environ["CW_BENCH_COMPILE_MS"])
 validate_ms = int(os.environ["CW_BENCH_VALIDATE_MS"])
@@ -1032,15 +1511,81 @@ for group in grouped_instructions.values():
 
 estimated_hops_avg = (estimated_hops_total / estimated_hop_edges) if estimated_hop_edges else 0.0
 
+core_issue_counts: dict[int, int] = defaultdict(int)
+core_busy_cycles: dict[int, int] = defaultdict(int)
+node_issue_counts: dict[str, int] = defaultdict(int)
+node_total_latency: dict[str, int] = defaultdict(int)
+dependency_hotspots: dict[str, int] = defaultdict(int)
+for ins in instructions:
+    core_idx = int(ins.get("core_index", 0))
+    node_id = str(ins.get("node_id", ""))
+    latency = int(ins.get("latency", 0))
+    dep_count = int(ins.get("dependency_count", 0))
+    core_issue_counts[core_idx] += 1
+    core_busy_cycles[core_idx] += latency
+    node_issue_counts[node_id] += 1
+    node_total_latency[node_id] += latency
+    dependency_hotspots[node_id] = max(dependency_hotspots.get(node_id, 0), dep_count)
+
+core_hotspots = sorted(
+    core_issue_counts.items(),
+    key=lambda item: (-item[1], -core_busy_cycles.get(item[0], 0), item[0]),
+)[:5]
+node_latency_hotspots = sorted(
+    node_total_latency.items(),
+    key=lambda item: (-item[1], -node_issue_counts.get(item[0], 0), item[0]),
+)[:5]
+dependency_hotspots_top = sorted(
+    dependency_hotspots.items(),
+    key=lambda item: (-item[1], item[0]),
+)[:5]
+core_hotspots_repr = [
+    f"core={core_idx} issues={issues} busy_cycles={core_busy_cycles.get(core_idx, 0)}"
+    for core_idx, issues in core_hotspots
+]
+node_latency_hotspots_repr = [
+    f"node={node_id} total_latency={total_latency} issues={node_issue_counts.get(node_id, 0)}"
+    for node_id, total_latency in node_latency_hotspots
+]
+dependency_hotspots_repr = [
+    f"node={node_id} max_dependencies={dep_count}"
+    for node_id, dep_count in dependency_hotspots_top
+]
+busiest_core_index = core_hotspots[0][0] if core_hotspots else -1
+busiest_core_issue_count = core_hotspots[0][1] if core_hotspots else 0
+busiest_core_busy_cycles = core_busy_cycles.get(busiest_core_index, 0) if core_hotspots else 0
+
 payload = json.loads(out_config.read_text())
 compiled_flow = next(
     (flow for flow in payload.get("flows", []) if isinstance(flow, dict) and int(flow.get("id", -1)) == flow_id),
     None,
 )
+compiled_program = next(
+    (
+        program
+        for program in payload.get("programs", [])
+        if isinstance(program, dict) and int(program.get("id", -1)) == program_id
+    ),
+    None,
+)
+payload_scheduler = payload.get("scheduler", {}) if isinstance(payload.get("scheduler"), dict) else {}
 node_count = len(compiled_flow.get("nodes", [])) if isinstance(compiled_flow, dict) else 0
 cw_hints = compiled_flow.get("cw_hints", {}) if isinstance(compiled_flow, dict) else {}
 lane_parallelism = cw_hints.get("lane_parallelism_compiled", "n/a")
 dtype = cw_hints.get("dtype_compiled", cw_hints.get("dtype", "n/a"))
+placement_policy_compiled = cw_hints.get("placement_policy_compiled", "n/a")
+lowering_profile_compiled = cw_hints.get("lowering_profile_compiled", "n/a")
+program_priority_compiled = (
+    compiled_program.get("priority", cw_hints.get("program_priority_compiled", "n/a"))
+    if isinstance(compiled_program, dict)
+    else cw_hints.get("program_priority_compiled", "n/a")
+)
+program_load_balance_compiled = (
+    compiled_program.get("load_balance", cw_hints.get("program_load_balance_compiled", "n/a"))
+    if isinstance(compiled_program, dict)
+    else cw_hints.get("program_load_balance_compiled", "n/a")
+)
+scheduler_program_policy_compiled = payload_scheduler.get("program_policy", "n/a")
 tile_iter = next(
     (
         int(node.get("max_iterations", 0))
@@ -1075,6 +1620,8 @@ latencies = [row["latency_cycles"] for row in exec_rows]
 lat_min = min(latencies) if latencies else 0
 lat_max = max(latencies) if latencies else 0
 lat_avg = (sum(latencies) / len(latencies)) if latencies else 0.0
+lat_p50 = percentile_ceil(latencies, 50.0)
+lat_p95 = percentile_ceil(latencies, 95.0)
 makespan = int(schedule.get("makespan_cycles", 0))
 benchmark_ranking_score = (lat_avg * 1_000_000.0) + (makespan * 1_000.0) + total_ms
 
@@ -1109,6 +1656,7 @@ lines = [
     f"iverilog_version: {iverilog_version}",
     f"cw_source: {cw_file}",
     f"base_config: {base_config}",
+    f"effective_base_config: {effective_base_config}",
     f"compiled_config: {out_config}",
     f"schedule_json: {schedule_path}",
     "",
@@ -1120,13 +1668,23 @@ lines = [
     "Workload/Program",
     f"flow_id: {flow_id}",
     f"program_id: {program_id}",
+    f"program_priority_requested: {program_priority_requested}",
     f"program_replicas: {program_replicas}",
     f"program_max_parallel_flows: {program_max_parallel}",
+    f"program_load_balance_requested: {program_load_balance_requested}",
+    f"scheduler_program_policy_requested: {scheduler_program_policy_requested}",
     f"cw_max_in_flight: {cw_max_in_flight}",
     f"cw_lane_parallelism_requested: {cw_lane_parallelism_requested}",
     f"cw_dtype_requested: {cw_dtype_requested}",
+    f"cw_placement_policy_requested: {cw_placement_policy_requested}",
+    f"cw_lowering_profile_requested: {cw_lowering_profile_requested}",
     f"compiled_nodes: {node_count}",
     f"lane_parallelism_compiled: {lane_parallelism}",
+    f"placement_policy_compiled: {placement_policy_compiled}",
+    f"lowering_profile_compiled: {lowering_profile_compiled}",
+    f"program_priority_compiled: {program_priority_compiled}",
+    f"program_load_balance_compiled: {program_load_balance_compiled}",
+    f"scheduler_program_policy_compiled: {scheduler_program_policy_compiled}",
     f"dtype: {dtype}",
     f"tile_counter_max_iterations: {tile_iter}",
     "",
@@ -1137,12 +1695,14 @@ lines = [
     f"iverilog_tests_ms: {iverilog_ms}",
     f"total_ms: {total_ms}",
     "",
-    "Effective Execution Benchmark (CW flow smoke)",
+    "Effective Execution Benchmark (CW flow stress)",
     f"exec_flow_id: {exec_flow_id}",
     f"exec_case_count: {len(exec_rows)}",
     f"exec_latency_cycles_min: {lat_min}",
     f"exec_latency_cycles_max: {lat_max}",
     f"exec_latency_cycles_avg: {lat_avg:.2f}",
+    f"exec_latency_cycles_p50: {lat_p50:.2f}",
+    f"exec_latency_cycles_p95: {lat_p95:.2f}",
     f"benchmark_ranking_score: {benchmark_ranking_score:.2f}",
 ]
 
@@ -1163,9 +1723,15 @@ lines.extend(
         f"estimated_transfer_hops_total: {estimated_hops_total}",
         f"estimated_transfer_hops_avg_edge: {estimated_hops_avg:.4f}",
         f"unique_core_count: {core_count}",
+        f"busiest_core_index: {busiest_core_index}",
+        f"busiest_core_issue_count: {busiest_core_issue_count}",
+        f"busiest_core_busy_cycles: {busiest_core_busy_cycles}",
         f"flow_ids_in_schedule: {flows}",
         f"program_ids_in_schedule: {programs}",
         f"operations_seen: {ops}",
+        f"core_issue_hotspots: {core_hotspots_repr}",
+        f"node_latency_hotspots: {node_latency_hotspots_repr}",
+        f"dependency_hotspots: {dependency_hotspots_repr}",
         f"critical_path_tail_by_node: {critical_tail_repr}",
         "",
         "RTL Test Results",
@@ -1181,6 +1747,8 @@ if update_sidecar:
         "exec_latency_cycles_min": lat_min,
         "exec_latency_cycles_max": lat_max,
         "exec_latency_cycles_avg": round(lat_avg, 2),
+        "exec_latency_cycles_p50": round(lat_p50, 2),
+        "exec_latency_cycles_p95": round(lat_p95, 2),
         "makespan_cycles": makespan,
         "total_ms": total_ms,
         "instruction_count": instruction_count,
@@ -1188,6 +1756,9 @@ if update_sidecar:
         "fallback_instruction_ratio": round(fallback_ratio, 6),
         "estimated_transfer_hops_total": estimated_hops_total,
         "estimated_transfer_hops_avg_edge": round(estimated_hops_avg, 6),
+        "busiest_core_index": busiest_core_index,
+        "busiest_core_issue_count": busiest_core_issue_count,
+        "busiest_core_busy_cycles": busiest_core_busy_cycles,
         "benchmark_ranking_score": round(benchmark_ranking_score, 2),
     }
     latest_payload = {
@@ -1197,14 +1768,20 @@ if update_sidecar:
         "inputs": {
             "cw_source": cw_file,
             "base_config": base_config,
+            "effective_base_config": effective_base_config,
             "compiled_config": str(out_config),
             "flow_id": flow_id,
             "program_id": program_id,
+            "program_priority_requested": program_priority_requested,
             "program_replicas": program_replicas,
             "program_max_parallel_flows": program_max_parallel,
+            "program_load_balance_requested": program_load_balance_requested,
+            "scheduler_program_policy_requested": scheduler_program_policy_requested,
             "cw_max_in_flight": cw_max_in_flight,
             "cw_lane_parallelism_requested": cw_lane_parallelism_requested,
             "cw_dtype_requested": cw_dtype_requested,
+            "cw_placement_policy_requested": cw_placement_policy_requested,
+            "cw_lowering_profile_requested": cw_lowering_profile_requested,
         },
         "timing_ms": {
             "compile_cw_ms": compile_ms,
@@ -1216,6 +1793,9 @@ if update_sidecar:
         "metrics": metrics_payload,
         "placement_quality": {
             "fallback_ratio_by_flow": {str(flow): round(ratio, 6) for flow, ratio in per_flow_fallback_ratio.items()},
+            "core_issue_hotspots": core_hotspots_repr,
+            "node_latency_hotspots": node_latency_hotspots_repr,
+            "dependency_hotspots": dependency_hotspots_repr,
             "critical_path_tail_by_node": critical_tail_repr,
         },
         "paths": {
