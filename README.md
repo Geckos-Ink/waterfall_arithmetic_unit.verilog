@@ -5,11 +5,15 @@ This repository now contains a working foundation for:
 - device-aware WAU configuration (real FPGA presets included),
 - flow compilation (flow stages -> core assignments with fallback cores),
 - DAG/node-based flow compilation with explicit 2D placement directives,
-- per-core capability constraints (operations and data types),
+- per-core capability constraints (operations and data types), with capability-aware CW lowering that prunes incompatible candidate cores before validation,
 - multi-program scheduling with async dependency-aware execution and recurrence support,
 - offline scheduling (cycle timeline + encoded schedule words),
-- constrained pseudo-C accumulator frontend (`compile-pseudoc`) in addition to expression compilation,
-- Verilog emission for coordinator, core/station, ALU, explicit highway routers/links, and top-level grid.
+- constrained pseudo-C accumulator frontend (`compile-pseudoc`) and kernel-style `.cw` frontend (`compile-cw`) in addition to expression compilation,
+- CW software reference model + benchmark value scoreboard (`scoreboard_pass_ratio` gate on top of latency/makespan),
+- Verilog emission for coordinator, core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
+- configurable station cache size and replacement policy (FIFO/LRU) via `compiler.station_cache`,
+- runtime observability counters for highway hops/stalls/forwards/local-deliveries and per-core cache hit/lookup rate, aggregated at top-level and exposed via MMIO,
+- CI matrix (python tests + randomized stress + iverilog tests + autotuned CW benchmark) with artifact archival.
 
 ## Quickstart
 From repository root:
@@ -83,12 +87,19 @@ Run all RTL test cases with `iverilog` (generation + compile + simulation):
 This runs:
 - `tests/rtl/tb_wau_operation_alu.v` (ALU opcode behavior),
 - `tests/rtl/tb_wau_top_demo.v` (end-to-end flow execution via coordinator/highway/core grid),
-- `tests/rtl/tb_wau_highway_mesh.v` (neighbor forwarding and backpressure on the router mesh).
+- `tests/rtl/tb_wau_highway_mesh.v` (neighbor forwarding, backpressure, and `router_hop_count` advancement),
+- `tests/rtl/tb_wau_host_mmio.v` (MMIO register map: writes, reads, output_pending sticky semantics, observability counter readback).
 
-Run randomized multi-flow scheduler stress and emit a coverage-style summary:
+Run the python unit-test suite (compiler/scheduler/CW frontends/program stress matrix/CW reference scoreboard):
 
 ```bash
-./scripts/run_randomized_stress.py --start-seed 2000 --count 25 --report .build/randomized_stress_report.json
+PYTHONPATH=src/python python3 -m unittest discover -s tests/python -p "test_*.py" -v
+```
+
+Run randomized multi-flow scheduler stress (also sweeps `compiler.station_cache.{entries, replacement_policy}`) and emit a coverage-style summary:
+
+```bash
+PYTHONPATH=src/python python3 scripts/run_randomized_stress.py --start-seed 2000 --count 25 --report .build/randomized_stress_report.json
 ```
 
 Run fast end-to-end compile/validate/generate/RTL checks for the `.cw` reference and write a benchmark snapshot:
@@ -101,16 +112,24 @@ This script updates `benchmarks/example_pogram_benchmark.txt` as the persistent 
 - compile/validate/generate timing,
 - schedule metrics,
 - effective CW execution stress-benchmark latency/results from generated RTL simulation,
+- per-case `expected_value` and `scoreboard=match|...` lines plus aggregate `scoreboard_total`, `scoreboard_matches`, `scoreboard_pass_ratio`,
 - stress latency percentiles (`p50`, `p95`),
 - placement-quality metrics (`fallback_instruction_ratio`, per-flow fallback ratio, estimated transfer hops, critical-path tail),
 - bottleneck summaries (`busiest_core`, core hotspots, node latency hotspots, dependency hotspots),
 - reproducibility profile metadata and benchmark ranking score.
 
-Latest tuned result as of 2026-05-17 UTC:
-- selected tuning point: `lane=2`, `placement=balance`, `profile=throughput_optimized`, `priority=4`, `replicas=2`, `max_parallel=1`, `max_in_flight=2`
+The testbench `$fatal`s on any value mismatch against the software reference in
+`waugen.cw_reference`, so the scoreboard is a hard correctness gate on top of
+the latency/makespan targets. The reference is also exposed as
+`.build/cw_iverilog/cw_scoreboard.json` for downstream tooling.
+
+Latest tuned result as of 2026-05-22 UTC (re-validated with capability-aware CW
+lowering, configurable station cache, and the value scoreboard):
+- selected tuning point: `lane=2`, `placement=balance`, `profile=throughput_optimized`, `priority=4`, `replicas=2`, `max_parallel=1`, `max_in_flight=2`, `load_balance=least_busy`, `scheduler_policy=weighted_fair`
 - `exec_latency_cycles_avg=68.00`, `exec_latency_cycles_p95=70.00`, `makespan_cycles=42`
 - `fallback_instruction_ratio=0.2899`, `estimated_transfer_hops_total=54`
-- 5-run stability check: `median=68.00`, `p95=68.00`, `5/5` passing
+- 3-run stability check: `median=68.00`, `p95=68.00`, `3/3` passing
+- scoreboard: `8/8` deterministic cases match the software reference (`scoreboard_pass_ratio=1.0`)
 
 Run autotune sweep to search best score (lowest `exec_latency_cycles_avg`, then `makespan_cycles`, then `total_ms`):
 
@@ -177,13 +196,15 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 
 ## Repository Layout
 - `src/python/waugen/`: generator package
-  - `config.py`: JSON schema parsing + validation
+  - `config.py`: JSON schema parsing + validation (includes `compiler.station_cache` and `compiler.core_capabilities`)
   - `device_library.py`: real device presets
   - `operation_library.py`: built-in operation templates
   - `basic_compiler.py`: basic high-level expression compiler to WAU flow stages
+  - `cw_compiler.py`: `.cw` kernel-style lowering with capability-aware candidate pruning
+  - `cw_reference.py`: software reference model for CW flows (drives the value scoreboard)
   - `compiler.py`: flow-to-core compilation with adaptive fallbacks
   - `scheduler.py`: offline schedule timeline + 64-bit word encoding
-  - `verilog_emit.py`: RTL + reports emission
+  - `verilog_emit.py`: RTL + reports emission (router/cache observability counters and the `wau_host_mmio` register file live here)
   - `cli.py`: CLI entrypoint
 - `src/python/configs/wau_de0_nano_demo.json`: example configuration
 - `src/python/configs/wau_de0_nano_compiled_expr.json`: example output of `compile-expr`
@@ -191,8 +212,12 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `src/python/configs/wau_example_pogram_compiled.json`: example output of `compile-cw`
 - `src/python/configs/wau_2d_multiprogram_demo.json`: advanced DAG + multi-program example
 - `src/verilog/generated/`: generated output artifacts
-- `tests/rtl/`: SystemVerilog/Verilog testbenches
-- `tests/python/`: Python unit tests for compiler helpers
+- `tests/rtl/`: SystemVerilog/Verilog testbenches (ALU, top demo, highway mesh + hop counters, MMIO register file)
+- `tests/python/`: Python unit tests for compiler helpers, CW reference scoreboard, and program-level priority/replicas/policy stress matrix
+- `scripts/run_randomized_stress.py`: randomized multi-flow stress (CI input)
+- `scripts/run_iverilog_tests.sh`: iverilog test runner
+- `scripts/run_cw_example_benchmark.sh`: CW kernel benchmark, autotune, multi-run stability, regression check
+- `.github/workflows/ci.yml`: CI matrix (python tests, randomized stress, iverilog tests, autotuned CW benchmark) with artifact uploads
 - `benchmarks/example_pogram_benchmark.txt`: tracked benchmark/reference metrics for `.cw` flow compilation
 - `benchmarks/example_pogram_tuning_latest.txt`: latest autotune sweep summary
 - `benchmarks/example_pogram_multirun_latest.txt`: latest multi-run stability summary
@@ -202,16 +227,17 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 
 ## Generated Artifacts
 A `generate` run emits:
-- `wau_defs.vh`: project/device/operation constants
+- `wau_defs.vh`: project/device/operation constants (now also `WAU_STATION_CACHE_ENTRIES` and `WAU_STATION_CACHE_POLICY_{FIFO,LRU}`)
 - `wau_operation_alu.v`: arithmetic opcode execution unit
 - `wau_neighbor_forward.v`: directional valid/ready packet forwarding link
-- `wau_highway_router.v`: per-core XY router with local/neighbor arbitration
-- `wau_highway_mesh.v`: generated 2D router mesh interconnect
-- `wau_core_station.v`: per-core station (dispatch, latency control, multi-entry input/result cache)
+- `wau_highway_router.v`: per-core XY router with local/neighbor arbitration, plus 32-bit `hop_count`/`stall_count`/`local_delivered_count`/`forward_count` observability counters
+- `wau_highway_mesh.v`: generated 2D router mesh interconnect, exposing per-router counter buses
+- `wau_core_station.v`: per-core station (dispatch, latency control, configurable FIFO/LRU multi-entry input/result cache, `cache_hit_count`/`cache_lookup_count`)
 - `wau_core.v`: core wrapper
 - `wau_coordinator.v`: flow orchestrator with runtime adaptive fallback selection and packetized dispatch/result channels
-- `<output_module_name>.v` (demo: `wau_top.v`): top-level 2D core grid
-- `wau_de0_nano_top.v` (for DE0-NANO preset): board wrapper with clock/reset/IO hookups
+- `wau_host_mmio.v`: 32-bit memory-mapped host control/status register file with observability counter readback
+- `<output_module_name>.v` (demo: `wau_top.v`): top-level 2D core grid, exporting `obs_total_hop_count`/`stall_count`/`forward_count`/`local_delivered_count`/`cache_hit_count`/`cache_lookup_count`
+- `wau_de0_nano_top.v` (for DE0-NANO preset): board wrapper that instantiates `wau_host_mmio` for external Avalon-MM-style hosts and emulates writes from KEY[1]/SW[3:0] for stand-alone demos
 - `wau_program.json`: compiled flow program
 - `wau_schedule.json`: human-readable schedule timeline
 - `wau_schedule.hex`: encoded 64-bit schedule words
@@ -233,9 +259,11 @@ Main JSON fields:
 - `compiler`
   - `routing` (`waterfall`, `serpentine`, `manual`)
   - `allow_adaptive_reroute`, `fallback_radius`, `allow_cycle_recurrence`
-  - `core_capabilities`: per-core operation/data type constraints
+  - `core_capabilities`: per-core operation/data type constraints (also consumed by CW lowering to prune incompatible candidate cores up-front)
+  - `station_cache`: `{ "entries": <1..32>, "replacement_policy": "fifo" | "lru" }` (default `entries=4`, `replacement_policy=fifo`)
 - `scheduler`
   - `strategy` (`round_robin`, `serial`, or `dependency_aware`)
+  - `program_policy` (`weighted_fair`, `strict_priority`, `round_robin`)
 - `flows`
   - `id`, `name`, `entry`, optional `exit`
   - per-stage: `op`, optional `core`, `fallback_core`, `immediate_b`, `allow_adaptive`, `dtype`
@@ -262,6 +290,42 @@ Precedence is:
 - otherwise pragma values are used,
 - otherwise compile defaults apply.
 
+## Host MMIO Register Map
+`wau_host_mmio` exposes a small 32-bit register file with a simple
+`mmio_read`/`mmio_write`/`mmio_address`/`mmio_writedata`/`mmio_readdata` bus that
+external host software (Avalon-MM, NIOS-II, on-chip CPU, etc.) can drive. The
+DE0-NANO wrapper instantiates it and additionally emulates writes from KEY[1]
+plus SW[3:0] for stand-alone board demos.
+
+Word-addressed map:
+
+| Addr | Name      | Access | Meaning                                                                   |
+|-----:|-----------|:------:|---------------------------------------------------------------------------|
+| `0x00` | `CTRL`    | RW   | `[0]` soft_reset_request (auto-clears), `[1]` enable_auto_adapt           |
+| `0x01` | `STATUS`  | R    | `[0]` host_in_ready, `[1]` host_out_valid, `[2]` output_pending (sticky)  |
+| `0x02` | `FLOW_ID` | RW   | Flow id used by next `TRIGGER`                                            |
+| `0x03` | `IN_A`    | RW   | Operand A latched into the coordinator on `TRIGGER`                       |
+| `0x04` | `IN_B`    | RW   | Operand B latched into the coordinator on `TRIGGER`                       |
+| `0x05` | `TRIGGER` | W1S  | Any write raises `host_in_valid` until accepted                           |
+| `0x10` | `OUT_FLOW`| R    | Last `host_out_flow_id` (reading also clears `output_pending`)            |
+| `0x11` | `OUT_VAL` | R    | Last `host_out_value` (reading also clears `output_pending`)              |
+| `0x12` | `HOPS`    | R    | `obs_total_hop_count` (sum across control/data router meshes)             |
+| `0x13` | `STALLS`  | R    | `obs_total_stall_count`                                                   |
+| `0x14` | `FORWARDS`| R    | `obs_total_forward_count` (packets forwarded between neighbors)           |
+| `0x15` | `DELIVRD` | R    | `obs_total_local_delivered_count` (packets exiting the mesh locally)      |
+| `0x16` | `CACHE_H` | R    | `obs_total_cache_hit_count` (sum across all core stations)                |
+| `0x17` | `CACHE_L` | R    | `obs_total_cache_lookup_count`                                            |
+
+The same counters are also available as direct ports on `wau_top` for
+non-MMIO integrations.
+
+## Continuous Integration
+`.github/workflows/ci.yml` runs on every push and PR:
+- `python-tests`: full `unittest` discovery on `tests/python` (compiler, scheduler, CW frontends, CW reference scoreboard, program-stress matrix).
+- `randomized-stress`: 50-seed sweep of `scripts/run_randomized_stress.py` with JSON report artifact.
+- `iverilog-tests`: installs Icarus Verilog and runs `scripts/run_iverilog_tests.sh` (uploads generated RTL as artifact).
+- `cw-benchmark`: runs `scripts/run_cw_example_benchmark.sh` with the autotuned knobs, surfaces a summary into the GitHub Step Summary, and uploads `benchmarks/*` plus `cw_scoreboard.json` as artifacts (30-day retention).
+
 ## Current Hardware Scope
 This is a robust **basis**, not final silicon architecture:
 - Control-plane dispatch and data-plane results now traverse explicit neighbor-linked highway meshes with valid/ready backpressure.
@@ -270,11 +334,10 @@ This is a robust **basis**, not final silicon architecture:
 - Current pseudo-C frontend targets accumulator-style pipelines (`acc = a; acc = acc <op> ...`) to stay compatible with the present coordinator execution model.
 
 ## Next Steps
-Recommended follow-ups:
-1. add runtime observability counters for highway hops/stalls and cache hit-rate,
-2. extend station caching policy with configurable entry count and replacement policy selection,
-3. connect randomized stress script into CI and archive reports as artifacts,
-4. extend board wrappers with memory-mapped host control/status registers.
+See `ROADMAP.md` for the full plan. Recommended follow-ups now that observability/MMIO/CI/cache-policy basics are in place:
+1. closed-loop on-FPGA benchmarking that pushes new schedules through the MMIO bus without reflashing the bitstream,
+2. architecture-search reports that rank core disposition, op specialization, BRAM/LUTRAM mix, and external-DRAM use for synthesis candidates,
+3. CW software reference parity across the wider operation set (currently calibrated against add/mul/max paths used by the example kernel).
 
 ---
 
