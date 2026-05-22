@@ -8,7 +8,7 @@
     "cw_lowering_profile_requested": "throughput_optimized",
     "cw_max_in_flight": 2,
     "cw_placement_policy_requested": "balance",
-    "cw_source": "docs/example-pogram.cw",
+    "cw_source": "docs/example-program.cw",
     "effective_base_config": ".build/cw_iverilog/benchmark_base_config.json",
     "flow_id": 90,
     "program_id": 90,

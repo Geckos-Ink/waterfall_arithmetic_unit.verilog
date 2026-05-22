@@ -137,7 +137,7 @@ Scope:
 
 Acceptance:
 - Invalid syntax/pragma inputs produce deterministic, line-located errors.
-- New parser tests cover valid/invalid pragmas and backward compatibility with current `example-pogram.cw`.
+- New parser tests cover valid/invalid pragmas and backward compatibility with current `example-program.cw`.
 
 ### Track B: Deeper CW-to-Flow Lowering
 Scope:
@@ -169,7 +169,7 @@ Scope:
 
 Acceptance:
 - New metrics are emitted in benchmark logs.
-- Measurable cycle/makespan reduction on `example-pogram.cw` relative to baseline profile.
+- Measurable cycle/makespan reduction on `example-program.cw` relative to baseline profile.
 
 ### Track D: Benchmarking and Performance Quality Gates
 Scope:

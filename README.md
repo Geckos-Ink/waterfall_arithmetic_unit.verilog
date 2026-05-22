@@ -58,7 +58,7 @@ Compile an advanced WAU kernel-style `.cw` program into a DAG flow and execution
 
 ```bash
 PYTHONPATH=src/python python3 -m waugen compile-cw \
-  --program-file docs/example-pogram.cw \
+  --program-file docs/example-program.cw \
   --flow-id 90 \
   --name cw_conv2d_residual_reference \
   --entry 0,0 \

@@ -25,7 +25,7 @@ def _base_payload() -> dict[str, object]:
 
 
 def _base_program_without_wau_pragmas() -> str:
-    program = Path("docs/example-pogram.cw").read_text()
+    program = Path("docs/example-program.cw").read_text()
     stripped_lines = [
         line for line in program.splitlines() if not line.lstrip().startswith("// @wau ")
     ]
@@ -34,7 +34,7 @@ def _base_program_without_wau_pragmas() -> str:
 
 class CWCompilerTests(unittest.TestCase):
     def test_parse_reference_example(self) -> None:
-        program = Path("docs/example-pogram.cw").read_text()
+        program = Path("docs/example-program.cw").read_text()
         spec, shape = parse_cw_program(program)
 
         self.assertEqual(spec.kernel_name, "conv2d_residual_kernel")
@@ -78,7 +78,7 @@ class CWCompilerTests(unittest.TestCase):
             base_payload = _base_payload()
             base_path.write_text(json.dumps(base_payload, indent=2) + "\n")
 
-            program = Path("docs/example-pogram.cw").read_text()
+            program = Path("docs/example-program.cw").read_text()
             flow, program_obj = merge_cw_into_config(
                 base_config_path=base_path,
                 out_config_path=out_path,
@@ -312,7 +312,7 @@ class CWCompilerTests(unittest.TestCase):
             }
             base_path.write_text(json.dumps(base_payload, indent=2) + "\n")
 
-            program = Path("docs/example-pogram.cw").read_text()
+            program = Path("docs/example-program.cw").read_text()
             flow, _program_obj = merge_cw_into_config(
                 base_config_path=base_path,
                 out_config_path=out_path,

@@ -16,7 +16,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 5. If touching pseudo-C lowering, validate the pseudo-C compiler path:
    - `PYTHONPATH=src/python python3 -m waugen compile-pseudoc --program 'acc = a; acc = acc + b; acc *= 3;' --flow-id <id> --base-config <in> --out-config <out>`
 6. If touching `.cw` kernel lowering, validate the CW compiler path:
-   - `PYTHONPATH=src/python python3 -m waugen compile-cw --program-file docs/example-pogram.cw --flow-id <id> --base-config <in> --out-config <out> --replace-existing`
+   - `PYTHONPATH=src/python python3 -m waugen compile-cw --program-file docs/example-program.cw --flow-id <id> --base-config <in> --out-config <out> --replace-existing`
 7. Regenerate artifacts when behavior changes:
    - `PYTHONPATH=src/python python3 -m waugen generate --config <config.json> --out src/verilog/generated --summary`
 8. Run RTL tests when RTL, scheduler, or flow semantics change:
