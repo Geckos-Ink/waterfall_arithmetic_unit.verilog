@@ -12,6 +12,14 @@ module wau_highway_router #(
     parameter CORE_ID_WIDTH = 8,
     parameter PAYLOAD_WIDTH = 64
 ) (
+    input wire clk,
+    input wire rst_n,
+
+    output reg [31:0] hop_count,
+    output reg [31:0] stall_count,
+    output reg [31:0] local_delivered_count,
+    output reg [31:0] forward_count,
+
     input wire local_in_valid,
     output reg local_in_ready,
     input wire [CORE_ID_WIDTH-1:0] local_in_dst,
@@ -377,5 +385,63 @@ module wau_highway_router #(
             default: begin
             end
         endcase
+    end
+
+    // Observability: count successful forwards (any direction's accepted handshake),
+    // local-out deliveries (packets that exit the mesh at this node), and stalls
+    // (input valid but downstream not ready, i.e. handshake denied on this cycle).
+    wire local_handshake = local_in_valid && local_in_ready;
+    wire north_handshake = north_in_valid && north_in_ready;
+    wire south_handshake = south_in_valid && south_in_ready;
+    wire east_handshake = east_in_valid && east_in_ready;
+    wire west_handshake = west_in_valid && west_in_ready;
+
+    wire local_stall = local_in_valid && !local_in_ready;
+    wire north_stall = north_in_valid && !north_in_ready;
+    wire south_stall = south_in_valid && !south_in_ready;
+    wire east_stall = east_in_valid && !east_in_ready;
+    wire west_stall = west_in_valid && !west_in_ready;
+
+    wire local_out_handshake = local_out_valid && local_out_ready;
+    wire north_out_handshake = north_out_valid && north_out_ready;
+    wire south_out_handshake = south_out_valid && south_out_ready;
+    wire east_out_handshake = east_out_valid && east_out_ready;
+    wire west_out_handshake = west_out_valid && west_out_ready;
+
+    function [3:0] popcount5;
+        input [4:0] bits;
+        integer pc_i;
+        begin
+            popcount5 = 4'd0;
+            for (pc_i = 0; pc_i < 5; pc_i = pc_i + 1) begin
+                if (bits[pc_i]) popcount5 = popcount5 + 4'd1;
+            end
+        end
+    endfunction
+
+    wire [3:0] in_handshake_count = popcount5(
+        {west_handshake, east_handshake, south_handshake, north_handshake, local_handshake}
+    );
+    wire [3:0] stall_now = popcount5(
+        {west_stall, east_stall, south_stall, north_stall, local_stall}
+    );
+    wire [3:0] forwarded_to_neighbour = popcount5(
+        {west_out_handshake, east_out_handshake, south_out_handshake, north_out_handshake, 1'b0}
+    );
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            hop_count <= 32'd0;
+            stall_count <= 32'd0;
+            local_delivered_count <= 32'd0;
+            forward_count <= 32'd0;
+        end else begin
+            hop_count <= hop_count + {28'd0, in_handshake_count};
+            stall_count <= stall_count + {28'd0, stall_now};
+            if (local_out_handshake) begin
+                local_delivered_count <= local_delivered_count + 32'd1;
+            end
+            forward_count <= forward_count + {28'd0, forwarded_to_neighbour};
+        end
     end
 endmodule

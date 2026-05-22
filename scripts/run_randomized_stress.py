@@ -129,6 +129,10 @@ def build_random_payload(seed: int) -> dict:
             "allow_adaptive_reroute": True,
             "fallback_radius": rng.randint(1, 2),
             "allow_cycle_recurrence": True,
+            "station_cache": {
+                "entries": rng.choice([2, 4, 8]),
+                "replacement_policy": rng.choice(["fifo", "lru"]),
+            },
         },
         "scheduler": {
             "strategy": "dependency_aware",
@@ -186,6 +190,7 @@ def main() -> int:
                 total_fallback += 1
 
     avg_makespan = (sum(makespans) / len(makespans)) if makespans else 0.0
+    fallback_ratio = (total_fallback / total_instructions) if total_instructions else 0.0
     report = {
         "seed_start": args.start_seed,
         "seed_count": args.count,
@@ -193,6 +198,7 @@ def main() -> int:
         "runs_passed": len(seeds),
         "total_instructions": total_instructions,
         "fallback_instruction_count": total_fallback,
+        "fallback_instruction_ratio": round(fallback_ratio, 6),
         "makespan_min": min(makespans) if makespans else 0,
         "makespan_max": max(makespans) if makespans else 0,
         "makespan_avg": avg_makespan,

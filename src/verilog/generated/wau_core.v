@@ -31,7 +31,9 @@ module wau_core #(
     output wire signed [DATA_WIDTH-1:0] result_value,
 
     output wire busy,
-    output wire cache_hit
+    output wire cache_hit,
+    output wire [31:0] cache_hit_count,
+    output wire [31:0] cache_lookup_count
 );
     wau_core_station #(
         .DATA_WIDTH(DATA_WIDTH),
@@ -55,6 +57,8 @@ module wau_core #(
         .out_stage_id(result_stage_id),
         .out_value(result_value),
         .busy(busy),
-        .cache_hit(cache_hit)
+        .cache_hit(cache_hit),
+        .cache_hit_count(cache_hit_count),
+        .cache_lookup_count(cache_lookup_count)
     );
 endmodule

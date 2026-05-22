@@ -1,0 +1,126 @@
+name: WAU CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run unittest suite
+        run: |
+          PYTHONPATH=src/python python3 -m unittest discover -s tests/python -p "test_*.py" -v
+
+  randomized-stress:
+    name: Randomized scheduler stress
+    runs-on: ubuntu-latest
+    needs: python-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run randomized stress
+        run: |
+          mkdir -p .build/stress
+          PYTHONPATH=src/python python3 scripts/run_randomized_stress.py \
+            --start-seed 2000 \
+            --count 50 \
+            --report .build/stress/randomized.json
+      - name: Upload stress report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: randomized-stress-report
+          path: |
+            .build/stress/randomized.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  iverilog-tests:
+    name: Icarus Verilog RTL tests
+    runs-on: ubuntu-latest
+    needs: python-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install iverilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+          iverilog -V | head -n 1
+      - name: Run iverilog tests
+        run: |
+          bash scripts/run_iverilog_tests.sh
+      - name: Upload generated RTL
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iverilog-generated-rtl
+          path: |
+            src/verilog/generated/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  cw-benchmark:
+    name: CW benchmark (autotuned)
+    runs-on: ubuntu-latest
+    needs: python-tests
+    env:
+      CW_LANE_PARALLELISM: "2"
+      CW_MAX_IN_FLIGHT: "2"
+      PROGRAM_REPLICAS: "2"
+      PROGRAM_MAX_PARALLEL: "1"
+      PROGRAM_PRIORITY: "4"
+      PROGRAM_LOAD_BALANCE: "least_busy"
+      SCHEDULER_PROGRAM_POLICY: "weighted_fair"
+      CW_PLACEMENT_POLICY: "balance"
+      CW_LOWERING_PROFILE: "throughput_optimized"
+      UPDATE_BENCH_SIDECAR: "1"
+      REGRESSION_CHECK: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install iverilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+      - name: Run CW benchmark
+        run: |
+          bash scripts/run_cw_example_benchmark.sh
+      - name: Show benchmark summary
+        run: |
+          echo '### CW Benchmark summary' >> $GITHUB_STEP_SUMMARY
+          grep -E '^(exec_latency_cycles_avg|scoreboard_pass_ratio|fallback_instruction_ratio|makespan_cycles):' \
+            benchmarks/example_pogram_benchmark.txt | sed 's/^/* /' >> $GITHUB_STEP_SUMMARY || true
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cw-benchmark-reports
+          path: |
+            benchmarks/example_pogram_benchmark.txt
+            benchmarks/example_pogram_benchmark_latest.json
+            benchmarks/example_pogram_benchmark_best.json
+            benchmarks/example_pogram_benchmark_history.json
+            benchmarks/example_pogram_multirun_latest.txt
+            benchmarks/example_pogram_tuning_latest.txt
+            .build/cw_iverilog/cw_scoreboard.json
+          if-no-files-found: warn
+          retention-days: 30

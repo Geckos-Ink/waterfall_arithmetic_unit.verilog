@@ -26,7 +26,14 @@ module wau_top #(
     output wire [FLOW_ID_WIDTH-1:0] host_out_flow_id,
     output wire signed [DATA_WIDTH-1:0] host_out_value,
 
-    input wire enable_auto_adapt
+    input wire enable_auto_adapt,
+
+    output wire [31:0] obs_total_hop_count,
+    output wire [31:0] obs_total_stall_count,
+    output wire [31:0] obs_total_forward_count,
+    output wire [31:0] obs_total_local_delivered_count,
+    output wire [31:0] obs_total_cache_hit_count,
+    output wire [31:0] obs_total_cache_lookup_count
 );
     localparam integer CORE_ID_WIDTH = 8;
     localparam integer COORDINATOR_CORE_INDEX = 0;
@@ -63,6 +70,8 @@ module wau_top #(
     wire [CORE_COUNT*DATA_WIDTH-1:0] core_result_value;
     wire [CORE_COUNT-1:0] core_busy;
     wire [CORE_COUNT-1:0] core_cache_hit;
+    wire [CORE_COUNT*32-1:0] core_cache_hit_count;
+    wire [CORE_COUNT*32-1:0] core_cache_lookup_count;
 
     wire coord_dispatch_valid;
     wire coord_dispatch_ready;
@@ -203,6 +212,16 @@ module wau_top #(
         end
     endgenerate
 
+    wire [CORE_COUNT*32-1:0] ctrl_router_hop_count;
+    wire [CORE_COUNT*32-1:0] ctrl_router_stall_count;
+    wire [CORE_COUNT*32-1:0] ctrl_router_local_delivered_count;
+    wire [CORE_COUNT*32-1:0] ctrl_router_forward_count;
+
+    wire [CORE_COUNT*32-1:0] data_router_hop_count;
+    wire [CORE_COUNT*32-1:0] data_router_stall_count;
+    wire [CORE_COUNT*32-1:0] data_router_local_delivered_count;
+    wire [CORE_COUNT*32-1:0] data_router_forward_count;
+
     wau_highway_mesh #(
         .GRID_X(GRID_X),
         .GRID_Y(GRID_Y),
@@ -210,6 +229,8 @@ module wau_top #(
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH)
     ) control_plane_mesh_u (
+        .clk(clk),
+        .rst_n(rst_n),
         .local_in_valid(ctrl_local_in_valid),
         .local_in_ready(ctrl_local_in_ready),
         .local_in_dst(ctrl_local_in_dst),
@@ -217,7 +238,11 @@ module wau_top #(
         .local_out_valid(ctrl_local_out_valid),
         .local_out_ready(ctrl_local_out_ready),
         .local_out_dst(ctrl_local_out_dst),
-        .local_out_payload(ctrl_local_out_payload)
+        .local_out_payload(ctrl_local_out_payload),
+        .router_hop_count(ctrl_router_hop_count),
+        .router_stall_count(ctrl_router_stall_count),
+        .router_local_delivered_count(ctrl_router_local_delivered_count),
+        .router_forward_count(ctrl_router_forward_count)
     );
 
     wau_highway_mesh #(
@@ -227,6 +252,8 @@ module wau_top #(
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH)
     ) data_plane_mesh_u (
+        .clk(clk),
+        .rst_n(rst_n),
         .local_in_valid(data_local_in_valid),
         .local_in_ready(data_local_in_ready),
         .local_in_dst(data_local_in_dst),
@@ -234,7 +261,11 @@ module wau_top #(
         .local_out_valid(data_local_out_valid),
         .local_out_ready(data_local_out_ready),
         .local_out_dst(data_local_out_dst),
-        .local_out_payload(data_local_out_payload)
+        .local_out_payload(data_local_out_payload),
+        .router_hop_count(data_router_hop_count),
+        .router_stall_count(data_router_stall_count),
+        .router_local_delivered_count(data_router_local_delivered_count),
+        .router_forward_count(data_router_forward_count)
     );
 
     genvar gy;
@@ -268,9 +299,59 @@ module wau_top #(
                     .result_stage_id(core_result_stage_id[(CORE_INDEX*8) +: 8]),
                     .result_value(core_result_value[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
                     .busy(core_busy[CORE_INDEX]),
-                    .cache_hit(core_cache_hit[CORE_INDEX])
+                    .cache_hit(core_cache_hit[CORE_INDEX]),
+                    .cache_hit_count(core_cache_hit_count[(CORE_INDEX*32) +: 32]),
+                    .cache_lookup_count(core_cache_lookup_count[(CORE_INDEX*32) +: 32])
                 );
             end
         end
     endgenerate
+
+    // Observability aggregation: sum per-core / per-router counters into single
+    // saturation-unaware 32-bit totals. These are intended for host-side polling
+    // (e.g. via wau_host_mmio) and for testbenches that want a single
+    // throughput/hit-rate signal across the mesh.
+    reg [31:0] total_hop_count;
+    reg [31:0] total_stall_count;
+    reg [31:0] total_forward_count;
+    reg [31:0] total_local_delivered_count;
+    reg [31:0] total_cache_hit_count;
+    reg [31:0] total_cache_lookup_count;
+    integer obs_i;
+    always @(*) begin
+        total_hop_count = 32'd0;
+        total_stall_count = 32'd0;
+        total_forward_count = 32'd0;
+        total_local_delivered_count = 32'd0;
+        for (obs_i = 0; obs_i < CORE_COUNT; obs_i = obs_i + 1) begin
+            total_hop_count = total_hop_count
+                + ctrl_router_hop_count[(obs_i*32) +: 32]
+                + data_router_hop_count[(obs_i*32) +: 32];
+            total_stall_count = total_stall_count
+                + ctrl_router_stall_count[(obs_i*32) +: 32]
+                + data_router_stall_count[(obs_i*32) +: 32];
+            total_forward_count = total_forward_count
+                + ctrl_router_forward_count[(obs_i*32) +: 32]
+                + data_router_forward_count[(obs_i*32) +: 32];
+            total_local_delivered_count = total_local_delivered_count
+                + ctrl_router_local_delivered_count[(obs_i*32) +: 32]
+                + data_router_local_delivered_count[(obs_i*32) +: 32];
+        end
+    end
+    always @(*) begin
+        total_cache_hit_count = 32'd0;
+        total_cache_lookup_count = 32'd0;
+        for (obs_i = 0; obs_i < CORE_COUNT; obs_i = obs_i + 1) begin
+            total_cache_hit_count = total_cache_hit_count
+                + core_cache_hit_count[(obs_i*32) +: 32];
+            total_cache_lookup_count = total_cache_lookup_count
+                + core_cache_lookup_count[(obs_i*32) +: 32];
+        end
+    end
+    assign obs_total_hop_count = total_hop_count;
+    assign obs_total_stall_count = total_stall_count;
+    assign obs_total_forward_count = total_forward_count;
+    assign obs_total_local_delivered_count = total_local_delivered_count;
+    assign obs_total_cache_hit_count = total_cache_hit_count;
+    assign obs_total_cache_lookup_count = total_cache_lookup_count;
 endmodule

@@ -57,6 +57,36 @@ Implemented this cycle:
   on 2026-05-22 UTC: `exec_latency_cycles_avg=68.00`, makespan=42, scoreboard
   pass ratio=1.0 over 8 deterministic cases. A 3-run multi-run pass held
   `exec_latency_cycles_median=68.00` / `exec_latency_cycles_p95=68.00`.
+- Phase 4 / Track D slice: introduced `wau_host_mmio`, a 32-bit memory-mapped
+  control/status register file (CTRL/STATUS/FLOW_ID/IN_A/IN_B/TRIGGER/OUT_FLOW/
+  OUT_VAL/HOPS/STALLS/FORWARDS/DELIVRD/CACHE_H/CACHE_L). The DE0-NANO board
+  wrapper now goes through MMIO and exposes an `ext_mmio_*` bus, while still
+  driving demo packets from KEY[1]/SW[3:0] via an on-chip sequencer. A new
+  `tb_wau_host_mmio` testbench covers the register map, scoreboard counters,
+  and output-pending semantics.
+- Phase 5 slice (station cache): added `compiler.station_cache.{entries,
+  replacement_policy}` config knobs (defaults `entries=4`, `policy=fifo`).
+  `wau_core_station` now supports a 32-entry-max configurable cache with a
+  selectable LRU policy that updates `cache_age` on hit/refill, in addition
+  to the existing FIFO round-robin. New `WAU_STATION_CACHE_ENTRIES`/
+  `WAU_STATION_CACHE_POLICY_*` macros flow through `wau_defs.vh`.
+- Phase 1+3 slice (observability counters): `wau_highway_router` emits
+  `hop_count`, `stall_count`, `local_delivered_count`, and `forward_count`
+  per node, the mesh aggregates per-router buses, and `wau_top` exposes
+  `obs_total_*` totals across both control and data planes plus per-core
+  cache hit/lookup counts. Counters are wired into `wau_host_mmio` so host
+  software can poll them between benchmark runs.
+- Track C / D slice (program tuning + stress): new
+  `tests/python/test_program_stress.py` sweeps a 96-cell matrix of
+  priority/replicas/max_parallel/load_balance/scheduler_policy combinations,
+  plus targeted checks for strict_priority ordering, round-robin coverage,
+  station-cache policy switching, and replica monotonicity. The randomized
+  stress script also randomises `compiler.station_cache.{entries,
+  replacement_policy}` and reports `fallback_instruction_ratio`.
+- DevX slice: added `.github/workflows/ci.yml` running python tests +
+  randomized stress + iverilog tests + autotuned CW benchmark on every push
+  and PR, uploading benchmark logs, scoreboard JSON, randomized-stress JSON,
+  and generated RTL as workflow artifacts (30-day retention).
 
 ## CW Compiler and Benchmark Next Steps (2026-05-18+)
 Goal: move from reference-level CW lowering to deeper, reproducible, performance-oriented compilation and execution validation.
@@ -235,9 +265,9 @@ Goal: make WAU usable by external host software.
 
 Scope:
 - Define stable host/Coordinator interface (inject, retrieve, status, interrupts).
-- Provide board wrappers (starting with DE0-NANO) and memory-mapped control registers.
+- Provide board wrappers (starting with DE0-NANO) and memory-mapped control registers. (supported: `wau_host_mmio` + DE0-NANO wrapper now goes through it)
 - Add runtime protocol docs and example host driver stubs.
-- Add runtime benchmark/control hooks so host software can update program/schedule mappings and collect live performance counters during board execution.
+- Add runtime benchmark/control hooks so host software can update program/schedule mappings and collect live performance counters during board execution. (partially supported: obs_total_hop/stall/forward/delivered + cache hit/lookup counters exposed via MMIO; live mapping update still TBD)
 
 Acceptance:
 - Board-specific top integrates generated WAU module cleanly.
@@ -249,7 +279,7 @@ Acceptance:
 Goal: improve throughput, power behavior, and scalability.
 
 Possible work:
-- Multi-entry station input/result caching and reuse policy.
+- Multi-entry station input/result caching and reuse policy. (supported: configurable entries + FIFO/LRU policy via `compiler.station_cache`)
 - Deeper pipelining for expensive operations (`mul/div/mod`).
 - Flow batching and multi-packet in-flight orchestration.
 - Adaptive reroute policy beyond primary/fallback (N candidates).

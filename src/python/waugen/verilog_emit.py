@@ -48,6 +48,15 @@ def _render_defs(project: CompiledProject) -> str:
     lines.append(f"`define WAU_FLOW_COUNT {len(project.flows)}")
     lines.append(f"`define WAU_MAX_STAGES {project.max_stages}")
     lines.append(f"`define WAU_OP_COUNT {len(cfg.operations)}")
+    station_cache = cfg.compiler.station_cache
+    lines.append(f"`define WAU_STATION_CACHE_ENTRIES {station_cache.entries}")
+    lines.append(
+        f"`define WAU_STATION_CACHE_POLICY_{station_cache.replacement_policy.upper()} 1"
+    )
+    lines.append(
+        f"// Station cache policy: {station_cache.replacement_policy} "
+        f"({station_cache.entries} entries)"
+    )
     lines.append(f"// Supported data types: {', '.join(cfg.device.supported_data_types)}")
     lines.append("")
     for op in cfg.operations:
@@ -112,6 +121,10 @@ def _render_core_station(project: CompiledProject) -> str:
         )
     latency_blob = "\n".join(latency_cases)
 
+    cache_entries = project.config.compiler.station_cache.entries
+    policy = project.config.compiler.station_cache.replacement_policy
+    lru_enabled = "1" if policy == "lru" else "0"
+
     return f"""`timescale 1ns/1ps
 `include "wau_defs.vh"
 
@@ -119,7 +132,8 @@ module wau_core_station #(
     parameter DATA_WIDTH = `WAU_DATA_WIDTH,
     parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
     parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH,
-    parameter CACHE_ENTRIES = 4
+    parameter CACHE_ENTRIES = `WAU_STATION_CACHE_ENTRIES,
+    parameter CACHE_LRU_ENABLED = {lru_enabled}
 ) (
     input wire clk,
     input wire rst_n,
@@ -141,7 +155,9 @@ module wau_core_station #(
     output reg signed [DATA_WIDTH-1:0] out_value,
 
     output wire busy,
-    output reg cache_hit
+    output reg cache_hit,
+    output reg [31:0] cache_hit_count,
+    output reg [31:0] cache_lookup_count
 );
     localparam ST_IDLE = 2'd0;
     localparam ST_EXEC = 2'd1;
@@ -161,7 +177,9 @@ module wau_core_station #(
     reg signed [DATA_WIDTH-1:0] cache_a [0:CACHE_ENTRIES-1];
     reg signed [DATA_WIDTH-1:0] cache_b [0:CACHE_ENTRIES-1];
     reg signed [DATA_WIDTH-1:0] cache_value [0:CACHE_ENTRIES-1];
+    reg [31:0] cache_age [0:CACHE_ENTRIES-1];
     reg [7:0] cache_replace_ptr;
+    reg [31:0] cache_age_clock;
 
     reg cache_hit_comb;
     reg [7:0] cache_hit_index;
@@ -176,6 +194,10 @@ module wau_core_station #(
 
     integer cache_idx;
     integer cache_scan;
+    integer victim_scan;
+    reg [7:0] victim_index;
+    reg [31:0] victim_age;
+    reg victim_filled;
 
     wire signed [DATA_WIDTH-1:0] effective_b;
     assign effective_b = in_use_immediate ? in_immediate_b : in_b;
@@ -224,6 +246,34 @@ module wau_core_station #(
         end
     end
 
+    // LRU victim selection: pick the entry with the smallest age (oldest reference);
+    // unused entries (cache_valid=0) take priority. Tie-broken by lowest index.
+    always @(*) begin
+        victim_index = 8'd0;
+        victim_age = 32'hFFFFFFFF;
+        victim_filled = 1'b0;
+        if (CACHE_LRU_ENABLED) begin
+            for (victim_scan = 0; victim_scan < CACHE_ENTRIES; victim_scan = victim_scan + 1) begin
+                if (!cache_valid[victim_scan] && !victim_filled) begin
+                    victim_index = victim_scan[7:0];
+                    victim_filled = 1'b1;
+                end
+            end
+            if (!victim_filled) begin
+                victim_index = 8'd0;
+                victim_age = cache_age[0];
+                for (victim_scan = 1; victim_scan < CACHE_ENTRIES; victim_scan = victim_scan + 1) begin
+                    if (cache_age[victim_scan] < victim_age) begin
+                        victim_index = victim_scan[7:0];
+                        victim_age = cache_age[victim_scan];
+                    end
+                end
+            end
+        end else begin
+            victim_index = cache_replace_ptr;
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= ST_IDLE;
@@ -238,14 +288,18 @@ module wau_core_station #(
             op_b <= {{DATA_WIDTH{{1'b0}}}};
             wait_cycles <= 8'd0;
             cache_replace_ptr <= 8'd0;
+            cache_age_clock <= 32'd1;
             for (cache_idx = 0; cache_idx < CACHE_ENTRIES; cache_idx = cache_idx + 1) begin
                 cache_valid[cache_idx] <= 1'b0;
                 cache_opcode[cache_idx] <= {{OPCODE_WIDTH{{1'b0}}}};
                 cache_a[cache_idx] <= {{DATA_WIDTH{{1'b0}}}};
                 cache_b[cache_idx] <= {{DATA_WIDTH{{1'b0}}}};
                 cache_value[cache_idx] <= {{DATA_WIDTH{{1'b0}}}};
+                cache_age[cache_idx] <= 32'd0;
             end
             cache_hit <= 1'b0;
+            cache_hit_count <= 32'd0;
+            cache_lookup_count <= 32'd0;
             alu_in_valid <= 1'b0;
             result_latched_valid <= 1'b0;
             result_latched_value <= {{DATA_WIDTH{{1'b0}}}};
@@ -262,11 +316,17 @@ module wau_core_station #(
                     result_latched_valid <= 1'b0;
                     if (in_valid && in_ready) begin
                         cache_hit <= cache_hit_comb;
+                        cache_lookup_count <= cache_lookup_count + 32'd1;
                         if (cache_hit_comb) begin
+                            cache_hit_count <= cache_hit_count + 32'd1;
                             out_valid <= 1'b1;
                             out_flow_id <= in_flow_id;
                             out_stage_id <= in_stage_id;
                             out_value <= cache_hit_value;
+                            if (CACHE_LRU_ENABLED) begin
+                                cache_age[cache_hit_index] <= cache_age_clock;
+                                cache_age_clock <= cache_age_clock + 32'd1;
+                            end
                             state <= ST_OUT;
                         end else begin
                             active_flow_id <= in_flow_id;
@@ -298,16 +358,20 @@ module wau_core_station #(
                         out_stage_id <= active_stage_id;
                         out_value <= alu_out_valid ? alu_out_value : result_latched_value;
 
-                        cache_valid[cache_replace_ptr] <= 1'b1;
-                        cache_opcode[cache_replace_ptr] <= active_opcode;
-                        cache_a[cache_replace_ptr] <= op_a;
-                        cache_b[cache_replace_ptr] <= op_b;
-                        cache_value[cache_replace_ptr] <= alu_out_valid ? alu_out_value : result_latched_value;
-
-                        if (cache_replace_ptr == (CACHE_ENTRIES - 1)) begin
-                            cache_replace_ptr <= 8'd0;
+                        cache_valid[victim_index] <= 1'b1;
+                        cache_opcode[victim_index] <= active_opcode;
+                        cache_a[victim_index] <= op_a;
+                        cache_b[victim_index] <= op_b;
+                        cache_value[victim_index] <= alu_out_valid ? alu_out_value : result_latched_value;
+                        if (CACHE_LRU_ENABLED) begin
+                            cache_age[victim_index] <= cache_age_clock;
+                            cache_age_clock <= cache_age_clock + 32'd1;
                         end else begin
-                            cache_replace_ptr <= cache_replace_ptr + 8'd1;
+                            if (cache_replace_ptr == (CACHE_ENTRIES - 1)) begin
+                                cache_replace_ptr <= 8'd0;
+                            end else begin
+                                cache_replace_ptr <= cache_replace_ptr + 8'd1;
+                            end
                         end
 
                         result_latched_valid <= 1'b0;
@@ -362,7 +426,9 @@ module wau_core #(
     output wire signed [DATA_WIDTH-1:0] result_value,
 
     output wire busy,
-    output wire cache_hit
+    output wire cache_hit,
+    output wire [31:0] cache_hit_count,
+    output wire [31:0] cache_lookup_count
 );
     wau_core_station #(
         .DATA_WIDTH(DATA_WIDTH),
@@ -386,7 +452,9 @@ module wau_core #(
         .out_stage_id(result_stage_id),
         .out_value(result_value),
         .busy(busy),
-        .cache_hit(cache_hit)
+        .cache_hit(cache_hit),
+        .cache_hit_count(cache_hit_count),
+        .cache_lookup_count(cache_lookup_count)
     );
 endmodule
 """
@@ -430,6 +498,14 @@ module wau_highway_router #(
     parameter CORE_ID_WIDTH = 8,
     parameter PAYLOAD_WIDTH = 64
 ) (
+    input wire clk,
+    input wire rst_n,
+
+    output reg [31:0] hop_count,
+    output reg [31:0] stall_count,
+    output reg [31:0] local_delivered_count,
+    output reg [31:0] forward_count,
+
     input wire local_in_valid,
     output reg local_in_ready,
     input wire [CORE_ID_WIDTH-1:0] local_in_dst,
@@ -796,6 +872,64 @@ module wau_highway_router #(
             end
         endcase
     end
+
+    // Observability: count successful forwards (any direction's accepted handshake),
+    // local-out deliveries (packets that exit the mesh at this node), and stalls
+    // (input valid but downstream not ready, i.e. handshake denied on this cycle).
+    wire local_handshake = local_in_valid && local_in_ready;
+    wire north_handshake = north_in_valid && north_in_ready;
+    wire south_handshake = south_in_valid && south_in_ready;
+    wire east_handshake = east_in_valid && east_in_ready;
+    wire west_handshake = west_in_valid && west_in_ready;
+
+    wire local_stall = local_in_valid && !local_in_ready;
+    wire north_stall = north_in_valid && !north_in_ready;
+    wire south_stall = south_in_valid && !south_in_ready;
+    wire east_stall = east_in_valid && !east_in_ready;
+    wire west_stall = west_in_valid && !west_in_ready;
+
+    wire local_out_handshake = local_out_valid && local_out_ready;
+    wire north_out_handshake = north_out_valid && north_out_ready;
+    wire south_out_handshake = south_out_valid && south_out_ready;
+    wire east_out_handshake = east_out_valid && east_out_ready;
+    wire west_out_handshake = west_out_valid && west_out_ready;
+
+    function [3:0] popcount5;
+        input [4:0] bits;
+        integer pc_i;
+        begin
+            popcount5 = 4'd0;
+            for (pc_i = 0; pc_i < 5; pc_i = pc_i + 1) begin
+                if (bits[pc_i]) popcount5 = popcount5 + 4'd1;
+            end
+        end
+    endfunction
+
+    wire [3:0] in_handshake_count = popcount5(
+        {west_handshake, east_handshake, south_handshake, north_handshake, local_handshake}
+    );
+    wire [3:0] stall_now = popcount5(
+        {west_stall, east_stall, south_stall, north_stall, local_stall}
+    );
+    wire [3:0] forwarded_to_neighbour = popcount5(
+        {west_out_handshake, east_out_handshake, south_out_handshake, north_out_handshake, 1'b0}
+    );
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            hop_count <= 32'd0;
+            stall_count <= 32'd0;
+            local_delivered_count <= 32'd0;
+            forward_count <= 32'd0;
+        end else begin
+            hop_count <= hop_count + {28'd0, in_handshake_count};
+            stall_count <= stall_count + {28'd0, stall_now};
+            if (local_out_handshake) begin
+                local_delivered_count <= local_delivered_count + 32'd1;
+            end
+            forward_count <= forward_count + {28'd0, forwarded_to_neighbour};
+        end
+    end
 endmodule
 """
 
@@ -811,6 +945,9 @@ module wau_highway_mesh #(
     parameter CORE_ID_WIDTH = 8,
     parameter PAYLOAD_WIDTH = 64
 ) (
+    input wire clk,
+    input wire rst_n,
+
     input wire [CORE_COUNT-1:0] local_in_valid,
     output wire [CORE_COUNT-1:0] local_in_ready,
     input wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_in_dst,
@@ -819,7 +956,12 @@ module wau_highway_mesh #(
     output wire [CORE_COUNT-1:0] local_out_valid,
     input wire [CORE_COUNT-1:0] local_out_ready,
     output wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_out_dst,
-    output wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_out_payload
+    output wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_out_payload,
+
+    output wire [CORE_COUNT*32-1:0] router_hop_count,
+    output wire [CORE_COUNT*32-1:0] router_stall_count,
+    output wire [CORE_COUNT*32-1:0] router_local_delivered_count,
+    output wire [CORE_COUNT*32-1:0] router_forward_count
 );
     wire [CORE_COUNT-1:0] north_in_valid;
     wire [CORE_COUNT-1:0] north_in_ready;
@@ -876,6 +1018,12 @@ module wau_highway_mesh #(
                     .CORE_ID_WIDTH(CORE_ID_WIDTH),
                     .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
                 ) router_u (
+                    .clk(clk),
+                    .rst_n(rst_n),
+                    .hop_count(router_hop_count[(CORE_INDEX*32) +: 32]),
+                    .stall_count(router_stall_count[(CORE_INDEX*32) +: 32]),
+                    .local_delivered_count(router_local_delivered_count[(CORE_INDEX*32) +: 32]),
+                    .forward_count(router_forward_count[(CORE_INDEX*32) +: 32]),
                     .local_in_valid(local_in_valid[CORE_INDEX]),
                     .local_in_ready(local_in_ready[CORE_INDEX]),
                     .local_in_dst(local_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
@@ -1360,7 +1508,14 @@ module __WAU_TOP_MODULE__ #(
     output wire [FLOW_ID_WIDTH-1:0] host_out_flow_id,
     output wire signed [DATA_WIDTH-1:0] host_out_value,
 
-    input wire enable_auto_adapt
+    input wire enable_auto_adapt,
+
+    output wire [31:0] obs_total_hop_count,
+    output wire [31:0] obs_total_stall_count,
+    output wire [31:0] obs_total_forward_count,
+    output wire [31:0] obs_total_local_delivered_count,
+    output wire [31:0] obs_total_cache_hit_count,
+    output wire [31:0] obs_total_cache_lookup_count
 );
     localparam integer CORE_ID_WIDTH = 8;
     localparam integer COORDINATOR_CORE_INDEX = 0;
@@ -1397,6 +1552,8 @@ module __WAU_TOP_MODULE__ #(
     wire [CORE_COUNT*DATA_WIDTH-1:0] core_result_value;
     wire [CORE_COUNT-1:0] core_busy;
     wire [CORE_COUNT-1:0] core_cache_hit;
+    wire [CORE_COUNT*32-1:0] core_cache_hit_count;
+    wire [CORE_COUNT*32-1:0] core_cache_lookup_count;
 
     wire coord_dispatch_valid;
     wire coord_dispatch_ready;
@@ -1537,6 +1694,16 @@ module __WAU_TOP_MODULE__ #(
         end
     endgenerate
 
+    wire [CORE_COUNT*32-1:0] ctrl_router_hop_count;
+    wire [CORE_COUNT*32-1:0] ctrl_router_stall_count;
+    wire [CORE_COUNT*32-1:0] ctrl_router_local_delivered_count;
+    wire [CORE_COUNT*32-1:0] ctrl_router_forward_count;
+
+    wire [CORE_COUNT*32-1:0] data_router_hop_count;
+    wire [CORE_COUNT*32-1:0] data_router_stall_count;
+    wire [CORE_COUNT*32-1:0] data_router_local_delivered_count;
+    wire [CORE_COUNT*32-1:0] data_router_forward_count;
+
     wau_highway_mesh #(
         .GRID_X(GRID_X),
         .GRID_Y(GRID_Y),
@@ -1544,6 +1711,8 @@ module __WAU_TOP_MODULE__ #(
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH)
     ) control_plane_mesh_u (
+        .clk(clk),
+        .rst_n(rst_n),
         .local_in_valid(ctrl_local_in_valid),
         .local_in_ready(ctrl_local_in_ready),
         .local_in_dst(ctrl_local_in_dst),
@@ -1551,7 +1720,11 @@ module __WAU_TOP_MODULE__ #(
         .local_out_valid(ctrl_local_out_valid),
         .local_out_ready(ctrl_local_out_ready),
         .local_out_dst(ctrl_local_out_dst),
-        .local_out_payload(ctrl_local_out_payload)
+        .local_out_payload(ctrl_local_out_payload),
+        .router_hop_count(ctrl_router_hop_count),
+        .router_stall_count(ctrl_router_stall_count),
+        .router_local_delivered_count(ctrl_router_local_delivered_count),
+        .router_forward_count(ctrl_router_forward_count)
     );
 
     wau_highway_mesh #(
@@ -1561,6 +1734,8 @@ module __WAU_TOP_MODULE__ #(
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH)
     ) data_plane_mesh_u (
+        .clk(clk),
+        .rst_n(rst_n),
         .local_in_valid(data_local_in_valid),
         .local_in_ready(data_local_in_ready),
         .local_in_dst(data_local_in_dst),
@@ -1568,7 +1743,11 @@ module __WAU_TOP_MODULE__ #(
         .local_out_valid(data_local_out_valid),
         .local_out_ready(data_local_out_ready),
         .local_out_dst(data_local_out_dst),
-        .local_out_payload(data_local_out_payload)
+        .local_out_payload(data_local_out_payload),
+        .router_hop_count(data_router_hop_count),
+        .router_stall_count(data_router_stall_count),
+        .router_local_delivered_count(data_router_local_delivered_count),
+        .router_forward_count(data_router_forward_count)
     );
 
     genvar gy;
@@ -1602,105 +1781,415 @@ module __WAU_TOP_MODULE__ #(
                     .result_stage_id(core_result_stage_id[(CORE_INDEX*8) +: 8]),
                     .result_value(core_result_value[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
                     .busy(core_busy[CORE_INDEX]),
-                    .cache_hit(core_cache_hit[CORE_INDEX])
+                    .cache_hit(core_cache_hit[CORE_INDEX]),
+                    .cache_hit_count(core_cache_hit_count[(CORE_INDEX*32) +: 32]),
+                    .cache_lookup_count(core_cache_lookup_count[(CORE_INDEX*32) +: 32])
                 );
             end
         end
     endgenerate
+
+    // Observability aggregation: sum per-core / per-router counters into single
+    // saturation-unaware 32-bit totals. These are intended for host-side polling
+    // (e.g. via wau_host_mmio) and for testbenches that want a single
+    // throughput/hit-rate signal across the mesh.
+    reg [31:0] total_hop_count;
+    reg [31:0] total_stall_count;
+    reg [31:0] total_forward_count;
+    reg [31:0] total_local_delivered_count;
+    reg [31:0] total_cache_hit_count;
+    reg [31:0] total_cache_lookup_count;
+    integer obs_i;
+    always @(*) begin
+        total_hop_count = 32'd0;
+        total_stall_count = 32'd0;
+        total_forward_count = 32'd0;
+        total_local_delivered_count = 32'd0;
+        for (obs_i = 0; obs_i < CORE_COUNT; obs_i = obs_i + 1) begin
+            total_hop_count = total_hop_count
+                + ctrl_router_hop_count[(obs_i*32) +: 32]
+                + data_router_hop_count[(obs_i*32) +: 32];
+            total_stall_count = total_stall_count
+                + ctrl_router_stall_count[(obs_i*32) +: 32]
+                + data_router_stall_count[(obs_i*32) +: 32];
+            total_forward_count = total_forward_count
+                + ctrl_router_forward_count[(obs_i*32) +: 32]
+                + data_router_forward_count[(obs_i*32) +: 32];
+            total_local_delivered_count = total_local_delivered_count
+                + ctrl_router_local_delivered_count[(obs_i*32) +: 32]
+                + data_router_local_delivered_count[(obs_i*32) +: 32];
+        end
+    end
+    always @(*) begin
+        total_cache_hit_count = 32'd0;
+        total_cache_lookup_count = 32'd0;
+        for (obs_i = 0; obs_i < CORE_COUNT; obs_i = obs_i + 1) begin
+            total_cache_hit_count = total_cache_hit_count
+                + core_cache_hit_count[(obs_i*32) +: 32];
+            total_cache_lookup_count = total_cache_lookup_count
+                + core_cache_lookup_count[(obs_i*32) +: 32];
+        end
+    end
+    assign obs_total_hop_count = total_hop_count;
+    assign obs_total_stall_count = total_stall_count;
+    assign obs_total_forward_count = total_forward_count;
+    assign obs_total_local_delivered_count = total_local_delivered_count;
+    assign obs_total_cache_hit_count = total_cache_hit_count;
+    assign obs_total_cache_lookup_count = total_cache_lookup_count;
 endmodule
 """
     return template.replace("__WAU_TOP_MODULE__", module_name)
+
+def _render_host_mmio() -> str:
+    """Memory-mapped host interface.
+
+    Exposes a small register file over a synchronous valid/ready bus so external
+    host software (or a board wrapper) can drive WAU like an Avalon-MM slave with
+    32-bit registers. The register map is small and stable so host drivers and
+    closed-loop benchmarking harnesses can target it across device wrappers.
+
+    Register map (word-addressed):
+      0x00  CTRL     [0]=reset_request (RW1S/auto-clear after one cycle)
+                     [1]=enable_auto_adapt (RW)
+      0x01  STATUS   [0]=host_in_ready
+                     [1]=host_out_valid
+                     [2]=output_pending
+      0x02  FLOW_ID  RW (write-only takes effect at TRIGGER)
+      0x03  IN_A     RW input operand A
+      0x04  IN_B     RW input operand B
+      0x05  TRIGGER  W1S - writing any value asserts host_in_valid for one accepted handshake
+      0x10  OUT_FLOW R  last host_out_flow_id
+      0x11  OUT_VAL  R  last host_out_value
+      0x12  HOPS_LO  R  obs_total_hop_count
+      0x13  STALLS   R  obs_total_stall_count
+      0x14  FORWARDS R  obs_total_forward_count
+      0x15  DELIVRD  R  obs_total_local_delivered_count
+      0x16  CACHE_H  R  obs_total_cache_hit_count
+      0x17  CACHE_L  R  obs_total_cache_lookup_count
+    """
+    return """`timescale 1ns/1ps
+`include "wau_defs.vh"
+
+module wau_host_mmio #(
+    parameter DATA_WIDTH = `WAU_DATA_WIDTH,
+    parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
+    parameter ADDR_WIDTH = 8
+) (
+    input wire clk,
+    input wire rst_n,
+
+    // Host (Avalon-MM-like) interface
+    input wire mmio_read,
+    input wire mmio_write,
+    input wire [ADDR_WIDTH-1:0] mmio_address,
+    input wire [31:0] mmio_writedata,
+    output reg [31:0] mmio_readdata,
+    output reg mmio_readdatavalid,
+
+    // Soft reset request (asserted for one cycle after CTRL[0]=1)
+    output reg soft_reset_req,
+    output reg enable_auto_adapt,
+
+    // Pipeline-side handshakes with wau_top
+    output reg host_in_valid,
+    input wire host_in_ready,
+    output reg [FLOW_ID_WIDTH-1:0] host_in_flow_id,
+    output reg signed [DATA_WIDTH-1:0] host_in_a,
+    output reg signed [DATA_WIDTH-1:0] host_in_b,
+
+    input wire host_out_valid,
+    output wire host_out_ready,
+    input wire [FLOW_ID_WIDTH-1:0] host_out_flow_id,
+    input wire signed [DATA_WIDTH-1:0] host_out_value,
+
+    // Observability bus from wau_top (32-bit free-running counters)
+    input wire [31:0] obs_total_hop_count,
+    input wire [31:0] obs_total_stall_count,
+    input wire [31:0] obs_total_forward_count,
+    input wire [31:0] obs_total_local_delivered_count,
+    input wire [31:0] obs_total_cache_hit_count,
+    input wire [31:0] obs_total_cache_lookup_count
+);
+    localparam [ADDR_WIDTH-1:0] ADDR_CTRL     = 'h00;
+    localparam [ADDR_WIDTH-1:0] ADDR_STATUS   = 'h01;
+    localparam [ADDR_WIDTH-1:0] ADDR_FLOW_ID  = 'h02;
+    localparam [ADDR_WIDTH-1:0] ADDR_IN_A     = 'h03;
+    localparam [ADDR_WIDTH-1:0] ADDR_IN_B     = 'h04;
+    localparam [ADDR_WIDTH-1:0] ADDR_TRIGGER  = 'h05;
+    localparam [ADDR_WIDTH-1:0] ADDR_OUT_FLOW = 'h10;
+    localparam [ADDR_WIDTH-1:0] ADDR_OUT_VAL  = 'h11;
+    localparam [ADDR_WIDTH-1:0] ADDR_HOPS     = 'h12;
+    localparam [ADDR_WIDTH-1:0] ADDR_STALLS   = 'h13;
+    localparam [ADDR_WIDTH-1:0] ADDR_FORWARDS = 'h14;
+    localparam [ADDR_WIDTH-1:0] ADDR_DELIVRD  = 'h15;
+    localparam [ADDR_WIDTH-1:0] ADDR_CACHE_H  = 'h16;
+    localparam [ADDR_WIDTH-1:0] ADDR_CACHE_L  = 'h17;
+
+    reg [FLOW_ID_WIDTH-1:0] last_out_flow;
+    reg signed [DATA_WIDTH-1:0] last_out_value;
+    reg output_pending;
+
+    // The bus is always ready to drain results into the latched registers.
+    assign host_out_ready = 1'b1;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mmio_readdata <= 32'd0;
+            mmio_readdatavalid <= 1'b0;
+            soft_reset_req <= 1'b0;
+            enable_auto_adapt <= 1'b1;
+            host_in_valid <= 1'b0;
+            host_in_flow_id <= {FLOW_ID_WIDTH{1'b0}};
+            host_in_a <= {DATA_WIDTH{1'b0}};
+            host_in_b <= {DATA_WIDTH{1'b0}};
+            last_out_flow <= {FLOW_ID_WIDTH{1'b0}};
+            last_out_value <= {DATA_WIDTH{1'b0}};
+            output_pending <= 1'b0;
+        end else begin
+            mmio_readdatavalid <= 1'b0;
+            soft_reset_req <= 1'b0;
+
+            // Capture host_out_value/flow into latched status registers once the
+            // pipeline produces a result; output_pending stays sticky until the
+            // host explicitly reads OUT_VAL/OUT_FLOW or writes CTRL[0].
+            if (host_out_valid && host_out_ready) begin
+                last_out_flow <= host_out_flow_id;
+                last_out_value <= host_out_value;
+                output_pending <= 1'b1;
+            end
+
+            // Clear host_in_valid on accepted handshake.
+            if (host_in_valid && host_in_ready) begin
+                host_in_valid <= 1'b0;
+            end
+
+            if (mmio_write) begin
+                case (mmio_address)
+                    ADDR_CTRL: begin
+                        soft_reset_req <= mmio_writedata[0];
+                        enable_auto_adapt <= mmio_writedata[1];
+                        if (mmio_writedata[0]) output_pending <= 1'b0;
+                    end
+                    ADDR_FLOW_ID: host_in_flow_id <= mmio_writedata[FLOW_ID_WIDTH-1:0];
+                    ADDR_IN_A: host_in_a <= mmio_writedata[DATA_WIDTH-1:0];
+                    ADDR_IN_B: host_in_b <= mmio_writedata[DATA_WIDTH-1:0];
+                    ADDR_TRIGGER: host_in_valid <= 1'b1;
+                    default: ;
+                endcase
+            end
+
+            if (mmio_read) begin
+                mmio_readdatavalid <= 1'b1;
+                case (mmio_address)
+                    ADDR_CTRL: mmio_readdata <= {30'd0, enable_auto_adapt, 1'b0};
+                    ADDR_STATUS: mmio_readdata <= {29'd0, output_pending, host_out_valid, host_in_ready};
+                    ADDR_FLOW_ID: mmio_readdata <= {{(32-FLOW_ID_WIDTH){1'b0}}, host_in_flow_id};
+                    ADDR_IN_A: mmio_readdata <= host_in_a;
+                    ADDR_IN_B: mmio_readdata <= host_in_b;
+                    ADDR_OUT_FLOW: begin
+                        mmio_readdata <= {{(32-FLOW_ID_WIDTH){1'b0}}, last_out_flow};
+                        output_pending <= 1'b0;
+                    end
+                    ADDR_OUT_VAL: begin
+                        mmio_readdata <= last_out_value;
+                        output_pending <= 1'b0;
+                    end
+                    ADDR_HOPS: mmio_readdata <= obs_total_hop_count;
+                    ADDR_STALLS: mmio_readdata <= obs_total_stall_count;
+                    ADDR_FORWARDS: mmio_readdata <= obs_total_forward_count;
+                    ADDR_DELIVRD: mmio_readdata <= obs_total_local_delivered_count;
+                    ADDR_CACHE_H: mmio_readdata <= obs_total_cache_hit_count;
+                    ADDR_CACHE_L: mmio_readdata <= obs_total_cache_lookup_count;
+                    default: mmio_readdata <= 32'd0;
+                endcase
+            end
+        end
+    end
+endmodule
+"""
+
 
 def _render_de0_nano_wrapper(project: CompiledProject) -> str:
     module_name = project.config.output_module_name
     template = """`timescale 1ns/1ps
 `include "wau_defs.vh"
 
+// DE0-NANO board wrapper.
+//
+// Pin-level I/O is exposed via the wau_host_mmio register file so:
+//   * external host software / NIOS-II / Avalon-MM can drive WAU through
+//     mmio_address/read/write/readdata signals,
+//   * on-board push-buttons + switches still trigger the legacy demo flow
+//     by emulating MMIO writes (a tiny ROM sequencer drives the bus when
+//     KEY[1] is pressed).
+//
+// LEDs surface live status + observability without needing a JTAG host:
+//   LED[0] host_out_valid
+//   LED[1] host_in_ready
+//   LED[2] output_pending (sticky until host reads OUT_VAL)
+//   LED[3] enable_auto_adapt
+//   LED[7:4] low nibble of obs_total_hop_count (handy as a coarse traffic LED).
 module wau_de0_nano_top (
     input wire CLOCK_50,
     input wire [1:0] KEY,
     input wire [3:0] SW,
-    output wire [7:0] LED
+    output wire [7:0] LED,
+
+    // Optional external MMIO bus. Tie unused inputs to 0 in board pin assignments.
+    input wire ext_mmio_read,
+    input wire ext_mmio_write,
+    input wire [7:0] ext_mmio_address,
+    input wire [31:0] ext_mmio_writedata,
+    output wire [31:0] ext_mmio_readdata,
+    output wire ext_mmio_readdatavalid
 );
     localparam DATA_WIDTH = `WAU_DATA_WIDTH;
     localparam FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH;
 
-    wire rst_n;
-    assign rst_n = KEY[0];
+    wire core_rst_n = KEY[0];
+    wire soft_reset_req;
+    wire enable_auto_adapt;
 
-    reg host_in_valid;
+    wire host_in_valid;
     wire host_in_ready;
-    reg [FLOW_ID_WIDTH-1:0] host_in_flow_id;
-    reg signed [DATA_WIDTH-1:0] host_in_a;
-    reg signed [DATA_WIDTH-1:0] host_in_b;
+    wire [FLOW_ID_WIDTH-1:0] host_in_flow_id;
+    wire signed [DATA_WIDTH-1:0] host_in_a;
+    wire signed [DATA_WIDTH-1:0] host_in_b;
 
     wire host_out_valid;
+    wire host_out_ready;
     wire [FLOW_ID_WIDTH-1:0] host_out_flow_id;
     wire signed [DATA_WIDTH-1:0] host_out_value;
 
+    wire [31:0] obs_total_hop_count;
+    wire [31:0] obs_total_stall_count;
+    wire [31:0] obs_total_forward_count;
+    wire [31:0] obs_total_local_delivered_count;
+    wire [31:0] obs_total_cache_hit_count;
+    wire [31:0] obs_total_cache_lookup_count;
+
+    // Button-driven MMIO emulator: edge-detect KEY[1] (low-active) and
+    // sequence FLOW_ID/IN_A/IN_B/TRIGGER writes. SW[3:0] supplies the data nibble.
     reg key1_d;
-    reg pending_fire;
-    reg signed [DATA_WIDTH-1:0] last_out;
-    reg [FLOW_ID_WIDTH-1:0] last_flow;
+    reg [2:0] seq_state;
+    reg do_button_write;
+    reg [7:0] button_addr;
+    reg [31:0] button_data;
 
-    wire trigger_pulse;
-    assign trigger_pulse = key1_d && !KEY[1];
+    wire trigger_edge = key1_d && !KEY[1];
 
-    always @(posedge CLOCK_50 or negedge rst_n) begin
-        if (!rst_n) begin
-            host_in_valid <= 1'b0;
-            host_in_flow_id <= {FLOW_ID_WIDTH{1'b0}};
-            host_in_a <= {DATA_WIDTH{1'b0}};
-            host_in_b <= {DATA_WIDTH{1'b0}};
+    always @(posedge CLOCK_50 or negedge core_rst_n) begin
+        if (!core_rst_n) begin
             key1_d <= 1'b1;
-            pending_fire <= 1'b0;
-            last_out <= {DATA_WIDTH{1'b0}};
-            last_flow <= {FLOW_ID_WIDTH{1'b0}};
+            seq_state <= 3'd0;
+            do_button_write <= 1'b0;
+            button_addr <= 8'd0;
+            button_data <= 32'd0;
         end else begin
             key1_d <= KEY[1];
+            do_button_write <= 1'b0;
 
-            if (trigger_pulse) begin
-                host_in_flow_id <= {{(FLOW_ID_WIDTH-4){1'b0}}, SW};
-                host_in_a <= {{(DATA_WIDTH-4){1'b0}}, SW};
-                host_in_b <= {{(DATA_WIDTH-2){1'b0}}, 2'd3};
-                pending_fire <= 1'b1;
+            if (trigger_edge) begin
+                seq_state <= 3'd1;
             end
 
-            if (pending_fire && host_in_ready && !host_in_valid) begin
-                host_in_valid <= 1'b1;
-                pending_fire <= 1'b0;
-            end
-
-            if (host_in_valid && host_in_ready) begin
-                host_in_valid <= 1'b0;
-            end
-
-            if (host_out_valid) begin
-                last_out <= host_out_value;
-                last_flow <= host_out_flow_id;
-            end
+            case (seq_state)
+                3'd1: begin
+                    button_addr <= 8'h02;  // FLOW_ID
+                    button_data <= {{(32-FLOW_ID_WIDTH){1'b0}}, SW[3:0], {{(FLOW_ID_WIDTH-4){1'b0}}}};
+                    do_button_write <= 1'b1;
+                    seq_state <= 3'd2;
+                end
+                3'd2: begin
+                    button_addr <= 8'h03;  // IN_A
+                    button_data <= {{(32-DATA_WIDTH){1'b0}}, {(DATA_WIDTH-4){1'b0}}, SW[3:0]};
+                    do_button_write <= 1'b1;
+                    seq_state <= 3'd3;
+                end
+                3'd3: begin
+                    button_addr <= 8'h04;  // IN_B
+                    button_data <= {{(32-DATA_WIDTH){1'b0}}, {(DATA_WIDTH-2){1'b0}}, 2'd3};
+                    do_button_write <= 1'b1;
+                    seq_state <= 3'd4;
+                end
+                3'd4: begin
+                    button_addr <= 8'h05;  // TRIGGER
+                    button_data <= 32'd1;
+                    do_button_write <= 1'b1;
+                    seq_state <= 3'd0;
+                end
+                default: seq_state <= 3'd0;
+            endcase
         end
     end
 
-    assign LED[0] = host_out_valid;
-    assign LED[1] = host_in_ready;
-    assign LED[2] = pending_fire;
-    assign LED[3] = SW[0];
-    assign LED[7:4] = last_out[3:0];
+    wire bus_write = ext_mmio_write || do_button_write;
+    wire bus_read = ext_mmio_read;
+    wire [7:0] bus_addr = do_button_write ? button_addr : ext_mmio_address;
+    wire [31:0] bus_writedata = do_button_write ? button_data : ext_mmio_writedata;
 
-    __WAU_TOP_MODULE__ wau_u (
+    wire [31:0] mmio_readdata;
+    wire mmio_readdatavalid;
+    assign ext_mmio_readdata = mmio_readdata;
+    assign ext_mmio_readdatavalid = mmio_readdatavalid;
+
+    wau_host_mmio #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .FLOW_ID_WIDTH(FLOW_ID_WIDTH),
+        .ADDR_WIDTH(8)
+    ) mmio_u (
         .clk(CLOCK_50),
-        .rst_n(rst_n),
+        .rst_n(core_rst_n),
+        .mmio_read(bus_read),
+        .mmio_write(bus_write),
+        .mmio_address(bus_addr),
+        .mmio_writedata(bus_writedata),
+        .mmio_readdata(mmio_readdata),
+        .mmio_readdatavalid(mmio_readdatavalid),
+        .soft_reset_req(soft_reset_req),
+        .enable_auto_adapt(enable_auto_adapt),
         .host_in_valid(host_in_valid),
         .host_in_ready(host_in_ready),
         .host_in_flow_id(host_in_flow_id),
         .host_in_a(host_in_a),
         .host_in_b(host_in_b),
         .host_out_valid(host_out_valid),
-        .host_out_ready(1'b1),
+        .host_out_ready(host_out_ready),
         .host_out_flow_id(host_out_flow_id),
         .host_out_value(host_out_value),
-        .enable_auto_adapt(SW[0])
+        .obs_total_hop_count(obs_total_hop_count),
+        .obs_total_stall_count(obs_total_stall_count),
+        .obs_total_forward_count(obs_total_forward_count),
+        .obs_total_local_delivered_count(obs_total_local_delivered_count),
+        .obs_total_cache_hit_count(obs_total_cache_hit_count),
+        .obs_total_cache_lookup_count(obs_total_cache_lookup_count)
+    );
+
+    assign LED[0] = host_out_valid;
+    assign LED[1] = host_in_ready;
+    assign LED[2] = mmio_readdatavalid;
+    assign LED[3] = enable_auto_adapt;
+    assign LED[7:4] = obs_total_hop_count[3:0];
+
+    __WAU_TOP_MODULE__ wau_u (
+        .clk(CLOCK_50),
+        .rst_n(core_rst_n & ~soft_reset_req),
+        .host_in_valid(host_in_valid),
+        .host_in_ready(host_in_ready),
+        .host_in_flow_id(host_in_flow_id),
+        .host_in_a(host_in_a),
+        .host_in_b(host_in_b),
+        .host_out_valid(host_out_valid),
+        .host_out_ready(host_out_ready),
+        .host_out_flow_id(host_out_flow_id),
+        .host_out_value(host_out_value),
+        .enable_auto_adapt(enable_auto_adapt),
+        .obs_total_hop_count(obs_total_hop_count),
+        .obs_total_stall_count(obs_total_stall_count),
+        .obs_total_forward_count(obs_total_forward_count),
+        .obs_total_local_delivered_count(obs_total_local_delivered_count),
+        .obs_total_cache_hit_count(obs_total_cache_hit_count),
+        .obs_total_cache_lookup_count(obs_total_cache_lookup_count)
     );
 endmodule
 """
@@ -1867,6 +2356,7 @@ def emit_verilog(project: CompiledProject, schedule: SchedulePlan, out_dir: Path
         "wau_core_station.v": _render_core_station(project),
         "wau_core.v": _render_core(),
         "wau_coordinator.v": _render_coordinator(project),
+        "wau_host_mmio.v": _render_host_mmio(),
         f"{module_name}.v": _render_top(project),
     }
 

@@ -11,6 +11,9 @@ module wau_highway_mesh #(
     parameter CORE_ID_WIDTH = 8,
     parameter PAYLOAD_WIDTH = 64
 ) (
+    input wire clk,
+    input wire rst_n,
+
     input wire [CORE_COUNT-1:0] local_in_valid,
     output wire [CORE_COUNT-1:0] local_in_ready,
     input wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_in_dst,
@@ -19,7 +22,12 @@ module wau_highway_mesh #(
     output wire [CORE_COUNT-1:0] local_out_valid,
     input wire [CORE_COUNT-1:0] local_out_ready,
     output wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_out_dst,
-    output wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_out_payload
+    output wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_out_payload,
+
+    output wire [CORE_COUNT*32-1:0] router_hop_count,
+    output wire [CORE_COUNT*32-1:0] router_stall_count,
+    output wire [CORE_COUNT*32-1:0] router_local_delivered_count,
+    output wire [CORE_COUNT*32-1:0] router_forward_count
 );
     wire [CORE_COUNT-1:0] north_in_valid;
     wire [CORE_COUNT-1:0] north_in_ready;
@@ -76,6 +84,12 @@ module wau_highway_mesh #(
                     .CORE_ID_WIDTH(CORE_ID_WIDTH),
                     .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
                 ) router_u (
+                    .clk(clk),
+                    .rst_n(rst_n),
+                    .hop_count(router_hop_count[(CORE_INDEX*32) +: 32]),
+                    .stall_count(router_stall_count[(CORE_INDEX*32) +: 32]),
+                    .local_delivered_count(router_local_delivered_count[(CORE_INDEX*32) +: 32]),
+                    .forward_count(router_forward_count[(CORE_INDEX*32) +: 32]),
                     .local_in_valid(local_in_valid[CORE_INDEX]),
                     .local_in_ready(local_in_ready[CORE_INDEX]),
                     .local_in_dst(local_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),

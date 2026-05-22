@@ -198,6 +198,38 @@ class ProgramSpec:
     allow_out_of_order: bool
 
 
+_SUPPORTED_STATION_CACHE_POLICIES = ("fifo", "lru")
+
+
+@dataclass(frozen=True)
+class StationCacheSpec:
+    entries: int
+    replacement_policy: str
+
+    @staticmethod
+    def from_obj(value: Any) -> "StationCacheSpec":
+        if value is None:
+            return StationCacheSpec(entries=4, replacement_policy="fifo")
+        if not isinstance(value, dict):
+            raise ConfigError("compiler.station_cache must be an object")
+
+        entries = validate_range(
+            int(value.get("entries", 4)),
+            minimum=1,
+            name="compiler.station_cache.entries",
+        )
+        if entries > 32:
+            raise ConfigError("compiler.station_cache.entries must be <= 32")
+
+        policy = str(value.get("replacement_policy", "fifo")).strip().lower() or "fifo"
+        if policy not in _SUPPORTED_STATION_CACHE_POLICIES:
+            raise ConfigError(
+                "compiler.station_cache.replacement_policy must be one of: "
+                + ", ".join(_SUPPORTED_STATION_CACHE_POLICIES)
+            )
+        return StationCacheSpec(entries=entries, replacement_policy=policy)
+
+
 @dataclass(frozen=True)
 class CompilerSpec:
     routing: str
@@ -205,6 +237,7 @@ class CompilerSpec:
     fallback_radius: int
     allow_cycle_recurrence: bool
     core_capabilities: tuple[CoreCapabilitySpec, ...]
+    station_cache: StationCacheSpec
 
     @staticmethod
     def from_obj(value: Any) -> "CompilerSpec":
@@ -215,6 +248,7 @@ class CompilerSpec:
         if routing not in {"waterfall", "serpentine", "manual"}:
             raise ConfigError("compiler.routing must be waterfall, serpentine, or manual")
         core_capabilities = _parse_core_capabilities(value.get("core_capabilities"))
+        station_cache = StationCacheSpec.from_obj(value.get("station_cache"))
         return CompilerSpec(
             routing=routing,
             allow_adaptive_reroute=bool(value.get("allow_adaptive_reroute", True)),
@@ -223,6 +257,7 @@ class CompilerSpec:
             ),
             allow_cycle_recurrence=bool(value.get("allow_cycle_recurrence", True)),
             core_capabilities=core_capabilities,
+            station_cache=station_cache,
         )
 
 

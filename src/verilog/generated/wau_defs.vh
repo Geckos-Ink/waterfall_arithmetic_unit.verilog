@@ -19,6 +19,9 @@
 `define WAU_FLOW_COUNT 2
 `define WAU_MAX_STAGES 3
 `define WAU_OP_COUNT 5
+`define WAU_STATION_CACHE_ENTRIES 4
+`define WAU_STATION_CACHE_POLICY_FIFO 1
+// Station cache policy: fifo (4 entries)
 // Supported data types: int32, float16
 
 `define WAU_OPCODE_ADD 8'h01
