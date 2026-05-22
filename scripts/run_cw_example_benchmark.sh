@@ -1077,12 +1077,17 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, "src/python")
+from waugen.cw_reference import compute_expected_values
 
 out_config = Path(os.environ["CW_BENCH_OUT_CONFIG"])
 exec_flow_id = int(os.environ["CW_BENCH_EXEC_FLOW_ID"])
 timeout_cycles = int(os.environ["CW_BENCH_EXEC_TIMEOUT_CYCLES"])
 tb_path = Path(os.environ["CW_BENCH_EXEC_TB"])
+scoreboard_path = Path(os.environ.get("CW_BENCH_SCOREBOARD_JSON", ".build/cw_iverilog/cw_scoreboard.json"))
 
 payload = json.loads(out_config.read_text())
 flow_ids = sorted(
@@ -1106,6 +1111,22 @@ cases = [
     (8, -64, 17),
 ]
 
+expected_rows = compute_expected_values(out_config, exec_flow_id, cases)
+expected_by_case = {row["case"]: int(row["expected"]) for row in expected_rows}
+
+scoreboard_path.parent.mkdir(parents=True, exist_ok=True)
+scoreboard_path.write_text(
+    json.dumps(
+        {
+            "flow_id": exec_flow_id,
+            "compiled_config": str(out_config),
+            "cases": expected_rows,
+        },
+        indent=2,
+    )
+    + "\n"
+)
+
 
 def sv_lit(value: int) -> str:
     if value < 0:
@@ -1115,7 +1136,8 @@ def sv_lit(value: int) -> str:
 
 case_lines = "\n".join(
     [
-        f"        send_and_expect({exec_flow_id}, {sv_lit(a)}, {sv_lit(b)}, {case_id});"
+        f"        send_and_expect({exec_flow_id}, {sv_lit(a)}, {sv_lit(b)}, "
+        f"{case_id}, {sv_lit(expected_by_case[case_id])});"
         for case_id, a, b in cases
     ]
 )
@@ -1191,6 +1213,7 @@ module tb_wau_cw_compiled_exec;
         input signed [`WAU_DATA_WIDTH-1:0] a;
         input signed [`WAU_DATA_WIDTH-1:0] b;
         input integer case_id;
+        input signed [`WAU_DATA_WIDTH-1:0] expected;
         integer start_cycle;
         integer timeout;
         integer matched;
@@ -1206,13 +1229,24 @@ module tb_wau_cw_compiled_exec;
                         $display("FAIL: expected flow=%0d got flow=%0d", flow_id, host_out_flow_id);
                         $fatal(1);
                     end
+                    if (host_out_value !== expected) begin
+                        $display(
+                            "FAIL: CW_EXEC_BENCH case=%0d flow=%0d expected_value=%0d got_value=%0d",
+                            case_id,
+                            flow_id,
+                            expected,
+                            host_out_value
+                        );
+                        $fatal(1);
+                    end
                     matched = 1;
                     $display(
-                        "CW_EXEC_BENCH case=%0d flow=%0d latency_cycles=%0d out_value=%0d",
+                        "CW_EXEC_BENCH case=%0d flow=%0d latency_cycles=%0d out_value=%0d expected_value=%0d scoreboard=match",
                         case_id,
                         flow_id,
                         (cycle_count - start_cycle),
-                        host_out_value
+                        host_out_value,
+                        expected
                     );
                     timeout = {timeout_cycles};
                 end
@@ -1248,6 +1282,7 @@ endmodule
 
 tb_path.write_text(tb)
 print(f"[cw-bench] generated CW execution testbench: {tb_path}")
+print(f"[cw-bench] CW scoreboard expectations: {scoreboard_path}")
 PY
 
 echo "[cw-bench] run iverilog tests"
@@ -1381,19 +1416,22 @@ def parse_exec_metrics(exec_log_path: Path) -> list[dict[str, int]]:
     pattern = re.compile(
         r"CW_EXEC_BENCH case=(?P<case>[0-9]+) flow=(?P<flow>[0-9]+) "
         r"latency_cycles=(?P<lat>[0-9]+) out_value=(?P<out>-?[0-9]+)"
+        r"(?: expected_value=(?P<expected>-?[0-9]+) scoreboard=(?P<scoreboard>\w+))?"
     )
     for line in exec_log_path.read_text().splitlines():
         match = pattern.search(line)
         if not match:
             continue
-        rows.append(
-            {
-                "case": int(match.group("case")),
-                "flow": int(match.group("flow")),
-                "latency_cycles": int(match.group("lat")),
-                "out_value": int(match.group("out")),
-            }
-        )
+        row: dict[str, int] = {
+            "case": int(match.group("case")),
+            "flow": int(match.group("flow")),
+            "latency_cycles": int(match.group("lat")),
+            "out_value": int(match.group("out")),
+        }
+        if match.group("expected") is not None:
+            row["expected_value"] = int(match.group("expected"))
+            row["scoreboard"] = match.group("scoreboard") or "n/a"
+        rows.append(row)
     return sorted(rows, key=lambda row: row["case"])
 
 
@@ -1706,10 +1744,27 @@ lines = [
     f"benchmark_ranking_score: {benchmark_ranking_score:.2f}",
 ]
 
+scoreboard_total = 0
+scoreboard_matches = 0
 for row in exec_rows:
-    lines.append(
-        f"exec_case_{row['case']}: flow={row['flow']}, latency_cycles={row['latency_cycles']}, out_value={row['out_value']}"
+    detail = (
+        f"exec_case_{row['case']}: flow={row['flow']}, "
+        f"latency_cycles={row['latency_cycles']}, out_value={row['out_value']}"
     )
+    if "expected_value" in row:
+        scoreboard_total += 1
+        status = row.get("scoreboard", "n/a")
+        if status == "match" and int(row["out_value"]) == int(row["expected_value"]):
+            scoreboard_matches += 1
+        detail += (
+            f", expected_value={row['expected_value']}, scoreboard={row.get('scoreboard', 'n/a')}"
+        )
+    lines.append(detail)
+
+scoreboard_pass_ratio = (scoreboard_matches / scoreboard_total) if scoreboard_total else 0.0
+lines.append(f"scoreboard_total: {scoreboard_total}")
+lines.append(f"scoreboard_matches: {scoreboard_matches}")
+lines.append(f"scoreboard_pass_ratio: {scoreboard_pass_ratio:.4f}")
 
 lines.extend(
     [
@@ -1760,6 +1815,9 @@ if update_sidecar:
         "busiest_core_issue_count": busiest_core_issue_count,
         "busiest_core_busy_cycles": busiest_core_busy_cycles,
         "benchmark_ranking_score": round(benchmark_ranking_score, 2),
+        "scoreboard_total": scoreboard_total,
+        "scoreboard_matches": scoreboard_matches,
+        "scoreboard_pass_ratio": round(scoreboard_pass_ratio, 6),
     }
     latest_payload = {
         "format_version": 1,

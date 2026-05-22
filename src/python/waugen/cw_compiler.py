@@ -305,23 +305,125 @@ def _core_from_index(index: int, *, grid_x: int, grid_y: int) -> dict[str, int]:
     return {"x": norm % grid_x, "y": norm // grid_x}
 
 
+@dataclass(frozen=True)
+class _CoreCapabilityFilter:
+    op_caps: dict[tuple[int, int], frozenset[str]]
+    dtype_caps: dict[tuple[int, int], frozenset[str]]
+
+    def supports(self, x: int, y: int, *, op: str, dtype: str | None) -> bool:
+        key = (x, y)
+        allowed_ops = self.op_caps.get(key)
+        if allowed_ops is not None and op not in allowed_ops:
+            return False
+        allowed_dtypes = self.dtype_caps.get(key)
+        if dtype is not None and allowed_dtypes is not None and dtype not in allowed_dtypes:
+            return False
+        return True
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.op_caps and not self.dtype_caps
+
+
+_EMPTY_CAPABILITY_FILTER = _CoreCapabilityFilter(op_caps={}, dtype_caps={})
+
+
+def _capability_filter_from_payload(payload: dict[str, Any]) -> _CoreCapabilityFilter:
+    compiler_section = payload.get("compiler") or {}
+    if not isinstance(compiler_section, dict):
+        return _EMPTY_CAPABILITY_FILTER
+    raw_caps = compiler_section.get("core_capabilities")
+    if not isinstance(raw_caps, list) or not raw_caps:
+        return _EMPTY_CAPABILITY_FILTER
+
+    op_caps: dict[tuple[int, int], frozenset[str]] = {}
+    dtype_caps: dict[tuple[int, int], frozenset[str]] = {}
+    for entry in raw_caps:
+        if not isinstance(entry, dict):
+            continue
+        core = entry.get("core")
+        if not isinstance(core, dict):
+            continue
+        try:
+            cx = int(core["x"])
+            cy = int(core["y"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        key = (cx, cy)
+        ops = entry.get("operations")
+        if isinstance(ops, list) and ops:
+            op_caps[key] = frozenset(str(op) for op in ops)
+        dtypes = entry.get("data_types")
+        if isinstance(dtypes, list) and dtypes:
+            dtype_caps[key] = frozenset(str(dt) for dt in dtypes)
+
+    return _CoreCapabilityFilter(op_caps=op_caps, dtype_caps=dtype_caps)
+
+
 def _candidate_cores(
     *,
     base_index: int,
     grid_x: int,
     grid_y: int,
     count: int,
+    capabilities: _CoreCapabilityFilter = _EMPTY_CAPABILITY_FILTER,
+    op: str | None = None,
+    dtype: str | None = None,
 ) -> list[dict[str, int]]:
-    coords: list[dict[str, int]] = []
+    capability_filter_active = not capabilities.is_empty and op is not None
+    target_count = max(1, count)
+    core_count = max(1, grid_x * grid_y)
+
+    # Natural sequence: identical to the pre-capability behaviour, gives the autotuner
+    # a stable baseline when restrictions do not bite.
+    natural: list[dict[str, int]] = []
     seen: set[tuple[int, int]] = set()
-    for i in range(max(1, count)):
+    for i in range(target_count):
         cand = _core_from_index(base_index + i, grid_x=grid_x, grid_y=grid_y)
         key = (cand["x"], cand["y"])
         if key in seen:
             continue
         seen.add(key)
-        coords.append(cand)
-    return coords
+        natural.append(cand)
+
+    if not capability_filter_active:
+        return natural
+
+    compatible: list[dict[str, int]] = []
+    compatible_keys: set[tuple[int, int]] = set()
+    incompatible_seen = False
+    for cand in natural:
+        if capabilities.supports(cand["x"], cand["y"], op=op, dtype=dtype):
+            key = (cand["x"], cand["y"])
+            compatible.append(cand)
+            compatible_keys.add(key)
+        else:
+            incompatible_seen = True
+
+    if not incompatible_seen:
+        return natural
+
+    if not compatible:
+        # Every natural candidate is incompatible. Scan the rest of the grid for a
+        # capable core so downstream stages have a stable, deterministic primary.
+        for i in range(target_count, core_count):
+            cand = _core_from_index(base_index + i, grid_x=grid_x, grid_y=grid_y)
+            key = (cand["x"], cand["y"])
+            if key in compatible_keys:
+                continue
+            if not capabilities.supports(cand["x"], cand["y"], op=op, dtype=dtype):
+                continue
+            compatible.append(cand)
+            compatible_keys.add(key)
+            break
+
+    if not compatible:
+        # Capability filter eliminated every candidate: emit a single safe fallback
+        # so downstream validation will surface the precise "no compatible core" error.
+        fallback = _core_from_index(base_index, grid_x=grid_x, grid_y=grid_y)
+        compatible.append(fallback)
+
+    return compatible
 
 
 def _tile_iteration_hint(spec: CWKernelSpec, shape: CWWorkloadShape) -> int:
@@ -356,6 +458,7 @@ def build_flow_from_cw_program(
     parsed_spec_shape: tuple[CWKernelSpec, CWWorkloadShape] | None = None,
     max_in_flight_source: str = "explicit",
     dtype_source: str = "explicit",
+    capabilities: _CoreCapabilityFilter = _EMPTY_CAPABILITY_FILTER,
 ) -> dict[str, Any]:
     if parsed_spec_shape is None:
         spec, shape = parse_cw_program(program)
@@ -435,17 +538,25 @@ def build_flow_from_cw_program(
 
     nodes: list[dict[str, Any]] = []
 
+    def transfer_candidates(*, base_index: int, count_hint: int, op: str) -> list[dict[str, int]]:
+        return _candidate_cores(
+            base_index=base_index,
+            grid_x=grid_x,
+            grid_y=grid_y,
+            count=min(max(count_hint, transfer_candidate_count), available_cores),
+            capabilities=capabilities,
+            op=op,
+            dtype=dtype,
+        )
+
     nodes.append(
         {
             "id": "load_ifmap",
             "op": "add",
             "dtype": dtype,
             "placement": {
-                "candidate_cores": _candidate_cores(
-                    base_index=entry_index,
-                    grid_x=grid_x,
-                    grid_y=grid_y,
-                    count=min(max(2, transfer_candidate_count), available_cores),
+                "candidate_cores": transfer_candidates(
+                    base_index=entry_index, count_hint=2, op="add"
                 ),
                 "directive": default_transfer_directive,
             },
@@ -457,11 +568,8 @@ def build_flow_from_cw_program(
             "op": "add",
             "dtype": dtype,
             "placement": {
-                "candidate_cores": _candidate_cores(
-                    base_index=entry_index + lane_stride,
-                    grid_x=grid_x,
-                    grid_y=grid_y,
-                    count=min(max(2, transfer_candidate_count), available_cores),
+                "candidate_cores": transfer_candidates(
+                    base_index=entry_index + lane_stride, count_hint=2, op="add"
                 ),
                 "directive": default_transfer_directive,
             },
@@ -474,11 +582,8 @@ def build_flow_from_cw_program(
             "dtype": dtype,
             "deps": ["load_ifmap"],
             "placement": {
-                "candidate_cores": _candidate_cores(
-                    base_index=entry_index + (2 * lane_stride),
-                    grid_x=grid_x,
-                    grid_y=grid_y,
-                    count=min(max(2, transfer_candidate_count), available_cores),
+                "candidate_cores": transfer_candidates(
+                    base_index=entry_index + (2 * lane_stride), count_hint=2, op="add"
                 ),
                 "directive": default_transfer_directive,
             },
@@ -491,26 +596,28 @@ def build_flow_from_cw_program(
             "dtype": dtype,
             "deps": ["load_weights"],
             "placement": {
-                "candidate_cores": _candidate_cores(
-                    base_index=entry_index + (3 * lane_stride),
-                    grid_x=grid_x,
-                    grid_y=grid_y,
-                    count=min(max(2, transfer_candidate_count), available_cores),
+                "candidate_cores": transfer_candidates(
+                    base_index=entry_index + (3 * lane_stride), count_hint=2, op="add"
                 ),
                 "directive": default_transfer_directive,
             },
         }
     )
 
-    relu_nodes: list[str] = []
-    for lane in range(lanes):
-        lane_seed = (entry_index + 4 + (lane * lane_stride)) % available_cores
-        lane_candidates = _candidate_cores(
+    def lane_candidates_for(*, lane_seed: int, op: str) -> list[dict[str, int]]:
+        return _candidate_cores(
             base_index=lane_seed,
             grid_x=grid_x,
             grid_y=grid_y,
             count=min(max(2, lane_candidate_count), available_cores),
+            capabilities=capabilities,
+            op=op,
+            dtype=dtype,
         )
+
+    relu_nodes: list[str] = []
+    for lane in range(lanes):
+        lane_seed = (entry_index + 4 + (lane * lane_stride)) % available_cores
 
         mul_id = f"lane{lane}_mul"
         acc_id = f"lane{lane}_acc"
@@ -525,7 +632,7 @@ def build_flow_from_cw_program(
                 "dtype": dtype,
                 "deps": ["load_ifmap", "load_weights"],
                 "placement": {
-                    "candidate_cores": lane_candidates,
+                    "candidate_cores": lane_candidates_for(lane_seed=lane_seed, op="mul"),
                     "directive": default_compute_directive,
                 },
             }
@@ -537,7 +644,7 @@ def build_flow_from_cw_program(
                 "dtype": dtype,
                 "deps": [mul_id],
                 "placement": {
-                    "candidate_cores": lane_candidates,
+                    "candidate_cores": lane_candidates_for(lane_seed=lane_seed, op="add"),
                     "directive": default_compute_directive,
                 },
             }
@@ -549,7 +656,7 @@ def build_flow_from_cw_program(
                 "dtype": dtype,
                 "deps": [acc_id, "load_bias"],
                 "placement": {
-                    "candidate_cores": lane_candidates,
+                    "candidate_cores": lane_candidates_for(lane_seed=lane_seed, op="add"),
                     "directive": default_compute_directive,
                 },
             }
@@ -561,7 +668,7 @@ def build_flow_from_cw_program(
                 "dtype": dtype,
                 "deps": [bias_id],
                 "placement": {
-                    "candidate_cores": lane_candidates,
+                    "candidate_cores": lane_candidates_for(lane_seed=lane_seed, op="add"),
                     "directive": default_compute_directive,
                 },
             }
@@ -574,7 +681,7 @@ def build_flow_from_cw_program(
                 "immediate_b": 0,
                 "deps": [residual_id],
                 "placement": {
-                    "candidate_cores": lane_candidates,
+                    "candidate_cores": lane_candidates_for(lane_seed=lane_seed, op="max"),
                     "directive": default_compute_directive,
                 },
             }
@@ -588,16 +695,36 @@ def build_flow_from_cw_program(
             "dtype": dtype,
             "deps": relu_nodes + ["prefetch_next_ifmap"],
             "placement": {
-                "candidate_cores": _candidate_cores(
-                    base_index=counter_anchor,
-                    grid_x=grid_x,
-                    grid_y=grid_y,
-                    count=min(max(2, transfer_candidate_count), available_cores),
+                "candidate_cores": transfer_candidates(
+                    base_index=counter_anchor, count_hint=2, op="add"
                 ),
                 "directive": default_transfer_directive,
             },
         }
     )
+
+    # tile_counter is intentionally fixed/manual; report a non-blocking diagnostic
+    # if its anchor core cannot host the add+dtype combination so capability conflicts
+    # surface up the stack rather than later inside the compiler.
+    counter_core = _core_from_index(counter_anchor, grid_x=grid_x, grid_y=grid_y)
+    if not capabilities.supports(
+        counter_core["x"], counter_core["y"], op="add", dtype=dtype
+    ):
+        replacement = next(
+            (
+                _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y)
+                for i in range(1, available_cores)
+                if capabilities.supports(
+                    _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y)["x"],
+                    _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y)["y"],
+                    op="add",
+                    dtype=dtype,
+                )
+            ),
+            None,
+        )
+        if replacement is not None:
+            counter_core = replacement
 
     nodes.append(
         {
@@ -609,9 +736,7 @@ def build_flow_from_cw_program(
             "recurrent": True,
             "max_iterations": _tile_iteration_hint(spec, shape),
             "placement": {
-                "candidate_cores": [
-                    _core_from_index(counter_anchor, grid_x=grid_x, grid_y=grid_y)
-                ],
+                "candidate_cores": [counter_core],
                 "directive": "manual",
                 "fixed": True,
             },
@@ -625,11 +750,8 @@ def build_flow_from_cw_program(
             "immediate_b": 0,
             "deps": ["tile_counter"],
             "placement": {
-                "candidate_cores": _candidate_cores(
-                    base_index=counter_anchor + 1,
-                    grid_x=grid_x,
-                    grid_y=grid_y,
-                    count=min(max(1, transfer_candidate_count), available_cores),
+                "candidate_cores": transfer_candidates(
+                    base_index=counter_anchor + 1, count_hint=1, op="max"
                 ),
                 "directive": default_transfer_directive,
             },
@@ -668,6 +790,10 @@ def build_flow_from_cw_program(
             "placement_policy_compiled": resolved_placement_policy,
             "lowering_profile_preferred": spec.preferred_lowering_profile,
             "lowering_profile_compiled": resolved_lowering_profile,
+            "capability_filter_active": not capabilities.is_empty,
+            "capability_restricted_cores": sorted(
+                {f"{x},{y}" for (x, y) in (set(capabilities.op_caps) | set(capabilities.dtype_caps))}
+            ),
         },
     }
 
@@ -885,6 +1011,7 @@ def merge_cw_into_config(
         raise CWCompilerError("Base config root must be a JSON object")
 
     base_device = _load_base_device_profile(payload)
+    base_capabilities = _capability_filter_from_payload(payload)
     spec, shape = parse_cw_program(program)
 
     resolved_dtype = dtype
@@ -931,6 +1058,7 @@ def merge_cw_into_config(
         parsed_spec_shape=(spec, shape),
         max_in_flight_source=resolved_max_in_flight_source,
         dtype_source=resolved_dtype_source,
+        capabilities=base_capabilities,
     )
 
     _upsert_flow(payload=payload, flow=flow, replace_existing=replace_existing)

@@ -36,6 +36,28 @@ Implemented this cycle:
 - CW benchmark tuning update: staged autotune on 2026-05-17 UTC selected `lane=2`, `placement=balance`, `profile=throughput_optimized`, `priority=4`, `replicas=2`, `max_parallel=1`, `max_in_flight=2`, `load_balance=least_busy`, `scheduler_policy=weighted_fair`, reaching `exec_latency_cycles_avg=68.00`, `exec_latency_cycles_p95=70.00`, `makespan=42`, `fallback_ratio=0.2899`, `estimated_transfer_hops_total=54`.
 - CW stability update: a 5-run stability pass on 2026-05-17 UTC held `exec_latency_cycles_median=68.00` and `exec_latency_cycles_p95=68.00` with all 5 runs passing.
 
+## Progress Update (2026-05-22)
+Implemented this cycle:
+- Track B slice: CW lowering is now capability-aware. `merge_cw_into_config` reads
+  `compiler.core_capabilities` from the base config and prunes candidate cores whose
+  op/dtype capability set excludes the lowered node's op or dtype, scanning further
+  in the grid only when the natural sequence has no compatible core. `cw_hints` now
+  reports `capability_filter_active` and `capability_restricted_cores` so autotune
+  reports can attribute placement decisions to capability constraints.
+- Track E slice: CW execution testbench now validates output values, not timing
+  shape alone. The benchmark script computes per-case expected outputs through a
+  new `waugen.cw_reference` software model (one pass over the flow's linear stages,
+  mirroring the coordinator state machine) and embeds them in the SV testbench so
+  `host_out_value !== expected` triggers `$fatal`. Run logs and JSON sidecars now
+  carry `expected_value`, `scoreboard_total`, `scoreboard_matches`, and
+  `scoreboard_pass_ratio` for CI consumption.
+- Re-validated the autotuned config (`lane=2`, `placement=balance`,
+  `profile=throughput_optimized`, `priority=4`, `replicas=2`, `max_parallel=1`,
+  `max_in_flight=2`, `load_balance=least_busy`, `scheduler_policy=weighted_fair`)
+  on 2026-05-22 UTC: `exec_latency_cycles_avg=68.00`, makespan=42, scoreboard
+  pass ratio=1.0 over 8 deterministic cases. A 3-run multi-run pass held
+  `exec_latency_cycles_median=68.00` / `exec_latency_cycles_p95=68.00`.
+
 ## CW Compiler and Benchmark Next Steps (2026-05-18+)
 Goal: move from reference-level CW lowering to deeper, reproducible, performance-oriented compilation and execution validation.
 
@@ -95,7 +117,7 @@ Scope:
   - data-movement vs arithmetic op tagging in `cw_hints`.
 - Introduce optional lowering profiles (`reference`, `latency_optimized`, `throughput_optimized`). (supported)
 - Add compile-time sanity checks for inferred parallelism vs grid capacity to avoid pathological over-subscription. (supported for worker/COUT/device-capacity caps; still open for capability-aware preflight)
-- Add capability-aware candidate pruning during CW lowering so invalid candidate sets are avoided before `validate`.
+- Add capability-aware candidate pruning during CW lowering so invalid candidate sets are avoided before `validate`. (supported)
 
 Acceptance:
 - Lowered graphs remain valid for `validate`/`generate` across at least two device presets.
@@ -147,7 +169,7 @@ Acceptance:
 
 ### Track E: Execution Correctness Depth
 Scope:
-- Add CW-specific software reference model for smoke vector validation against RTL output values.
+- Add CW-specific software reference model for smoke vector validation against RTL output values. (supported via `waugen.cw_reference`; benchmark TB now `$fatal`s on value mismatch and `scoreboard_pass_ratio` is emitted to logs and sidecars)
 - Expand execution testbench vectors (signed/zero/mixed stress, boundary values, recurrent stress). (partially supported: wider deterministic stress vector set now in benchmark TB)
 - Add deterministic replay command for best/worst tuning runs from summary files.
 
@@ -156,9 +178,9 @@ Acceptance:
 - Failing vectors include replay parameters and seed in logs.
 
 ### Near-Term Targets
-1. Keep best-known `exec_latency_cycles_avg` at or below `68.00` while preserving pass status for all RTL tests and multirun stability.
-2. Add capability-aware CW candidate generation so known-invalid topology combinations fail earlier and less often during autotune.
-3. Add a CW software reference/value scoreboard so benchmark execution checks cover correctness, not timing shape alone.
+1. Keep best-known `exec_latency_cycles_avg` at or below `68.00` while preserving pass status for all RTL tests and multirun stability. (held at 68.00 on 2026-05-22 with scoreboard pass ratio 1.0 and 3-run stability median/p95=68.00)
+2. Add capability-aware CW candidate generation so known-invalid topology combinations fail earlier and less often during autotune. (supported)
+3. Add a CW software reference/value scoreboard so benchmark execution checks cover correctness, not timing shape alone. (supported)
 4. Stand up a first closed-loop FPGA benchmark path that can re-run workloads and remap programs on real hardware without full restart between each tuning attempt.
 5. Stand up a first architecture-search report that ranks at least core disposition, operation distribution, on-chip memory split, and external-DRAM usage for synthesis candidates.
 

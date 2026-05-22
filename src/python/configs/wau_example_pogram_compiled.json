@@ -582,10 +582,6 @@
               {
                 "x": 1,
                 "y": 2
-              },
-              {
-                "x": 2,
-                "y": 2
               }
             ],
             "directive": "prefer_balance"
@@ -614,10 +610,6 @@
               },
               {
                 "x": 1,
-                "y": 2
-              },
-              {
-                "x": 2,
                 "y": 2
               }
             ],
@@ -649,10 +641,6 @@
               {
                 "x": 1,
                 "y": 2
-              },
-              {
-                "x": 2,
-                "y": 2
               }
             ],
             "directive": "prefer_balance"
@@ -681,10 +669,6 @@
               },
               {
                 "x": 1,
-                "y": 2
-              },
-              {
-                "x": 2,
                 "y": 2
               }
             ],
@@ -716,10 +700,6 @@
               {
                 "x": 1,
                 "y": 2
-              },
-              {
-                "x": 2,
-                "y": 2
               }
             ],
             "directive": "prefer_balance"
@@ -742,10 +722,6 @@
               },
               {
                 "x": 1,
-                "y": 2
-              },
-              {
-                "x": 2,
                 "y": 2
               }
             ],
@@ -786,14 +762,6 @@
               {
                 "x": 1,
                 "y": 2
-              },
-              {
-                "x": 2,
-                "y": 2
-              },
-              {
-                "x": 3,
-                "y": 2
               }
             ],
             "directive": "prefer_balance"
@@ -826,6 +794,11 @@
         "placement_policy_compiled": "balance",
         "lowering_profile_preferred": "latency_optimized",
         "lowering_profile_compiled": "throughput_optimized",
+        "capability_filter_active": true,
+        "capability_restricted_cores": [
+          "2,2",
+          "3,2"
+        ],
         "program_priority_preferred": 4,
         "program_priority_compiled": 4,
         "program_load_balance_preferred": "least_busy",

@@ -278,6 +278,90 @@ class CWCompilerTests(unittest.TestCase):
         with self.assertRaises(CWCompilerError):
             parse_cw_program("void main() { int x = 1; }")
 
+    def test_capability_aware_candidate_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            base_path = td_path / "base.json"
+            out_path = td_path / "out.json"
+
+            base_payload = _base_payload()
+            # Restrict a handful of cores so the compiler/CW lowering must skip them
+            # for ops they do not support:
+            #   - (1,1) only does add (no mul, no max)
+            #   - (0,1) and (2,1) only do add+mul (no max)
+            # All other cores remain unrestricted.
+            base_payload["compiler"] = {
+                "allow_cycle_recurrence": True,
+                "core_capabilities": [
+                    {
+                        "core": {"x": 0, "y": 1},
+                        "operations": ["add", "mul"],
+                        "data_types": ["int32"],
+                    },
+                    {
+                        "core": {"x": 1, "y": 1},
+                        "operations": ["add"],
+                        "data_types": ["int32"],
+                    },
+                    {
+                        "core": {"x": 2, "y": 1},
+                        "operations": ["add", "mul"],
+                        "data_types": ["int32"],
+                    },
+                ],
+            }
+            base_path.write_text(json.dumps(base_payload, indent=2) + "\n")
+
+            program = Path("docs/example-pogram.cw").read_text()
+            flow, _program_obj = merge_cw_into_config(
+                base_config_path=base_path,
+                out_config_path=out_path,
+                program=program,
+                flow_id=88,
+                name="cw_capability_aware",
+                entry_x=0,
+                entry_y=0,
+                replace_existing=False,
+                dtype="int32",
+                lane_parallelism=2,
+                placement_policy="balance",
+                lowering_profile="reference",
+                program_id=88,
+                program_replicas=1,
+                program_max_parallel_flows=1,
+            )
+
+            mul_nodes = [n for n in flow["nodes"] if n.get("op") == "mul"]
+            self.assertTrue(mul_nodes, "expected at least one mul lane node")
+            for node in mul_nodes:
+                candidate_coords = {
+                    (cand["x"], cand["y"])
+                    for cand in node["placement"]["candidate_cores"]
+                }
+                # (1,1) has no mul capability so it must be filtered out for mul nodes.
+                self.assertNotIn(
+                    (1, 1),
+                    candidate_coords,
+                    f"mul node {node['id']} candidates {candidate_coords} include (1,1) which lacks mul capability",
+                )
+
+            max_nodes = [n for n in flow["nodes"] if n.get("op") == "max"]
+            self.assertTrue(max_nodes, "expected at least one max node")
+            for node in max_nodes:
+                candidate_coords = {
+                    (cand["x"], cand["y"])
+                    for cand in node["placement"]["candidate_cores"]
+                }
+                # None of the restricted lane-1 cores include max in their op set.
+                self.assertFalse(
+                    candidate_coords & {(0, 1), (1, 1), (2, 1)},
+                    f"max node {node['id']} candidates {candidate_coords} include lane-1 cores lacking max capability",
+                )
+
+            hints = flow.get("cw_hints", {})
+            self.assertTrue(hints.get("capability_filter_active"))
+            self.assertIn("1,1", hints.get("capability_restricted_cores", []))
+
 
 if __name__ == "__main__":
     unittest.main()
