@@ -1,0 +1,15 @@
+build/
+quartus/wau_rtl/
+quartus/db/
+quartus/incremental_db/
+quartus/output_files/
+quartus/*.qws
+quartus/*.rpt
+quartus/*.summary
+quartus/*.smsg
+quartus/*.bak
+quartus/*.qpf.bak
+quartus/*.qsf.bak
+quartus/*.qarlog
+*.pyc
+__pycache__/

@@ -1,0 +1,5 @@
+QUARTUS_VERSION = "25.1"
+
+# Revisions
+
+PROJECT_REVISION = "wau_de0_nano_basic"
