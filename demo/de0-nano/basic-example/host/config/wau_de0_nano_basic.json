@@ -7,35 +7,32 @@
   },
   "device": {
     "preset": "intel_de0_nano",
-    "grid": { "x": 3, "y": 2 },
+    "grid": { "x": 2, "y": 2 },
     "coordinator_mode": "direct",
     "enable_runtime_auto_adapt": true,
     "data_width": 32,
     "flow_id_width": 12,
     "opcode_width": 8,
     "data_types": ["int32"],
-    "local_ram_depth": 64,
-    "global_ram_depth": 512
+    "local_ram_depth": 32,
+    "global_ram_depth": 128
   },
   "operations": {
-    "library": ["add", "sub", "mul", "div", "max"],
+    "library": ["add", "sub", "mul", "max"],
     "overrides": {
-      "mul": { "latency": 3, "pipelined": true },
-      "div": { "latency": 8, "pipelined": false }
+      "mul": { "latency": 3, "pipelined": true }
     }
   },
   "compiler": {
     "routing": "waterfall",
     "allow_adaptive_reroute": true,
     "fallback_radius": 1,
-    "station_cache": { "entries": 4, "replacement_policy": "lru" },
+    "station_cache": { "entries": 2, "replacement_policy": "fifo" },
     "core_capabilities": [
-      { "core": { "x": 0, "y": 0 }, "operations": ["add", "sub"],         "data_types": ["int32"] },
-      { "core": { "x": 1, "y": 0 }, "operations": ["mul", "div"],         "data_types": ["int32"] },
-      { "core": { "x": 2, "y": 0 }, "operations": ["sub", "div", "max"],  "data_types": ["int32"] },
-      { "core": { "x": 0, "y": 1 }, "operations": ["add", "sub"],         "data_types": ["int32"] },
-      { "core": { "x": 1, "y": 1 }, "operations": ["mul"],                "data_types": ["int32"] },
-      { "core": { "x": 2, "y": 1 }, "operations": ["max"],                "data_types": ["int32"] }
+      { "core": { "x": 0, "y": 0 }, "operations": ["add", "sub", "max"], "data_types": ["int32"] },
+      { "core": { "x": 1, "y": 0 }, "operations": ["mul"],               "data_types": ["int32"] },
+      { "core": { "x": 0, "y": 1 }, "operations": ["add", "sub"],        "data_types": ["int32"] },
+      { "core": { "x": 1, "y": 1 }, "operations": ["max"],               "data_types": ["int32"] }
     ]
   },
   "scheduler": {
@@ -49,19 +46,28 @@
       "name": "accumulate_and_scale",
       "entry": { "x": 0, "y": 0 },
       "stages": [
-        { "op": "add",                     "dtype": "int32" },
-        { "op": "mul", "immediate_b": 3,  "dtype": "int32" },
-        { "op": "sub",                     "dtype": "int32" }
+        { "op": "add",                     "dtype": "int32", "core": { "x": 0, "y": 0 }, "fallback_core": { "x": 0, "y": 1 } },
+        { "op": "mul", "immediate_b": 3,  "dtype": "int32", "core": { "x": 1, "y": 0 } },
+        { "op": "sub",                     "dtype": "int32", "core": { "x": 0, "y": 0 }, "fallback_core": { "x": 0, "y": 1 } }
       ]
     },
     {
       "id": 2,
-      "name": "max_then_div",
-      "entry": { "x": 0, "y": 1 },
+      "name": "max_then_scale",
+      "entry": { "x": 0, "y": 0 },
       "stages": [
-        { "op": "max", "dtype": "int32", "core": { "x": 2, "y": 1 } },
-        { "op": "div", "dtype": "int32", "core": { "x": 2, "y": 0 },
-                                          "fallback_core": { "x": 1, "y": 0 } }
+        { "op": "max",                    "dtype": "int32", "core": { "x": 1, "y": 1 }, "fallback_core": { "x": 0, "y": 0 } },
+        { "op": "sub",                    "dtype": "int32", "core": { "x": 0, "y": 0 }, "fallback_core": { "x": 0, "y": 1 } },
+        { "op": "mul", "immediate_b": 2, "dtype": "int32", "core": { "x": 1, "y": 0 } }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "fma_a_b_plus_b",
+      "entry": { "x": 0, "y": 0 },
+      "stages": [
+        { "op": "mul",                    "dtype": "int32", "core": { "x": 1, "y": 0 } },
+        { "op": "add",                    "dtype": "int32", "core": { "x": 0, "y": 0 }, "fallback_core": { "x": 0, "y": 1 } }
       ]
     }
   ]

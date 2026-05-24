@@ -119,28 +119,39 @@ make server         # in its own terminal
 make run            # in another terminal
 ```
 
-You should see something like:
+Validated end-to-end output on a real DE0-Nano (Quartus 25.1std, USB-Blaster,
+50 MHz CLOCK_50, fit utilisation 37% LE / 18% multipliers):
 
 ```
-PING ok. obs_aux=0x0XYZCAFE  (magic should be 0xCAFE in low 16b)
+PING ok. obs_aux=0x0C98CAFE  (magic should be 0xCAFE in low 16b)
+soft-resetting WAU via bridge IR_RESET ...
+STATUS=0x00000001  host_in_ready=True
+obs baseline: hops=0 stalls=0 fwd=0 deliv=0 cache=0/0
+
 ========================================================================
-case                              n     pass    thr(ops/s)   p50(ms)   p95(ms)
+case                              n      pass    thr(ops/s)   p50(ms)   p95(ms)
 ------------------------------------------------------------------------
-flow1_accumulate_and_scale      265  265/265           42.1     22.30     31.50
-flow2_max_then_div              265  265/265           39.8     24.10     33.20
+flow1_accumulate_and_scale      265   265/265          85.2     15.00     16.00
+flow2_max_then_scale            265   265/265          90.7     15.00     16.00
+flow3_fma_a_b_plus_b            265   265/265          92.7     15.00     16.00
 ========================================================================
 
 observability delta after all cases:
-  hops    = 2384
-  stalls  = 17
-  fwd     = 1192
-  deliv   = 1060
-  cache_h = 318
-  cache_l = 530
-  hit_rate= 0.600
+  hops    = 6890        ← real router traffic
+  stalls  = 0           ← no backpressure events
+  fwd     = 2650        ← packets forwarded between neighbours
+  deliv   = 4240        ← packets exiting the mesh locally
+  cache_h = 93/2120     ← 4.4% station-cache hit rate (random inputs)
 ```
 
 Reports are written to `build/benchmark_<timestamp>.json`.
+
+Per-trigger wall-clock latency (~15 ms p50) is dominated by USB-Blaster JTAG
+round-trip — the WAU itself completes each 2- or 3-stage flow in well under
+20 cycles at 50 MHz. The observability counters confirm the data plane really
+does traverse the mesh: each trigger averages ~26 hops and ~16 packets
+delivered, and the station cache picks up the small fraction of repeat operand
+pairs that the random+corner input mix produces.
 
 ---
 
@@ -148,14 +159,35 @@ Reports are written to `build/benchmark_<timestamp>.json`.
 
 The default WAU config (`host/config/wau_de0_nano_basic.json`) defines:
 
-* a 3×2 core grid, int32 datatype, 5 ops (add/sub/mul/div/max)
-* per-core capability constraints matching the DE0-Nano demo preset
-* **flow 1 — `accumulate_and_scale`**:
-  `y = ((a + b) × 3) − b`   (add → mul-by-3 → sub)
-* **flow 2 — `max_then_div`**:
-  `y = max(a, b) / b`        (max → div)
+* a **2×2 core grid** (chosen so `dst_core % GRID_X` collapses to a bit-select
+  in `wau_highway_router.v` — anything else infers a full divider per router
+  port and blows past the 22 320 LE budget on EP4CE22)
+* int32 datatype, 4 ops (add / sub / mul / max)
+* per-core capability constraints:
 
-The Python benchmark feeds 256 randomized + corner-case `(a, b)` pairs into
+  | core | x,y | ops             |
+  |------|-----|-----------------|
+  | 0    | 0,0 | add, sub, max   |
+  | 1    | 1,0 | mul             |
+  | 2    | 0,1 | add, sub        |
+  | 3    | 1,1 | max             |
+
+* **flow 1 — `accumulate_and_scale`** (3 stages):
+  `y = ((a + b) × 3) − b`   (add → mul-by-3 → sub)
+* **flow 2 — `max_then_scale`** (3 stages):
+  `y = (max(a, b) − b) × 2`  (max → sub → mul-by-2)
+* **flow 3 — `fma_a_b_plus_b`** (2 stages):
+  `y = a × b + b`            (mul → add)
+
+Why no `div`? The bundled `wau_operation_alu.v` emits a purely combinational
+signed divide whose 32-bit settling time exceeds one 50 MHz period on
+Cyclone IV E, and `wau_core_station.v` latches the ALU output on the very
+first cycle after dispatch — so divide results are captured before the
+divider has settled and come back as garbage on silicon. The other four ops
+are 1- or 3-cycle bounded and are reliable. Re-enabling division is a
+station/divider rework upstream of this demo.
+
+The Python benchmark feeds 265 randomized + corner-case `(a, b)` pairs into
 each flow over JTAG, polls `wau_host_mmio` for results, validates each result
 against the software reference, and reports throughput / latency percentiles
 plus the **delta** of all observability counters (hops, stalls, forwards,

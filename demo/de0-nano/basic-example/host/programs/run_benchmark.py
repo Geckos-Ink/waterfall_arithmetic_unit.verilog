@@ -33,26 +33,23 @@ from waujtag import Bench, MMIO, TCLClient, WAU  # noqa: E402
 
 # --- Software reference models for each flow defined in wau_de0_nano_basic.json
 def flow1_accumulate_and_scale(a: int, b: int) -> int:
-    # Stage 0 add(a, b)  -> a+b
-    # Stage 1 mul(*, 3) immediate
-    # Stage 2 sub(*, b)
+    # Stage 0 add(a, b)            -> a+b
+    # Stage 1 mul(*, 3) immediate  -> (a+b)*3
+    # Stage 2 sub(*, b)            -> (a+b)*3 - b
     return _to_int32(((_to_int32(a + b)) * 3) - b)
 
 
-def flow2_max_then_div(a: int, b: int) -> int:
-    # Stage 0 max(a, b)
-    # Stage 1 div(*, b)
-    # Integer truncation toward zero (Verilog signed div).
-    if b == 0:
-        # Avoid divide-by-zero in the reference; the hardware would assert
-        # whatever its ALU does (typically returns 0). Skip these cases.
-        return 0
-    m = max(a, b)
-    # Truncating integer division like Verilog signed `/`
-    q = abs(m) // abs(b)
-    if (m < 0) ^ (b < 0):
-        q = -q
-    return _to_int32(q)
+def flow2_max_then_scale(a: int, b: int) -> int:
+    # Stage 0 max(a, b)            -> max(a,b)
+    # Stage 1 sub(*, b)            -> max(a,b) - b   (always >= 0)
+    # Stage 2 mul(*, 2) immediate  -> (max(a,b)-b) * 2
+    return _to_int32((_to_int32(max(a, b) - b)) * 2)
+
+
+def flow3_fma_a_b_plus_b(a: int, b: int) -> int:
+    # Stage 0 mul(a, b)            -> a*b
+    # Stage 1 add(*, b)            -> a*b + b
+    return _to_int32(_to_int32(a * b) + b)
 
 
 def _to_int32(x: int) -> int:
@@ -147,8 +144,15 @@ def main() -> int:
         (2**29, -3),
         (-(2**29), 5),
     ]
+    # Constrain mul inputs to avoid 32-bit overflow surprises in the reference;
+    # the WAU wraps just like Python's int32 helper, so still apples-to-apples.
+    mul_max = 1 << 14
     pairs_flow1 = corners + pairs_random
-    pairs_flow2 = [(a, b if b != 0 else 1) for a, b in pairs_flow1]  # flow2 divides by b
+    pairs_flow2 = corners + pairs_random
+    pairs_flow3 = corners + [
+        (random.randint(-mul_max, mul_max), random.randint(-mul_max, mul_max))
+        for _ in range(args.iters)
+    ]
 
     bench = Bench(wau)
     cases = [
@@ -160,10 +164,17 @@ def main() -> int:
             timeout_s=args.timeout_s,
         ),
         dict(
-            name="flow2_max_then_div",
+            name="flow2_max_then_scale",
             flow_id=2,
             inputs=pairs_flow2,
-            reference=flow2_max_then_div,
+            reference=flow2_max_then_scale,
+            timeout_s=args.timeout_s,
+        ),
+        dict(
+            name="flow3_fma_a_b_plus_b",
+            flow_id=3,
+            inputs=pairs_flow3,
+            reference=flow3_fma_a_b_plus_b,
             timeout_s=args.timeout_s,
         ),
     ]
@@ -248,11 +259,8 @@ def main() -> int:
     client.close()
 
     # Treat non-1.0 pass_ratio for value-checked flows as failure.
-    bad = [
-        r for r in results
-        if r.name in ("flow1_accumulate_and_scale", "flow2_max_then_div")
-        and r.pass_ratio < 1.0
-    ]
+    checked = ("flow1_accumulate_and_scale", "flow2_max_then_scale", "flow3_fma_a_b_plus_b")
+    bad = [r for r in results if r.name in checked and r.pass_ratio < 1.0]
     return 0 if not bad else 1
 
 

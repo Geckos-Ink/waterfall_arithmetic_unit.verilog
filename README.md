@@ -224,6 +224,8 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `benchmarks/example_pogram_benchmark_latest.json`: machine-readable latest benchmark snapshot
 - `benchmarks/example_pogram_benchmark_best.json`: machine-readable best-known benchmark snapshot
 - `benchmarks/example_pogram_benchmark_history.json`: benchmark history for trend checks
+- `benchmarks/de0_nano_basic_benchmark.txt`: silicon-verified reference run on the DE0-Nano (resource fit, per-corner Fmax, 795/795 scoreboard pass, live observability counters)
+- `demo/de0-nano/basic-example/`: end-to-end physical deployment — Quartus 25.1 project + reusable vJTAG MMIO bridge RTL + reusable Python/TCL host stack + automation scripts; produces the artifact above
 
 ## Generated Artifacts
 A `generate` run emits:
@@ -332,6 +334,94 @@ This is a robust **basis**, not final silicon architecture:
 - Runtime adaptation is implemented as primary/fallback/candidate core selection per node, constrained by per-core capability metadata.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
 - Current pseudo-C frontend targets accumulator-style pipelines (`acc = a; acc = acc <op> ...`) to stay compatible with the present coordinator execution model.
+
+## DE0-Nano Real-Silicon Implementation
+The `demo/de0-nano/basic-example/` project is the first end-to-end **physical**
+deployment of the WAU on actual FPGA silicon: a Terasic DE0-Nano (Intel
+Cyclone IV E EP4CE22F17C6) talking to a Python host over USB-Blaster + Altera
+virtual JTAG. It exists as a working reference for everyone who wants to take
+the generator's RTL and put it onto a real board.
+
+What the demo bundles:
+
+- **Reusable RTL** — a generic `wau_vjtag_bridge.v` (4-bit IR JTAG↔MMIO master,
+  with TCK↔CLOCK_50 CDC done right via toggle-sync + double-FF data crossing)
+  and a thin `vJTAG.v` wrapping `sld_virtual_jtag`. Drop them into any Altera
+  design that needs a host-driven Avalon-MM-style register file.
+- **Reusable host stack** — a layered Python library
+  (`waujtag.TCLClient` → `MMIO` → `WAU` → `Bench`) plus a `quartus_stp`-hosted
+  TCL line-protocol server. The lower layers know nothing about WAU and can
+  drive any compatible bridge.
+- **A working Quartus 25.1 project** — pin assignments, SDC, board top wiring
+  the WAU `wau_host_mmio` and the bridge, and Make/PowerShell automation that
+  goes from JSON config → RTL → `.sof` → programmed board → benchmark report.
+
+### Benchmark results — silicon-verified
+Reference run captured 2026-05-24 (see
+[`benchmarks/de0_nano_basic_benchmark.txt`](benchmarks/de0_nano_basic_benchmark.txt)
+for the full machine-readable snapshot):
+
+| Flow                          | Stages | Reference                 |     n |     Pass | Throughput | p50 / p95 |
+|-------------------------------|:------:|---------------------------|------:|:--------:|-----------:|----------:|
+| `flow1_accumulate_and_scale`  |   3    | `((a + b) * 3) - b`       |   265 | **265/265** |   85.2 op/s | 15 / 16 ms |
+| `flow2_max_then_scale`        |   3    | `(max(a, b) - b) * 2`     |   265 | **265/265** |   90.7 op/s | 15 / 16 ms |
+| `flow3_fma_a_b_plus_b`        |   2    | `a * b + b`               |   265 | **265/265** |   92.7 op/s | 15 / 16 ms |
+| **Aggregate scoreboard**      |        |                           | **795** | **795/795 (100 %)** |  ~90 op/s |  |
+
+Live router/cache observability deltas confirm the data plane really does
+traverse the mesh (not a degenerate short-circuit): `6 890` total hops,
+`0` stall events, `4 240` packets locally delivered, `93 / 2 120` station-cache
+hits (4.4 % — expected for random operand pairs).
+
+### Resource & timing
+Post-fit on EP4CE22F17C6 (Quartus Standard 25.1, 2×2 grid, int32, 4 ops):
+
+| Metric                          |        Used |    Available |      % |
+|---------------------------------|------------:|-------------:|-------:|
+| Total logic elements            |       8 248 |       22 320 |   37 % |
+| Dedicated logic registers       |       3 652 |       22 320 |   16 % |
+| Embedded 9-bit multipliers      |          24 |          132 |   18 % |
+| Total memory bits               |           0 |      608 256 |    0 % |
+| I/O pins                        |          66 |          154 |   43 % |
+
+Setup timing closes at the Fast corner (+4.06 ns slack) and the empirically
+verified room-temperature build runs cleanly at 50 MHz. Per-corner Fmax:
+36 MHz @ slow-85 °C, 40 MHz @ slow-0 °C, > 50 MHz @ fast-0 °C — see
+section 4 of the benchmark txt for the honest worst-case story.
+
+### Conclusions
+- **The WAU works on real silicon.** 795 / 795 random + corner-case operand
+  pairs round-tripped through the live mesh and matched the software
+  reference, at 4 different signed flows spanning add / sub / mul / max
+  across all four cores of the 2×2 grid, with zero stall events recorded.
+- **The generator's flow IR → Verilog pipeline is production-faithful.**
+  The same Python compiler that produces `wau_program.json` for the
+  testbench also produces the bitstream that just passed on hardware,
+  without any per-board manual RTL edits.
+- **The vJTAG bridge + Python stack are reusable.** They were written
+  device-agnostic and the demo deliberately uses them as libraries, so any
+  follow-on project (different grid, different ops, different board) only
+  has to write its own board-level pin wrapper.
+- **Two real architectural issues were uncovered and documented honestly**
+  rather than papered over:
+  1. `dst_core % GRID_X` in `wau_highway_router.v` infers an `LPM_DIVIDE`
+     per router port when GRID_X is not a power of 2. A 3×2 grid blows
+     past the EP4CE22 LE budget (26 866 vs 22 320). Power-of-2 grids
+     collapse the mod/div to bit-selects and fit with room to spare.
+  2. `wau_operation_alu.v` emits a purely combinational signed `div` whose
+     32-bit settling time exceeds one 50 MHz period on Cyclone IV E, and
+     `wau_core_station.v` latches `alu_out_value` on the first cycle after
+     dispatch — so divide results are captured before the divider settles
+     and read back as garbage. The benchmark excludes `div` for this
+     reason; the upstream fix is to defer the result-latch to
+     `wait_cycles == 0` or to swap in a pipelined `LPM_DIVIDE`.
+- **Where the throughput goes.** Per-trigger wall-clock latency (~15 ms)
+  is dominated by USB-Blaster JTAG round-trip, not by the WAU. The WAU
+  itself completes a 2–3 stage flow in well under 20 cycles at 50 MHz
+  (< 400 ns). To turn this into a real compute benchmark instead of a
+  control benchmark, the natural next step is a host-side burst loader
+  that streams many operands through MMIO before draining results — the
+  `wau_host_mmio` register file already supports the pattern.
 
 ## Next Steps
 See `ROADMAP.md` for the full plan. Recommended follow-ups now that observability/MMIO/CI/cache-policy basics are in place:

@@ -13,9 +13,13 @@ param(
 $ErrorActionPreference = "Stop"
 
 $DemoRoot = (Resolve-Path "$PSScriptRoot\..").Path
-$Sof = Join-Path $DemoRoot "quartus\output_files\wau_de0_nano_basic.sof"
+# Quartus 25.1std drops .sof directly into the project dir unless an
+# output_files dir is explicitly configured.
+$Sof = Join-Path $DemoRoot "quartus\wau_de0_nano_basic.sof"
 if (-not (Test-Path $Sof)) {
-    throw "$Sof not found. Run scripts\build.ps1 first."
+    $alt = Join-Path $DemoRoot "quartus\output_files\wau_de0_nano_basic.sof"
+    if (Test-Path $alt) { $Sof = $alt }
+    else { throw "$Sof not found. Run scripts\build.ps1 first." }
 }
 
 $pgm = Join-Path $QuartusRoot "quartus\bin64\quartus_pgm.exe"

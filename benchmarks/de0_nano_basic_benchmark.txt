@@ -1,0 +1,153 @@
+==============================================================================
+WAU on real silicon — DE0-Nano basic-example reference benchmark
+==============================================================================
+
+Reference run captured 2026-05-24, used as the canonical "WAU computes
+correctly on a real FPGA" baseline. Re-run with:
+
+    cd demo/de0-nano/basic-example
+    .\scripts\build.ps1          # generate RTL + Quartus full compile
+    .\scripts\program.ps1        # download .sof to USB-Blaster
+    .\scripts\server.ps1         # start TCL vJTAG MMIO server (port 2540)
+    .\scripts\run.ps1 -Iters 256 # python benchmark over JTAG
+
+------------------------------------------------------------------------------
+1. Hardware
+------------------------------------------------------------------------------
+Board                 : Terasic DE0-Nano
+Device                : Intel Cyclone IV E EP4CE22F17C6
+Tools                 : Quartus Prime Standard 25.1std.0 Build 1129
+Programming           : USB-Blaster (volatile JTAG, RAM-only load)
+System clock          : CLOCK_50 (50 MHz on-board oscillator, PIN_R8)
+
+------------------------------------------------------------------------------
+2. WAU configuration
+------------------------------------------------------------------------------
+Grid                  : 2 x 2   (4 cores, 8 routers across 2 meshes)
+Data width            : int32 signed
+Flow id width         : 12 bits
+Operations            : add (lat=1), sub (lat=1), mul (lat=3 pipelined), max (lat=1)
+Station cache         : 2 entries, FIFO replacement
+Core capability map   :
+  (0,0) -> add, sub, max     (coordinator-attached)
+  (1,0) -> mul
+  (0,1) -> add, sub
+  (1,1) -> max
+
+Flows (analytical, expressed in WAU flow IR):
+  flow 1 "accumulate_and_scale" (3 stages):  y = ((a + b) * 3) - b
+  flow 2 "max_then_scale"       (3 stages):  y = (max(a, b) - b) * 2
+  flow 3 "fma_a_b_plus_b"       (2 stages):  y = a * b + b
+
+The 2x2 grid is deliberate: with a non-power-of-2 GRID_X, the per-router
+"dst_core % GRID_X" / "dst_core / GRID_X" infers a full LPM_DIVIDE per port,
+and the design blows past the 22320-LE budget on EP4CE22 (measured 26866 LEs
+at 3x2). Power-of-2 grid -> shift+mask routing -> fits with room to spare.
+
+------------------------------------------------------------------------------
+3. Resource utilization (post-fit, Quartus Standard 25.1)
+------------------------------------------------------------------------------
+Total logic elements           :   8 248 / 22 320  (37 %)
+  Total combinational functions:   7 318 / 22 320  (33 %)
+  Dedicated logic registers    :   3 652 / 22 320  (16 %)
+Total pins                     :      66 /    154  (43 %)
+Total memory bits              :       0 / 608 256 ( 0 %)
+Embedded 9-bit multipliers     :      24 /    132  (18 %)
+Total PLLs                     :       0 /      4
+
+------------------------------------------------------------------------------
+4. Timing (TimeQuest, signoff corners)
+------------------------------------------------------------------------------
+Clock constraint               : create_clock -period 20.000 [CLOCK_50]
+                                 (= 50 MHz target)
+
+Per-corner Fmax (CLOCK_50):
+  Slow 1200 mV 85 C            :  36.18 MHz   (setup slack -7.642 ns @ 50 MHz)
+  Slow 1200 mV  0 C            :  40.35 MHz   (setup slack -4.786 ns @ 50 MHz)
+  Fast 1200 mV  0 C            :  > 50 MHz    (setup slack +4.064 ns @ 50 MHz)
+
+Worst-case hold slack          :  +0.178 ns (positive across all corners)
+altera_reserved_tck (vJTAG)    :  124-140 MHz Fmax (well above the ~10 MHz
+                                  USB-Blaster JTAG clock used in practice)
+
+Honest reading:
+  The design DOES meet hold across all corners and meets setup at the fast
+  corner, but does NOT meet 50 MHz setup at the slow-85C signoff corner
+  (Fmax there is ~36 MHz). On a room-temperature DE0-Nano with a typical
+  EP4CE22 sample, the bitstream runs correctly at 50 MHz — and that is what
+  this benchmark captures empirically. For production-grade reliability the
+  options are: (a) constrain the clock to ~33 MHz and route via a PLL, or
+  (b) optimize the combinational paths in the highway router arbitration
+  (most setup failures live there).
+
+------------------------------------------------------------------------------
+5. Functional benchmark over vJTAG (the actual on-silicon result)
+------------------------------------------------------------------------------
+Inputs per case        : 265   (9 hand-picked corner cases + 256 deterministic
+                                  random pairs in [-2^30, 2^30))
+Random seed            : 0xC0FFEE
+Software reference     : pure-Python int32 model bundled with the demo
+
+Per-case results (wall-clock latency is end-to-end USB-Blaster round-trip):
+
+  case                            n      pass         throughput   p50     p95
+  -------------------------------------------------------------- ------- ------
+  flow1_accumulate_and_scale    265   265/265  100 %    85.2 op/s  15 ms  16 ms
+  flow2_max_then_scale          265   265/265  100 %    90.7 op/s  15 ms  16 ms
+  flow3_fma_a_b_plus_b          265   265/265  100 %    92.7 op/s  15 ms  16 ms
+
+Aggregate scoreboard            :  795 / 795 PASS (1.000 pass_ratio)
+Aggregate wall time             :  8.89 s for 795 triggers + result reads
+Aggregate observed throughput   :  ~90 ops/s end-to-end JTAG-bound
+
+------------------------------------------------------------------------------
+6. Observability counters (live WAU traffic, post-run delta)
+------------------------------------------------------------------------------
+obs_total_hop_count              :  6 890   (router hops across both meshes)
+obs_total_stall_count            :      0   (no backpressure events)
+obs_total_forward_count          :  2 650   (packets handed neighbor-to-neighbor)
+obs_total_local_delivered_count  :  4 240   (packets exiting the mesh locally)
+obs_total_cache_hit_count        :     93
+obs_total_cache_lookup_count     :  2 120
+Station-cache hit rate           :  0.044   (4.4 %; random inputs as expected)
+
+Per-flow breakdown:
+  flow1: hops= 2 120  fwd=  530  deliv= 1 590  cache=   0/795 (0.0 %)
+  flow2: hops= 3 180  fwd= 1 590  deliv= 1 590  cache=  93/795 (11.7 %)
+  flow3: hops= 1 590  fwd=  530  deliv= 1 060  cache=   0/530 (0.0 %)
+
+Sanity-check: flow 2 (3 stages, max@(1,1) - sub - mul) has the most hops
+because the entry stage runs at the far corner (1,1) and every packet has
+to traverse both meshes back to the coordinator at (0,0). Flow 3's
+2-stage chain is shortest and matches.
+
+------------------------------------------------------------------------------
+7. Known issues (documented honestly so they don't regress silently)
+------------------------------------------------------------------------------
+* `div` is intentionally excluded from this benchmark. The bundled
+  wau_operation_alu.v emits a purely combinational signed divide; on
+  Cyclone IV E its propagation exceeds one 50 MHz period, and
+  wau_core_station.v latches alu_out_value on the first cycle after
+  dispatch — so divide results are captured before the divider settles
+  and come back as garbage on real silicon (verified: 1000/7 reads back as
+  143 instead of 142; some inputs read as 0x1FFFFF / 0x7FFFF garbage).
+  Upstream fix path: defer the result latch in wau_core_station.v to
+  wait_cycles==0, or replace the combinational divide with a pipelined
+  LPM_DIVIDE clocked at the configured latency.
+
+* Setup timing closes only at the Fast corner (see section 4). On a hot
+  worst-case EP4CE22 the design would need either a slower clock (~33 MHz
+  via PLL) or arbitration-path optimization in wau_highway_router.v.
+  Empirically this benchmark runs perfectly on a room-temperature board.
+
+* The bitstream is RAM-only (JTAG load). It must be re-downloaded after
+  every power cycle. Production flow would write the EPCS config flash.
+
+------------------------------------------------------------------------------
+8. Reproducibility checksum
+------------------------------------------------------------------------------
+.sof file size       :  709 461 bytes
+Quartus checksum     :  0x008B8F08    (reported by quartus_pgm at download)
+Python report sidecar:  demo/de0-nano/basic-example/build/benchmark_final.json
+
+==============================================================================
