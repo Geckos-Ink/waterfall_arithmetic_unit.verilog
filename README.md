@@ -1,6 +1,8 @@
 # Waterfall Arithmetic Unit - Verilog implementation
 Python-driven generator for a baseline **Waterfall Arithmetic Unit (WAU)** architecture in Verilog/SystemVerilog.
 
+![](https://github.com/Geckos-Ink/waterfall_arithmetic_unit.verilog/blob/main/tools/wau-pipelines-viewer/examples/wau_3x3_demo.gif?raw=true)
+
 This repository now contains a working foundation for:
 - device-aware WAU configuration (real FPGA presets included),
 - flow compilation (flow stages -> core assignments with fallback cores),
