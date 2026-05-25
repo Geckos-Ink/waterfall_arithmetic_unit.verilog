@@ -208,3 +208,4 @@ __marimo__/
 .DS_Store
 
 .build/
+tools/wau-pipelines-viewer/examples/wau_3x3.mov
