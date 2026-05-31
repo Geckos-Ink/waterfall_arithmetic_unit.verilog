@@ -296,6 +296,29 @@ class SchedulerSpec:
 
 
 @dataclass(frozen=True)
+class CoordinatorSpec:
+    """Hardware capacity of the generated coordinator. `max_in_flight` is the
+    number of distinct flows the coordinator can keep executing concurrently on
+    the core mesh (one accumulator context per slot). `1` reproduces the legacy
+    strictly-serial coordinator."""
+
+    max_in_flight: int
+
+    @staticmethod
+    def from_obj(value: Any) -> "CoordinatorSpec":
+        value = value or {}
+        if not isinstance(value, dict):
+            raise ConfigError("coordinator must be an object")
+        max_in_flight = validate_range(
+            int(value.get("max_in_flight", 4)),
+            minimum=1,
+            maximum=16,
+            name="coordinator.max_in_flight",
+        )
+        return CoordinatorSpec(max_in_flight=max_in_flight)
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     project_name: str
     output_module_name: str
@@ -307,6 +330,7 @@ class ProjectConfig:
     programs: tuple[ProgramSpec, ...]
     compiler: CompilerSpec
     scheduler: SchedulerSpec
+    coordinator: CoordinatorSpec
 
 
 def _parse_dtype(value: Any, *, field_name: str) -> str:
@@ -911,6 +935,7 @@ def load_config(path: Path) -> ProjectConfig:
     programs = _load_programs(payload.get("programs"), flows=flows)
     compiler = CompilerSpec.from_obj(payload.get("compiler", {}))
     scheduler = SchedulerSpec.from_obj(payload.get("scheduler", {}))
+    coordinator = CoordinatorSpec.from_obj(payload.get("coordinator", {}))
 
     op_names = {op.name for op in operations}
     data_types = set(device.supported_data_types)
@@ -969,4 +994,5 @@ def load_config(path: Path) -> ProjectConfig:
         programs=programs,
         compiler=compiler,
         scheduler=scheduler,
+        coordinator=coordinator,
     )

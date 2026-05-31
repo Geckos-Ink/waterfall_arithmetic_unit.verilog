@@ -30,13 +30,13 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
     - `PYTHONPATH=src/python python3 scripts/run_randomized_stress.py --start-seed 2000 --count 25 --report .build/stress/randomized.json`
 
 ## Ownership Boundaries
-- `config.py`: schema and validation only (includes `compiler.station_cache`, `compiler.core_capabilities`, and `scheduler.locality_bias` schema).
+- `config.py`: schema and validation only (includes `compiler.station_cache`, `compiler.core_capabilities`, `scheduler.locality_bias`, and `coordinator.max_in_flight` schema).
 - `compiler.py`: mapping flows/nodes onto 2D cores and adaptive placement strategy.
 - `basic_compiler.py`: expression/pseudo-C lowering rules for basic WAU compilation.
 - `cw_compiler.py`: `.cw` kernel-structured program lowering into DAG flow/program configs; reads `compiler.core_capabilities` for capability-aware candidate pruning.
 - `cw_reference.py`: software reference model for CW flows (one pass over `flow.stages` linear order, mirroring the coordinator state machine); consumed by the benchmark scoreboard and tests.
 - `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.
-- `verilog_emit.py`: text emission only; no scheduling decisions should live here. Also owns the per-router/per-station observability counter wiring and the `wau_host_mmio` register file emission.
+- `verilog_emit.py`: text emission only; no scheduling decisions should live here. Also owns the per-router/per-station observability counter wiring, the `wau_host_mmio` register file emission, and the multi-issue `wau_coordinator` emission (N-slot in-flight table sized by `coordinator.max_in_flight` / `WAU_COORD_MAX_IN_FLIGHT`).
 - Generated files under `src/verilog/generated/` are build outputs and may be overwritten.
 - `.github/workflows/ci.yml`: CI matrix (python tests, randomized stress, iverilog tests, CW benchmark) — keep aligned with the local Core Workflow steps.
 
@@ -48,6 +48,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - Compiler core capability constraints must reference existing operations/data types.
 - `compiler.station_cache.entries` must stay within `[1, 32]`; `replacement_policy` must be `fifo` or `lru`. The matching `WAU_STATION_CACHE_*` defs in `wau_defs.vh` must agree with the emitted `wau_core_station.v`.
 - `scheduler.locality_bias` must be `>= 0`. It is a pure core-selection tiebreaker (after earliest-free-cycle), so it must never change makespan/latency for `locality_bias=0.0`; the default `0.0` must reproduce the prior schedule byte-for-byte (guarded by `tests/python/test_scheduler_locality.py`). It is a Python-side scheduling knob only and emits no RTL/`wau_defs.vh` changes.
+- `coordinator.max_in_flight` must be in `[1,16]` and must match the emitted `WAU_COORD_MAX_IN_FLIGHT` macro and the `wau_coordinator` `MAX_IN_FLIGHT` localparam. The coordinator must preserve per-flow semantics: a single in-flight flow stays cycle-identical to the legacy serial design (`tb_wau_top_demo` timing, CW exec per-case latencies, and the scoreboard must not regress), unknown flow ids stay accepted-but-dropped, and `tb_wau_coordinator_multiissue` must keep proving ≥2 cores busy concurrently for independent flows. Result matching relies on at most one in-flight slot per flow id (`host_in_ready` enforces this) since the dispatch/result packet format carries no tag.
 - Verilog macros in `wau_defs.vh` must match emitted modules.
 - `wau_top` must keep exporting the `obs_total_*` observability bus; `wau_host_mmio` must keep its existing register map (CTRL/STATUS/FLOW_ID/IN_A/IN_B/TRIGGER/OUT_FLOW/OUT_VAL/HOPS/STALLS/FORWARDS/DELIVRD/CACHE_H/CACHE_L) stable so host software targeting it doesn't silently break.
 - The CW software reference (`waugen.cw_reference.evaluate_flow`) must produce the same `host_out_value` as the generated RTL for the deterministic benchmark cases; the generated CW exec testbench `$fatal`s on mismatch.

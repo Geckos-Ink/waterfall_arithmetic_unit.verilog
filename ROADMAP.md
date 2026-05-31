@@ -88,6 +88,39 @@ Implemented this cycle:
   and PR, uploading benchmark logs, scoreboard JSON, randomized-stress JSON,
   and generated RTL as workflow artifacts (30-day retention).
 
+## Progress Update (2026-06-01)
+Implemented this cycle:
+- Phase 1 / Phase 5 slice (multi-issue coordinator — parallel cores now used at
+  runtime): redesigned the generated `wau_coordinator.v` from a strictly serial
+  single-`accumulator` state machine (`ST_IDLE → ST_DISPATCH → ST_WAIT_RESULT`,
+  one outstanding dispatch) into an N-slot multi-issue coordinator. It now keeps
+  up to `coordinator.max_in_flight` **distinct** flows executing concurrently
+  across the mesh: a dispatch arbiter issues one packet per cycle (preferring a
+  slot whose chosen core is free), while many slots can be awaiting results at
+  once, so independent flows overlap on different cores.
+  - New `coordinator.max_in_flight` config knob (int `[1,16]`, default `4`)
+    flows into a `WAU_COORD_MAX_IN_FLIGHT` macro and the coordinator's
+    `MAX_IN_FLIGHT` localparam. `1` reproduces the legacy serial coordinator.
+  - Correctness/timing preserved: per-flow semantics are the same linear
+    accumulator chain, so a single in-flight flow is **cycle-identical** to the
+    old design. `tb_wau_top_demo` finishes at the same time, the CW exec
+    scoreboard still passes 1.0 with identical per-case latencies, and the
+    unknown-flow-id drop behaviour is retained.
+  - Result matching is by `flow_id + stage + src_core`; `host_in_ready` blocks a
+    second copy of an already-in-flight flow id, keeping matching unambiguous
+    **without** widening the dispatch/result packet format with a tag (no mesh/
+    station/core interface change). Widening to a dispatch tag (to allow
+    concurrent same-flow-id replicas) is a follow-up.
+  - New directed RTL test `tests/rtl/tb_wau_coordinator_multiissue.v` injects two
+    independent flows and asserts ≥2 cores are busy in the same cycle (observed:
+    2), proving the mesh is used at runtime; new
+    `tests/python/test_coordinator_config.py` guards the schema + emission.
+- Diagnosis recorded: the emitted `wau_schedule.hex/json` are still artifacts
+  only — no RTL consumes them. The multi-issue coordinator re-derives concurrency
+  at runtime from in-flight slots rather than replaying the compiled schedule;
+  feeding the compiled schedule (per-stage core assignments / ordering) into the
+  coordinator is a larger follow-up.
+
 ## Progress Update (2026-05-31)
 Implemented this cycle:
 - Track C / Phase 5 slice (routing efficiency): added a routing-aware,
@@ -312,8 +345,17 @@ Goal: improve throughput, power behavior, and scalability.
 Possible work:
 - Multi-entry station input/result caching and reuse policy. (supported: configurable entries + FIFO/LRU policy via `compiler.station_cache`)
 - Deeper pipelining for expensive operations (`mul/div/mod`).
-- Flow batching and multi-packet in-flight orchestration.
+- Flow batching and multi-packet in-flight orchestration. (partially supported:
+  `wau_coordinator` now keeps `coordinator.max_in_flight` distinct flows in
+  flight concurrently; still open: concurrent same-flow-id replicas via a
+  dispatch tag, and intra-flow DAG-branch concurrency for non-linear flows.)
 - Adaptive reroute policy beyond primary/fallback (N candidates).
+- Viewer/observability follow-up: the pipelines viewer trace
+  (`tools/wau-pipelines-viewer`) captures per-core dispatch/result plus
+  aggregate hop/stall/forward counters but has **no per-link data-plane packet
+  trace**, so data-in-motion is not animated. Add per-router/per-link packet
+  trace emission + a parallel data-movement-and-operation view now that the
+  coordinator actually drives concurrent traffic.
 - Quantitative area/timing analysis scripts per device preset.
 - Automatic design-space exploration for FPGA synthesis candidates:
   - core disposition / grid reshaping,

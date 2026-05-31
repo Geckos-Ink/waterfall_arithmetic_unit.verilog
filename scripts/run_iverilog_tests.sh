@@ -39,6 +39,17 @@ run_test tb_wau_top_demo \
   "$OUT_DIR/wau_top.v" \
   "tests/rtl/tb_wau_top_demo.v"
 
+run_test tb_wau_coordinator_multiissue \
+  "$OUT_DIR/wau_operation_alu.v" \
+  "$OUT_DIR/wau_neighbor_forward.v" \
+  "$OUT_DIR/wau_highway_router.v" \
+  "$OUT_DIR/wau_highway_mesh.v" \
+  "$OUT_DIR/wau_core_station.v" \
+  "$OUT_DIR/wau_core.v" \
+  "$OUT_DIR/wau_coordinator.v" \
+  "$OUT_DIR/wau_top.v" \
+  "tests/rtl/tb_wau_coordinator_multiissue.v"
+
 run_test tb_wau_highway_mesh \
   "$OUT_DIR/wau_neighbor_forward.v" \
   "$OUT_DIR/wau_highway_router.v" \

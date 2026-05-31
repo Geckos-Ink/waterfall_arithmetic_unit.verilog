@@ -20,7 +20,7 @@ This repository now contains a working foundation for:
 - routing-aware (locality-weighted) core selection via `scheduler.locality_bias` (default off): biases candidate cores toward their dependencies' placed cores to cut transfer hops without inflating makespan/latency,
 - constrained pseudo-C accumulator frontend (`compile-pseudoc`) and kernel-style `.cw` frontend (`compile-cw`) in addition to expression compilation,
 - CW software reference model + benchmark value scoreboard (`scoreboard_pass_ratio` gate on top of latency/makespan),
-- Verilog emission for coordinator, core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
+- Verilog emission for a multi-issue coordinator (keeps up to `coordinator.max_in_flight` distinct flows executing concurrently across the core mesh, so independent flows actually overlap on different cores at runtime), core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
 - configurable station cache size and replacement policy (FIFO/LRU) via `compiler.station_cache`,
 - runtime observability counters for highway hops/stalls/forwards/local-deliveries and per-core cache hit/lookup rate, aggregated at top-level and exposed via MMIO,
 - CI matrix (python tests + randomized stress + iverilog tests + autotuned CW benchmark) with artifact archival.
@@ -277,6 +277,8 @@ Main JSON fields:
   - `strategy` (`round_robin`, `serial`, or `dependency_aware`)
   - `program_policy` (`weighted_fair`, `strict_priority`, `round_robin`)
   - `locality_bias` (float `>= 0`, default `0.0`): routing-aware core-selection tiebreaker that weights each candidate core by its Manhattan hop distance to the cores holding the node's dependency results. Applied only after the earliest-free-cycle key, so it shrinks transfer hops without inflating makespan/latency; `0.0` disables it and reproduces the untuned schedule exactly.
+- `coordinator`
+  - `max_in_flight` (int `[1,16]`, default `4`): hardware capacity of the generated `wau_coordinator` — the number of **distinct** flows it can keep executing concurrently across the core mesh (one accumulator context per slot). Independent flows injected back-to-back overlap on different cores instead of running strictly one-at-a-time. `1` reproduces the legacy serial coordinator. Emitted as `WAU_COORD_MAX_IN_FLIGHT`. Per-flow results are unchanged; a single in-flight flow keeps identical timing.
 - `flows`
   - `id`, `name`, `entry`, optional `exit`
   - per-stage: `op`, optional `core`, `fallback_core`, `immediate_b`, `allow_adaptive`, `dtype`

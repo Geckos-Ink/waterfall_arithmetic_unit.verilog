@@ -47,6 +47,7 @@ def _render_defs(project: CompiledProject) -> str:
     lines.append(f"`define WAU_DATA_TYPE_COUNT {len(cfg.device.supported_data_types)}")
     lines.append(f"`define WAU_FLOW_COUNT {len(project.flows)}")
     lines.append(f"`define WAU_MAX_STAGES {project.max_stages}")
+    lines.append(f"`define WAU_COORD_MAX_IN_FLIGHT {cfg.coordinator.max_in_flight}")
     lines.append(f"`define WAU_OP_COUNT {len(cfg.operations)}")
     station_cache = cfg.compiler.station_cache
     lines.append(f"`define WAU_STATION_CACHE_ENTRIES {station_cache.entries}")
@@ -1250,29 +1251,59 @@ module wau_coordinator #(
 
     input wire [CORE_COUNT-1:0] core_busy
 );
-    localparam ST_IDLE = 2'd0;
-    localparam ST_DISPATCH = 2'd1;
-    localparam ST_WAIT_RESULT = 2'd2;
+    localparam MAX_IN_FLIGHT = `WAU_COORD_MAX_IN_FLIGHT;
 
-    reg [1:0] state;
-    reg [7:0] current_flow_slot;
-    reg [FLOW_ID_WIDTH-1:0] current_flow_id;
-    reg [7:0] current_stage;
-    reg [7:0] waiting_core;
-    reg signed [DATA_WIDTH-1:0] accumulator;
-    reg signed [DATA_WIDTH-1:0] operand_b;
+    // Multi-issue slot table. Each slot holds one in-flight flow's accumulator
+    // context; the coordinator keeps up to MAX_IN_FLIGHT *distinct* flows
+    // executing concurrently across the core mesh. Per-flow semantics are
+    // identical to the legacy serial coordinator (one accumulator chain walked
+    // stage-by-stage), so a single in-flight flow keeps cycle-identical timing
+    // while independent flows now overlap on different cores.
+    reg                          slot_valid     [0:MAX_IN_FLIGHT-1];
+    reg [7:0]                    slot_flow_slot [0:MAX_IN_FLIGHT-1];
+    reg [FLOW_ID_WIDTH-1:0]      slot_flow_id   [0:MAX_IN_FLIGHT-1];
+    reg [7:0]                    slot_stage     [0:MAX_IN_FLIGHT-1];
+    reg signed [DATA_WIDTH-1:0]  slot_acc       [0:MAX_IN_FLIGHT-1];
+    reg signed [DATA_WIDTH-1:0]  slot_opb       [0:MAX_IN_FLIGHT-1];
+    reg                          slot_awaiting  [0:MAX_IN_FLIGHT-1];
+    reg [7:0]                    slot_wait_core [0:MAX_IN_FLIGHT-1];
+    reg                          slot_done      [0:MAX_IN_FLIGHT-1];
+    reg signed [DATA_WIDTH-1:0]  slot_outval    [0:MAX_IN_FLIGHT-1];
 
-    wire [7:0] stage_last;
-    wire [OPCODE_WIDTH-1:0] stage_opcode;
-    wire [7:0] stage_primary_core;
-    wire [7:0] stage_fallback_core;
-    wire stage_use_immediate;
-    wire signed [DATA_WIDTH-1:0] stage_immediate_b;
+    // Combinational selections, driven by the always @(*) blocks below.
+    reg        disp_found;
+    reg [7:0]  disp_slot;
+    reg [7:0]  disp_core;
+    reg        res_found;
+    reg [7:0]  res_slot;
+    reg        out_found;
+    reg [7:0]  out_slot;
+    reg        alloc_found;
+    reg [7:0]  alloc_slot;
+    reg        flow_busy;
 
-    reg [7:0] chosen_core;
+    // Arbiter scratch.
+    reg [7:0]  cc_p;
+    reg [7:0]  cc_f;
+    reg [7:0]  cc;
+    reg        any_found;
+    reg [7:0]  any_slot;
+    reg [7:0]  any_core;
+    reg [7:0]  sel_flow_slot;
+    reg [7:0]  sel_stage;
+    integer    di;
+    integer    ri;
+    integer    oi;
+    integer    ai;
+    integer    fi;
+    integer    k;
+    reg        latched_now;
 
-    assign host_in_ready = (state == ST_IDLE) && !host_out_valid;
-    assign result_pkt_ready = (state == ST_WAIT_RESULT);
+    // Accept a new flow when a slot is free and that flow id is not already in
+    // flight (keeps result matching by flow+stage unambiguous without widening
+    // the dispatch/result packet format with a tag).
+    assign host_in_ready = alloc_found && !flow_busy;
+    assign result_pkt_ready = res_found;
 
     function [7:0] flow_slot_from_id;
         input [FLOW_ID_WIDTH-1:0] flow_id;
@@ -1370,111 +1401,186 @@ module wau_coordinator #(
         end
     endfunction
 
-    assign stage_last = flow_last_stage(current_flow_slot);
-    assign stage_opcode = flow_stage_opcode(current_flow_slot, current_stage);
-    assign stage_primary_core = flow_stage_primary_core(current_flow_slot, current_stage);
-    assign stage_fallback_core = flow_stage_fallback_core(current_flow_slot, current_stage);
-    assign stage_use_immediate = flow_stage_use_immediate(current_flow_slot, current_stage);
-    assign stage_immediate_b = flow_stage_immediate_b(current_flow_slot, current_stage);
-
+    // ---- dispatch arbiter + packet drive -------------------------------
+    // Pick a dispatchable slot (valid, not awaiting a result, not finished),
+    // preferring one whose chosen core is currently free so independent flows
+    // light up different cores in the same cycle window. One dispatch is issued
+    // per cycle, but many slots can be awaiting results at once -> real overlap.
     always @(*) begin
-        chosen_core = stage_primary_core;
-        if (enable_auto_adapt &&
-            (stage_fallback_core != stage_primary_core) &&
-            core_busy[stage_primary_core] &&
-            !core_busy[stage_fallback_core]) begin
-            chosen_core = stage_fallback_core;
+        disp_found = 1'b0;
+        disp_slot  = 8'd0;
+        disp_core  = 8'd0;
+        any_found  = 1'b0;
+        any_slot   = 8'd0;
+        any_core   = 8'd0;
+        for (di = 0; di < MAX_IN_FLIGHT; di = di + 1) begin
+            if (slot_valid[di] && !slot_awaiting[di] && !slot_done[di] &&
+                (slot_flow_slot[di] != 8'hFF)) begin
+                cc_p = flow_stage_primary_core(slot_flow_slot[di], slot_stage[di]);
+                cc_f = flow_stage_fallback_core(slot_flow_slot[di], slot_stage[di]);
+                cc = cc_p;
+                if (enable_auto_adapt && (cc_f != cc_p) &&
+                    core_busy[cc_p] && !core_busy[cc_f]) begin
+                    cc = cc_f;
+                end
+                if (!any_found) begin
+                    any_found = 1'b1;
+                    any_slot  = di;
+                    any_core  = cc;
+                end
+                if (!disp_found && !core_busy[cc]) begin
+                    disp_found = 1'b1;
+                    disp_slot  = di;
+                    disp_core  = cc;
+                end
+            end
+        end
+        if (!disp_found && any_found) begin
+            disp_found = 1'b1;
+            disp_slot  = any_slot;
+            disp_core  = any_core;
+        end
+
+        sel_flow_slot = slot_flow_slot[disp_slot];
+        sel_stage     = slot_stage[disp_slot];
+
+        dispatch_pkt_valid         = disp_found;
+        dispatch_pkt_dst_core      = disp_core;
+        dispatch_pkt_flow_id       = slot_flow_id[disp_slot];
+        dispatch_pkt_opcode        = flow_stage_opcode(sel_flow_slot, sel_stage);
+        dispatch_pkt_a             = slot_acc[disp_slot];
+        dispatch_pkt_b             = slot_opb[disp_slot];
+        dispatch_pkt_use_immediate = flow_stage_use_immediate(sel_flow_slot, sel_stage);
+        dispatch_pkt_immediate_b   = flow_stage_immediate_b(sel_flow_slot, sel_stage);
+        dispatch_pkt_stage_id      = sel_stage;
+    end
+
+    // ---- result matcher: map an incoming result to its awaiting slot ----
+    always @(*) begin
+        res_found = 1'b0;
+        res_slot  = 8'd0;
+        for (ri = 0; ri < MAX_IN_FLIGHT; ri = ri + 1) begin
+            if (!res_found && slot_valid[ri] && slot_awaiting[ri] &&
+                (slot_flow_id[ri]   == result_pkt_flow_id) &&
+                (slot_stage[ri]     == result_pkt_stage_id) &&
+                (slot_wait_core[ri] == result_pkt_src_core)) begin
+                res_found = 1'b1;
+                res_slot  = ri;
+            end
+        end
+    end
+
+    // ---- completed-output selector + free-slot/flow guards -------------
+    always @(*) begin
+        out_found = 1'b0;
+        out_slot  = 8'd0;
+        for (oi = 0; oi < MAX_IN_FLIGHT; oi = oi + 1) begin
+            if (!out_found && slot_valid[oi] && slot_done[oi]) begin
+                out_found = 1'b1;
+                out_slot  = oi;
+            end
         end
     end
 
     always @(*) begin
-        dispatch_pkt_valid = 1'b0;
-        dispatch_pkt_dst_core = 8'd0;
-        dispatch_pkt_flow_id = {{FLOW_ID_WIDTH{{1'b0}}}};
-        dispatch_pkt_opcode = {{OPCODE_WIDTH{{1'b0}}}};
-        dispatch_pkt_a = {{DATA_WIDTH{{1'b0}}}};
-        dispatch_pkt_b = {{DATA_WIDTH{{1'b0}}}};
-        dispatch_pkt_use_immediate = 1'b0;
-        dispatch_pkt_immediate_b = {{DATA_WIDTH{{1'b0}}}};
-        dispatch_pkt_stage_id = 8'd0;
-
-        if (state == ST_DISPATCH && current_flow_slot != 8'hFF) begin
-            dispatch_pkt_valid = 1'b1;
-            dispatch_pkt_dst_core = chosen_core;
-            dispatch_pkt_flow_id = current_flow_id;
-            dispatch_pkt_opcode = stage_opcode;
-            dispatch_pkt_a = accumulator;
-            dispatch_pkt_b = operand_b;
-            dispatch_pkt_use_immediate = stage_use_immediate;
-            dispatch_pkt_immediate_b = stage_immediate_b;
-            dispatch_pkt_stage_id = current_stage;
+        alloc_found = 1'b0;
+        alloc_slot  = 8'd0;
+        for (ai = 0; ai < MAX_IN_FLIGHT; ai = ai + 1) begin
+            if (!alloc_found && !slot_valid[ai]) begin
+                alloc_found = 1'b1;
+                alloc_slot  = ai;
+            end
         end
     end
 
+    always @(*) begin
+        flow_busy = 1'b0;
+        for (fi = 0; fi < MAX_IN_FLIGHT; fi = fi + 1) begin
+            if (slot_valid[fi] && (slot_flow_id[fi] == host_in_flow_id)) begin
+                flow_busy = 1'b1;
+            end
+        end
+    end
+
+    // ---- sequential state ----------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state <= ST_IDLE;
-            current_flow_slot <= 8'hFF;
-            current_flow_id <= {{FLOW_ID_WIDTH{{1'b0}}}};
-            current_stage <= 8'd0;
-            waiting_core <= 8'd0;
-            accumulator <= {{DATA_WIDTH{{1'b0}}}};
-            operand_b <= {{DATA_WIDTH{{1'b0}}}};
-            host_out_valid <= 1'b0;
+            host_out_valid   <= 1'b0;
             host_out_flow_id <= {{FLOW_ID_WIDTH{{1'b0}}}};
-            host_out_value <= {{DATA_WIDTH{{1'b0}}}};
+            host_out_value   <= {{DATA_WIDTH{{1'b0}}}};
+            for (k = 0; k < MAX_IN_FLIGHT; k = k + 1) begin
+                slot_valid[k]     <= 1'b0;
+                slot_flow_slot[k] <= 8'hFF;
+                slot_flow_id[k]   <= {{FLOW_ID_WIDTH{{1'b0}}}};
+                slot_stage[k]     <= 8'd0;
+                slot_acc[k]       <= {{DATA_WIDTH{{1'b0}}}};
+                slot_opb[k]       <= {{DATA_WIDTH{{1'b0}}}};
+                slot_awaiting[k]  <= 1'b0;
+                slot_wait_core[k] <= 8'd0;
+                slot_done[k]      <= 1'b0;
+                slot_outval[k]    <= {{DATA_WIDTH{{1'b0}}}};
+            end
         end else begin
+            latched_now = 1'b0;
+
+            // drain a consumed output
             if (host_out_valid && host_out_ready) begin
                 host_out_valid <= 1'b0;
             end
 
-            case (state)
-                ST_IDLE: begin
-                    if (host_in_valid && host_in_ready) begin
-                        current_flow_slot <= flow_slot_from_id(host_in_flow_id);
-                        current_flow_id <= host_in_flow_id;
-                        current_stage <= 8'd0;
-                        accumulator <= host_in_a;
-                        operand_b <= host_in_b;
+            // accept a new flow into a free slot; unknown flow ids are consumed
+            // but never allocated -> silently dropped (legacy behaviour).
+            if (host_in_valid && host_in_ready && alloc_found) begin
+                if (flow_slot_from_id(host_in_flow_id) != 8'hFF) begin
+                    slot_valid[alloc_slot]     <= 1'b1;
+                    slot_flow_slot[alloc_slot] <= flow_slot_from_id(host_in_flow_id);
+                    slot_flow_id[alloc_slot]   <= host_in_flow_id;
+                    slot_stage[alloc_slot]     <= 8'd0;
+                    slot_acc[alloc_slot]       <= host_in_a;
+                    slot_opb[alloc_slot]       <= host_in_b;
+                    slot_awaiting[alloc_slot]  <= 1'b0;
+                    slot_done[alloc_slot]      <= 1'b0;
+                end
+            end
 
-                        if (flow_slot_from_id(host_in_flow_id) != 8'hFF) begin
-                            state <= ST_DISPATCH;
-                        end
+            // dispatch handshake: mark the issued slot awaiting its core result
+            if (dispatch_pkt_valid && dispatch_pkt_ready && disp_found) begin
+                slot_awaiting[disp_slot]  <= 1'b1;
+                slot_wait_core[disp_slot] <= disp_core;
+            end
+
+            // result handshake: advance the matched slot's accumulator chain
+            if (result_pkt_valid && result_pkt_ready && res_found) begin
+                slot_awaiting[res_slot] <= 1'b0;
+                if (slot_stage[res_slot] >= flow_last_stage(slot_flow_slot[res_slot])) begin
+                    // final stage: latch output immediately when the port is
+                    // free (keeps single-flow latency identical to the serial
+                    // design); otherwise buffer it in the slot until it drains.
+                    if (!host_out_valid || host_out_ready) begin
+                        host_out_valid       <= 1'b1;
+                        host_out_flow_id     <= slot_flow_id[res_slot];
+                        host_out_value       <= result_pkt_value;
+                        slot_valid[res_slot] <= 1'b0;
+                        slot_done[res_slot]  <= 1'b0;
+                        latched_now = 1'b1;
+                    end else begin
+                        slot_done[res_slot]   <= 1'b1;
+                        slot_outval[res_slot] <= result_pkt_value;
                     end
+                end else begin
+                    slot_acc[res_slot]   <= result_pkt_value;
+                    slot_stage[res_slot] <= slot_stage[res_slot] + 8'd1;
                 end
+            end
 
-                ST_DISPATCH: begin
-                    if (current_flow_slot == 8'hFF) begin
-                        state <= ST_IDLE;
-                    end else if (dispatch_pkt_valid && dispatch_pkt_ready) begin
-                        waiting_core <= chosen_core;
-                        state <= ST_WAIT_RESULT;
-                    end
-                end
-
-                ST_WAIT_RESULT: begin
-                    if (result_pkt_valid &&
-                        result_pkt_ready &&
-                        (result_pkt_src_core == waiting_core) &&
-                        (result_pkt_flow_id == current_flow_id) &&
-                        (result_pkt_stage_id == current_stage)) begin
-                        accumulator <= result_pkt_value;
-                        if (current_stage >= stage_last) begin
-                            host_out_valid <= 1'b1;
-                            host_out_flow_id <= result_pkt_flow_id;
-                            host_out_value <= result_pkt_value;
-                            state <= ST_IDLE;
-                        end else begin
-                            current_stage <= current_stage + 8'd1;
-                            state <= ST_DISPATCH;
-                        end
-                    end
-                end
-
-                default: begin
-                    state <= ST_IDLE;
-                end
-            endcase
+            // drain a previously-buffered completed slot when the port is free
+            if (!latched_now && (!host_out_valid || host_out_ready) && out_found) begin
+                host_out_valid       <= 1'b1;
+                host_out_flow_id     <= slot_flow_id[out_slot];
+                host_out_value       <= slot_outval[out_slot];
+                slot_valid[out_slot] <= 1'b0;
+                slot_done[out_slot]  <= 1'b0;
+            end
         end
     end
 endmodule

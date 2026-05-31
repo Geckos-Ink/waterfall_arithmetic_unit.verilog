@@ -16,9 +16,11 @@ def macro_name(name: str) -> str:
     return cleaned.upper()
 
 
-def validate_range(value: int, *, minimum: int, name: str) -> int:
+def validate_range(value: int, *, minimum: int, name: str, maximum: int | None = None) -> int:
     if value < minimum:
         raise ValueError(f"{name} must be >= {minimum}, got {value}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value}")
     return value
 
 
