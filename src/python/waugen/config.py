@@ -266,6 +266,7 @@ class SchedulerSpec:
     strategy: str
     emit_timeline: bool
     program_policy: str
+    locality_bias: float
 
     @staticmethod
     def from_obj(value: Any) -> "SchedulerSpec":
@@ -282,10 +283,15 @@ class SchedulerSpec:
                 "scheduler.program_policy must be weighted_fair, strict_priority, or round_robin"
             )
 
+        locality_bias = float(value.get("locality_bias", 0.0))
+        if locality_bias < 0.0:
+            raise ConfigError("scheduler.locality_bias must be >= 0")
+
         return SchedulerSpec(
             strategy=strategy,
             emit_timeline=bool(value.get("emit_timeline", True)),
             program_policy=program_policy,
+            locality_bias=locality_bias,
         )
 
 

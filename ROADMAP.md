@@ -88,6 +88,33 @@ Implemented this cycle:
   and PR, uploading benchmark logs, scoreboard JSON, randomized-stress JSON,
   and generated RTL as workflow artifacts (30-day retention).
 
+## Progress Update (2026-05-31)
+Implemented this cycle:
+- Track C / Phase 5 slice (routing efficiency): added a routing-aware,
+  locality-weighted core selection path to the scheduler. New
+  `scheduler.locality_bias` knob (float `>= 0`, default `0.0`) turns the
+  Manhattan distance between a node's data-producing dependency cores and each
+  candidate core into a tiebreaker in `_select_core`. The earliest-free cycle
+  stays the primary selection key, so locality never trades away
+  latency/makespan; it only shrinks data movement among cores that become free
+  at the same time. `build_schedule` now tracks the placed core per runtime
+  node (`placed_core`) so dependency locations are known at selection time.
+  - Default `0.0` reproduces the existing tuned baseline byte-for-byte
+    (`wau_example_pogram_compiled`: makespan 42, fallback 20 unchanged), keeping
+    the gated CW benchmark and its best-known `exec_latency_cycles_avg=68.00`
+    intact.
+  - Enabling it cuts the estimated transfer-hop proxy on a contended workload
+    (`wau_2d_multiprogram_demo`: 27 -> 22 hops, ~18.5%) at identical makespan.
+  - New `tests/python/test_scheduler_locality.py` covers default-off baseline
+    equivalence, no-makespan-inflation + hop reduction when enabled, determinism
+    for a fixed bias, and rejection of negative bias.
+- Note: the benchmark's logged `estimated_transfer_hops_total` is a stage-order
+  adjacency proxy rather than a true dependency-edge metric, so on some flows the
+  dependency-aware locality optimization and the logged proxy can diverge; this
+  is why `locality_bias` ships off-by-default and is offered as an explicit
+  tuning knob rather than forced on. Tightening the logged proxy to follow real
+  dependency edges is a follow-up (see Track C below).
+
 ## CW Compiler and Benchmark Next Steps (2026-05-18+)
 Goal: move from reference-level CW lowering to deeper, reproducible, performance-oriented compilation and execution validation.
 
@@ -157,7 +184,11 @@ Acceptance:
 ### Track C: Scheduler and Placement for CW Workloads
 Scope:
 - Add CW-aware cost heuristics:
-  - lane locality weighting,
+  - lane locality weighting (partially supported: `scheduler.locality_bias`
+    adds hop-distance-to-dependency weighting as a core-selection tiebreaker;
+    still open: make the logged `estimated_transfer_hops_total` follow true
+    dependency edges instead of stage-order adjacency so the metric and the
+    optimization target agree),
   - fallback penalty minimization,
   - memory-path pressure balancing.
 - Tune recurrent-node handling to reduce schedule inflation under multiprogram contention.

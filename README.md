@@ -17,6 +17,7 @@ This repository now contains a working foundation for:
 - per-core capability constraints (operations and data types), with capability-aware CW lowering that prunes incompatible candidate cores before validation,
 - multi-program scheduling with async dependency-aware execution and recurrence support,
 - offline scheduling (cycle timeline + encoded schedule words),
+- routing-aware (locality-weighted) core selection via `scheduler.locality_bias` (default off): biases candidate cores toward their dependencies' placed cores to cut transfer hops without inflating makespan/latency,
 - constrained pseudo-C accumulator frontend (`compile-pseudoc`) and kernel-style `.cw` frontend (`compile-cw`) in addition to expression compilation,
 - CW software reference model + benchmark value scoreboard (`scoreboard_pass_ratio` gate on top of latency/makespan),
 - Verilog emission for coordinator, core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
@@ -275,6 +276,7 @@ Main JSON fields:
 - `scheduler`
   - `strategy` (`round_robin`, `serial`, or `dependency_aware`)
   - `program_policy` (`weighted_fair`, `strict_priority`, `round_robin`)
+  - `locality_bias` (float `>= 0`, default `0.0`): routing-aware core-selection tiebreaker that weights each candidate core by its Manhattan hop distance to the cores holding the node's dependency results. Applied only after the earliest-free-cycle key, so it shrinks transfer hops without inflating makespan/latency; `0.0` disables it and reproduces the untuned schedule exactly.
 - `flows`
   - `id`, `name`, `entry`, optional `exit`
   - per-stage: `op`, optional `core`, `fallback_core`, `immediate_b`, `allow_adaptive`, `dtype`

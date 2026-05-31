@@ -277,6 +277,30 @@ def _select_program(
     return min(ready_programs, key=score)
 
 
+def _locality_cost(
+    candidate: int,
+    *,
+    dep_core_indices: tuple[int, ...],
+    grid_x: int,
+    locality_bias: float,
+) -> int:
+    """Routing cost proxy: summed Manhattan hops from the candidate core to the
+    cores holding this node's dependency results. Used as a tiebreaker so that,
+    among cores that become free at the same cycle, the scheduler keeps data
+    movement local and shrinks `estimated_transfer_hops_total`. Returns 0 when
+    locality weighting is disabled or the node has no placed dependencies."""
+    if locality_bias <= 0.0 or not dep_core_indices:
+        return 0
+    cx = candidate % grid_x
+    cy = candidate // grid_x
+    total = 0
+    for dep in dep_core_indices:
+        dx = dep % grid_x
+        dy = dep // grid_x
+        total += abs(cx - dx) + abs(cy - dy)
+    return int(round(total * locality_bias))
+
+
 def _select_core(
     *,
     node: _RuntimeNode,
@@ -285,6 +309,9 @@ def _select_core(
     core_issue_count: dict[int, int],
     allow_adaptive_reroute: bool,
     round_robin_state: dict[str, int],
+    dep_core_indices: tuple[int, ...],
+    grid_x: int,
+    locality_bias: float,
 ) -> tuple[int, int, bool]:
     candidates = list(node.candidate_core_indices)
     if not (allow_adaptive_reroute and node.allow_adaptive):
@@ -295,11 +322,23 @@ def _select_core(
 
     candidates = sorted(set(candidates))
 
+    def locality(c: int) -> int:
+        return _locality_cost(
+            c,
+            dep_core_indices=dep_core_indices,
+            grid_x=grid_x,
+            locality_bias=locality_bias,
+        )
+
     if node.load_balance == "least_busy":
+        # Earliest free cycle stays the primary key (so locality never trades
+        # away latency); proximity to the producing cores breaks ties before
+        # raw issue count.
         chosen = min(
             candidates,
             key=lambda c: (
                 max(ready_time, core_ready.get(c, 0)),
+                locality(c),
                 core_issue_count.get(c, 0),
                 c,
             ),
@@ -312,14 +351,17 @@ def _select_core(
     offset = cursor % len(candidates)
     rotated = candidates[offset:] + candidates[:offset]
 
+    # Round-robin fairness drives the base order; among equally-early cores
+    # prefer the one closest to the data so the rotation still favours locality.
     chosen = rotated[0]
-    chosen_start = max(ready_time, core_ready.get(chosen, 0))
-    for cand in rotated[1:]:
-        cand_start = max(ready_time, core_ready.get(cand, 0))
-        if cand_start < chosen_start:
+    chosen_key = (max(ready_time, core_ready.get(chosen, 0)), locality(chosen), 0)
+    for pos, cand in enumerate(rotated[1:], start=1):
+        cand_key = (max(ready_time, core_ready.get(cand, 0)), locality(cand), pos)
+        if cand_key < chosen_key:
             chosen = cand
-            chosen_start = cand_start
+            chosen_key = cand_key
 
+    chosen_start = max(ready_time, core_ready.get(chosen, 0))
     round_robin_state[cursor_key] = cursor + 1
     return chosen, chosen_start, chosen != node.primary_core_idx
 
@@ -328,6 +370,7 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
     strategy = project.config.scheduler.strategy
     allow_adapt = project.config.compiler.allow_adaptive_reroute
     policy = project.config.scheduler.program_policy
+    locality_bias = project.config.scheduler.locality_bias
     grid_x = project.config.device.grid_x
 
     runtime_nodes, dependents, indegree, program_meta = _build_runtime_nodes(project)
@@ -335,6 +378,7 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
     unscheduled: set[str] = set(runtime_nodes)
     ready_keys: set[str] = {key for key, indeg in indegree.items() if indeg == 0}
     dep_end_cycle: dict[str, int] = {}
+    placed_core: dict[str, int] = {}
 
     core_ready: dict[int, int] = {}
     core_issue_count: dict[int, int] = {}
@@ -408,6 +452,10 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
         deps = node.dep_keys
         ready_time = max((dep_end_cycle.get(dep_key, 0) for dep_key in deps), default=0)
 
+        dep_core_indices = tuple(
+            placed_core[dep_key] for dep_key in deps if dep_key in placed_core
+        )
+
         chosen_core, start, used_fallback = _select_core(
             node=node,
             ready_time=ready_time,
@@ -415,7 +463,11 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
             core_issue_count=core_issue_count,
             allow_adaptive_reroute=allow_adapt,
             round_robin_state=round_robin_state,
+            dep_core_indices=dep_core_indices,
+            grid_x=grid_x,
+            locality_bias=locality_bias,
         )
+        placed_core[selected_key] = chosen_core
 
         end = start + node.latency
         release = _core_release_cycle(pipelined=node.pipelined, latency=node.latency, start_cycle=start)
