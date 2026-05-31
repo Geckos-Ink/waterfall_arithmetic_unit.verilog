@@ -11,6 +11,7 @@ from .basic_compiler import BasicCompilerError, merge_expression_into_config, me
 from .compiler import compile_project
 from .config import ConfigError, load_config
 from .cw_compiler import CWCompilerError, merge_cw_into_config
+from .cw_lang import CWLangError, Interpreter, parse
 from .device_library import DEVICE_PRESETS
 from .operation_library import OPERATION_LIBRARY
 from .scheduler import build_schedule
@@ -214,6 +215,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Program load balance override (default: @wau pragma or least_busy)",
     )
 
+    ev = sub.add_parser(
+        "cw-eval",
+        help="parse + execute a .cw program on the host (runs main(); supports class magic methods)",
+    )
+    ev_source = ev.add_mutually_exclusive_group(required=True)
+    ev_source.add_argument("--program", help="CW program string")
+    ev_source.add_argument("--program-file", type=Path, help="Path to a .cw program file")
+    ev.add_argument(
+        "--convert",
+        nargs=2,
+        metavar=("EXPR", "DTYPE"),
+        default=None,
+        help=(
+            "Instead of running main(), evaluate EXPR (an expression in the program's "
+            "global scope) and convert it to DTYPE via class magic methods"
+        ),
+    )
+    ev.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
     sub.add_parser("list-devices", help="list built-in real device presets")
     sub.add_parser("list-operations", help="list built-in operation templates")
 
@@ -387,6 +407,42 @@ def _run_compile_cw(
     return 0
 
 
+def _run_cw_eval(*, program: str, convert: list[str] | None, as_json: bool) -> int:
+    import json
+
+    parsed = parse(program)
+    interp = Interpreter(parsed)
+
+    if convert is not None:
+        expr_src, dtype = convert
+        value = interp.eval_expression(expr_src)
+        result = interp.convert(value, dtype)
+        if as_json:
+            print(json.dumps({"expr": expr_src, "dtype": dtype, "result": result}))
+        else:
+            print(f"{expr_src} -> {dtype} = {result}")
+        return 0
+
+    result = interp.run()
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "classes": sorted(parsed.classes),
+                    "aliases": {k: v.target for k, v in parsed.aliases.items()},
+                    "functions": sorted(parsed.functions),
+                    "main_result": result,
+                    "output": interp.output,
+                }
+            )
+        )
+    else:
+        for line in interp.output:
+            print(line)
+        print(f"[cw-eval] main() -> {result}")
+    return 0
+
+
 def _run_list_devices() -> int:
     for name in sorted(DEVICE_PRESETS):
         preset = DEVICE_PRESETS[name]
@@ -468,10 +524,20 @@ def main(argv: list[str] | None = None) -> int:
                 program_max_parallel_flows=args.program_max_parallel_flows,
                 program_load_balance=args.program_load_balance,
             )
+        if args.command == "cw-eval":
+            program = args.program if args.program is not None else args.program_file.read_text()
+            return _run_cw_eval(
+                program=program,
+                convert=args.convert,
+                as_json=args.json,
+            )
         if args.command == "list-devices":
             return _run_list_devices()
         if args.command == "list-operations":
             return _run_list_operations()
+    except CWLangError as exc:
+        print(f"CW language error: {exc}", file=sys.stderr)
+        return 2
     except ConfigError as exc:
         print(f"Config error: {exc}", file=sys.stderr)
         return 2

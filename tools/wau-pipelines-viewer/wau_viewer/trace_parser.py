@@ -55,6 +55,13 @@ class CoreState:
     res_value: Optional[int] = None
     res_stage_id: Optional[int] = None
     res_flow_id: Optional[int] = None
+    # Data-plane delivery: a result packet arrived at this core over the data
+    # mesh this cycle (src core -> this core). Drives the data-movement animation.
+    data_delivered: bool = False
+    ddeliv_src: Optional[int] = None
+    ddeliv_value: Optional[int] = None
+    ddeliv_flow_id: Optional[int] = None
+    ddeliv_stage_id: Optional[int] = None
 
 
 @dataclass
@@ -163,6 +170,12 @@ def parse_trace(path: Path) -> ParsedTrace:
                     cs.res_value = _to_int(kv.get("res_val", "0"))
                     cs.res_stage_id = _to_int(kv.get("res_stage", "0"))
                     cs.res_flow_id = _to_int(kv.get("res_flow", "0"))
+                if kv.get("ddeliv") == "1":
+                    cs.data_delivered = True
+                    cs.ddeliv_src = _to_int(kv.get("ddeliv_src", "0"))
+                    cs.ddeliv_value = _to_int(kv.get("ddeliv_val", "0"))
+                    cs.ddeliv_flow_id = _to_int(kv.get("ddeliv_flow", "0"))
+                    cs.ddeliv_stage_id = _to_int(kv.get("ddeliv_stage", "0"))
                 current.cores.append(cs)
             elif head == "OBS" and current is not None:
                 kv = _parse_kv(tokens)

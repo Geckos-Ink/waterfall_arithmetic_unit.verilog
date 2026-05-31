@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPointF,
+    QPropertyAnimation,
+    QRectF,
+    Qt,
+)
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -16,6 +22,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsLineItem,
+    QGraphicsObject,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
@@ -28,6 +35,9 @@ from .trace_parser import CycleSnapshot
 
 CELL_SIZE = 180.0
 CELL_PADDING = 60.0
+
+# Matches wau_top's COORDINATOR_CORE_INDEX (the host/coordinator endpoint).
+COORDINATOR_CORE_INDEX = 0
 
 COLOR_IDLE = QColor("#2c2f36")
 COLOR_BUSY = QColor("#c98a16")
@@ -144,6 +154,75 @@ class MeshLink(QGraphicsLineItem):
         self.setPen(pen)
 
 
+COLOR_PACKET_OP = QColor("#5fd0a0")     # operands flowing toward a core
+COLOR_PACKET_RESULT = QColor("#3f9cff")  # result data flowing back
+PACKET_SIZE = 54.0
+
+
+class DataPacketItem(QGraphicsObject):
+    """A rounded-square 'data packet' rendered on top of the mesh.
+
+    It carries a short label (the operand/result value), eases from a source
+    core to a destination core to make data movement explicit, and can do a
+    brief scale 'pop' at the destination to suggest the elaboration/transform
+    happening there. Movement and transform are driven by QPropertyAnimation on
+    the item's ``pos`` and ``scale`` so the effect reads clearly even at low fps.
+    """
+
+    def __init__(self, label: str, color: QColor) -> None:
+        super().__init__()
+        self._label = label
+        self._color = color
+        self.setZValue(50)
+        self.setTransformOriginPoint(PACKET_SIZE / 2, PACKET_SIZE / 2)
+        self._anims: list[QPropertyAnimation] = []
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, PACKET_SIZE, PACKET_SIZE)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: D401
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(2, 2, PACKET_SIZE - 4, PACKET_SIZE - 4)
+        painter.setBrush(QBrush(self._color))
+        painter.setPen(QPen(QColor("#10131a"), 2))
+        painter.drawRoundedRect(rect, 14, 14)
+        painter.setPen(QPen(QColor("#0d1016")))
+        painter.setFont(QFont("Menlo", 11, QFont.Bold))
+        painter.drawText(rect, Qt.AlignCenter, self._label)
+
+    def animate_move(
+        self,
+        start: QPointF,
+        end: QPointF,
+        duration_ms: int,
+        *,
+        pop_at_end: bool,
+        on_done,
+    ) -> None:
+        half = QPointF(PACKET_SIZE / 2, PACKET_SIZE / 2)
+        self.setPos(start - half)
+
+        move = QPropertyAnimation(self, b"pos")
+        move.setStartValue(start - half)
+        move.setEndValue(end - half)
+        move.setDuration(max(60, duration_ms))
+        move.setEasingCurve(QEasingCurve.InOutCubic)
+        self._anims.append(move)
+
+        if pop_at_end:
+            pop = QPropertyAnimation(self, b"scale")
+            pop.setStartValue(1.0)
+            pop.setKeyValueAt(0.7, 1.0)
+            pop.setKeyValueAt(0.85, 1.5)
+            pop.setEndValue(1.0)
+            pop.setDuration(max(60, duration_ms))
+            self._anims.append(pop)
+
+        move.finished.connect(on_done)
+        for anim in self._anims:
+            anim.start()
+
+
 class WauScene(QGraphicsScene):
     """Holds the static mesh layout and applies per-cycle updates."""
 
@@ -155,6 +234,40 @@ class WauScene(QGraphicsScene):
         self.links: List[MeshLink] = []
         self._build_layout()
         self._last_active_links: List[MeshLink] = []
+        # Live data-packet animations.
+        self._packets: List[DataPacketItem] = []
+        self.animate_data = True
+        self.step_interval_ms = 125
+
+    def set_step_interval(self, ms: int) -> None:
+        """Match packet animation duration to the playback cadence."""
+        self.step_interval_ms = max(40, int(ms))
+
+    def _clear_packets(self) -> None:
+        for pkt in self._packets:
+            if pkt.scene() is self:
+                self.removeItem(pkt)
+        self._packets = []
+
+    def _spawn_packet(
+        self, src_index: int, dst_index: int, label: str, color: QColor, pop: bool
+    ) -> None:
+        src = self.core_items.get(src_index)
+        dst = self.core_items.get(dst_index)
+        if src is None or dst is None:
+            return
+        pkt = DataPacketItem(label, color)
+        self.addItem(pkt)
+        self._packets.append(pkt)
+
+        def _done() -> None:
+            if pkt.scene() is self:
+                self.removeItem(pkt)
+            if pkt in self._packets:
+                self._packets.remove(pkt)
+
+        duration = min(self.step_interval_ms, 600)
+        pkt.animate_move(src.center(), dst.center(), duration, pop_at_end=pop, on_done=_done)
 
     def _build_layout(self) -> None:
         for c in self.model.cores:
@@ -190,6 +303,9 @@ class WauScene(QGraphicsScene):
         for link in self._last_active_links:
             link.pulse(False)
         self._last_active_links = []
+
+        # restart data-packet animations for this cycle
+        self._clear_packets()
 
         active_cores = set()
 
@@ -228,9 +344,30 @@ class WauScene(QGraphicsScene):
                 used_fallback=used_fallback,
             )
 
-        # pulse any link that touches an active core (approximate — gives the
-        # visual "packet moving" effect; ground truth is in the router counters,
-        # but per-link payloads are not currently exported).
+            if self.animate_data:
+                # operands streaming from the coordinator to the compute core
+                if c.dispatched:
+                    if c.disp_use_immediate:
+                        label = f"{c.disp_a},#{c.disp_immediate_b}"
+                    else:
+                        label = f"{c.disp_a},{c.disp_b}"
+                    self._spawn_packet(
+                        COORDINATOR_CORE_INDEX, c.core_index, label, COLOR_PACKET_OP, pop=False
+                    )
+                # result data travelling back over the data mesh (with an
+                # elaboration 'pop' where it lands)
+                if c.data_delivered and c.ddeliv_src is not None:
+                    self._spawn_packet(
+                        c.ddeliv_src,
+                        c.core_index,
+                        str(c.ddeliv_value),
+                        COLOR_PACKET_RESULT,
+                        pop=True,
+                    )
+
+        # pulse any link that touches an active core (a coarse highlight under
+        # the animated data packets; exact data-plane deliveries are now traced
+        # per core via `data_delivered` and drawn as moving DataPacketItems).
         for link in self.links:
             if link.a.core_index in active_cores or link.b.core_index in active_cores:
                 link.pulse(True)

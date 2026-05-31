@@ -162,6 +162,7 @@ class ViewerWindow(QMainWindow):
         idx = max(0, min(idx, len(self.trace.cycles) - 1))
         self._cycle_idx = idx
         snap = self.trace.cycles[idx]
+        self.scene.set_step_interval(int(1000 / max(1, self.speed.value())))
         self.scene.apply_cycle(snap)
         self.timeline_scene.set_cycle(snap.cycle)
         self.stats.apply_cycle(snap, self._output_count_at[idx])

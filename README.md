@@ -19,6 +19,7 @@ This repository now contains a working foundation for:
 - offline scheduling (cycle timeline + encoded schedule words),
 - routing-aware (locality-weighted) core selection via `scheduler.locality_bias` (default off): biases candidate cores toward their dependencies' placed cores to cut transfer hops without inflating makespan/latency,
 - constrained pseudo-C accumulator frontend (`compile-pseudoc`) and kernel-style `.cw` frontend (`compile-cw`) in addition to expression compilation,
+- a real `.cw` language front-end (`cw-eval`: lexer → AST → host-side interpreter) with **classes and magic methods** for compile-time type handling — operator overloading and type-conversion hooks (`__to_float__`/`__to_int__`/`__convert__`) the compiler can invoke to bridge precisions dynamically,
 - CW software reference model + benchmark value scoreboard (`scoreboard_pass_ratio` gate on top of latency/makespan),
 - Verilog emission for a multi-issue coordinator (keeps up to `coordinator.max_in_flight` distinct flows executing concurrently across the core mesh, so independent flows actually overlap on different cores at runtime), core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
 - configurable station cache size and replacement policy (FIFO/LRU) via `compiler.station_cache`,
@@ -86,6 +87,33 @@ PYTHONPATH=src/python python3 -m waugen compile-cw \
   --program-max-parallel-flows 1 \
   --program-load-balance least_busy
 ```
+
+Execute a `.cw` program on the host (real parser + interpreter), including
+classes with magic methods used for compile-time type conversion. This path is
+separate from `compile-cw` (it does not lower to RTL); it is for compiler-side
+behaviour that should not run on the WAU, such as custom numeric formats and
+their conversions:
+
+```bash
+# Run main() and print its output + return value.
+PYTHONPATH=src/python python3 -m waugen cw-eval \
+  --program-file docs/samples/types/fixed_point.cw
+
+# Ask the compiler to convert an expression to a dtype via the class's
+# conversion magic methods (__convert__ / __to_float__ / __to_int__).
+PYTHONPATH=src/python python3 -m waugen cw-eval \
+  --program-file docs/samples/types/fixed_point.cw \
+  --convert 'new q8_8(384)' float32        # -> 1.5
+```
+
+`.cw` classes (declared with `class` or the legacy `space` keyword) support
+Python-style magic methods: `__init__`, the arithmetic/comparison operators
+(`__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__eq__`, `__lt__`, …),
+`__neg__`, conversion hooks (`__to_int__`, `__to_float__`, and the generic
+`__convert__(target_dtype)`), and `__str__`. `a + b` on a class instance calls
+`a.__add__(b)`; a builtin cast like `float32(x)` on an instance dispatches to its
+conversion hook, and the same dispatch is exposed to the toolchain through
+`waugen.cw_lang.Interpreter.convert(value, dtype)`.
 
 ## Testing
 Run all RTL test cases with `iverilog` (generation + compile + simulation):

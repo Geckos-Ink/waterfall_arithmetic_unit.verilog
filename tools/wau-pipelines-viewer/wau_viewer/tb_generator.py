@@ -26,6 +26,16 @@ module tb_wau_viewer;
     parameter integer STIM_COUNT    = %(stim_count)d;
     parameter integer MAX_CYCLES    = %(max_cycles)d;
 
+    // Data-plane payload layout — must mirror wau_top's DATA_* localparams so we
+    // can decode each per-core data-plane delivery (the "data packet arriving at
+    // a core" event used to animate data movement in the viewer).
+    localparam integer TB_CORE_ID_WIDTH      = 8;
+    localparam integer TB_DATA_FLOW_ID_LSB   = 0;
+    localparam integer TB_DATA_STAGE_LSB     = TB_DATA_FLOW_ID_LSB + FLOW_ID_WIDTH;
+    localparam integer TB_DATA_VALUE_LSB     = TB_DATA_STAGE_LSB + 8;
+    localparam integer TB_DATA_SRC_CORE_LSB  = TB_DATA_VALUE_LSB + DATA_WIDTH;
+    localparam integer TB_DATA_PAYLOAD_WIDTH = TB_DATA_SRC_CORE_LSB + TB_CORE_ID_WIDTH;
+
     reg clk;
     reg rst_n;
 
@@ -129,6 +139,17 @@ module tb_wau_viewer;
                         $signed(dut.core_result_value[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
                         dut.core_result_stage_id[(core_i*8) +: 8],
                         dut.core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]);
+                end
+                // Data-plane delivery to this core: a result packet that has
+                // travelled the data mesh and is consumed here this cycle. This
+                // exposes the per-link/per-core data movement the viewer animates
+                // (src core -> this core), previously not present in the trace.
+                if (dut.data_local_out_valid[core_i] && dut.data_local_out_ready[core_i]) begin
+                    $fwrite(trace_f, " ddeliv=1 ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d",
+                        dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_SRC_CORE_LSB +: TB_CORE_ID_WIDTH],
+                        $signed(dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_VALUE_LSB +: DATA_WIDTH]),
+                        dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH],
+                        dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8]);
                 end
                 $fwrite(trace_f, " cache_h_count=%%0d cache_l_count=%%0d\n",
                     dut.core_cache_hit_count[(core_i*32) +: 32],

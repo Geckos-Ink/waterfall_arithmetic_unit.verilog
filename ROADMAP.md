@@ -90,6 +90,30 @@ Implemented this cycle:
 
 ## Progress Update (2026-06-01)
 Implemented this cycle:
+- Track A/B slice (real `.cw` front-end with class magic methods): added
+  `src/python/waugen/cw_lang.py` — a from-scratch lexer → AST → recursive-descent
+  parser → host-side tree-walking interpreter for the `.cw` language, independent
+  of the regex/template RTL-lowering path in `cw_compiler.py`. It parses the full
+  surface used by the repo's sample programs (verified: `example-program.cw`, the
+  three `docs/samples/nn/*.cw`, and `basic_arithmetic.cw` all parse), including
+  `class`/`space`, `alias`, `DRAM`, multi-dim arrays, C-style casts, and
+  scientific-notation literals.
+  - Headline feature: **classes with magic methods** executed at compile time —
+    `__init__`, operator overloading (`__add__`/`__sub__`/`__mul__`/`__div__`/
+    `__mod__`/`__eq__`/`__ne__`/`__lt__`/`__gt__`/`__le__`/`__ge__`/`__neg__`),
+    conversion hooks (`__to_int__`, `__to_float__`, generic `__convert__`), and
+    `__str__`. `Interpreter.convert(value, dtype)` is the toolchain hook for
+    dynamic type-format conversion ("behaviour that shouldn't run on the WAU").
+  - New `cw-eval` CLI subcommand runs `main()` or evaluates `--convert EXPR DTYPE`
+    through the class magic methods; new sample `docs/samples/types/fixed_point.cw`
+    (a Q8.8 fixed-point type) demonstrates it; `tests/python/test_cw_lang.py`
+    covers lexer, parser (all repo samples), interpreter semantics (C integer
+    division/÷0, arrays/`.count`, control flow), and the magic-method/conversion
+    paths.
+  - Follow-ups: connect `cw_lang` conversion magic methods to the lowering path so
+    `compile-cw` can use user-defined type promotions during dtype selection;
+    optionally execute small `.cw` kernels end-to-end as an additional reference
+    oracle alongside `cw_reference.py`.
 - Phase 1 / Phase 5 slice (multi-issue coordinator — parallel cores now used at
   runtime): redesigned the generated `wau_coordinator.v` from a strictly serial
   single-`accumulator` state machine (`ST_IDLE → ST_DISPATCH → ST_WAIT_RESULT`,
@@ -184,7 +208,7 @@ Acceptance:
 
 ### Track A: CW Syntax and Grammar Maturity
 Scope:
-- Formalize a minimal `.cw` grammar contract (token/statement rules) beyond regex-symbol presence checks.
+- Formalize a minimal `.cw` grammar contract (token/statement rules) beyond regex-symbol presence checks. (supported: `cw_lang.py` is a real lexer + recursive-descent parser producing an AST, covering the full surface of the repo's sample `.cw` programs; still open: a written formal grammar doc and wiring the AST into RTL lowering.)
 - Add structured pragmas for compilation intent:
   - `@wau lane_parallelism=<N>` (already supported),
   - `@wau max_in_flight=<N>` (supported),
@@ -350,12 +374,17 @@ Possible work:
   flight concurrently; still open: concurrent same-flow-id replicas via a
   dispatch tag, and intra-flow DAG-branch concurrency for non-linear flows.)
 - Adaptive reroute policy beyond primary/fallback (N candidates).
-- Viewer/observability follow-up: the pipelines viewer trace
-  (`tools/wau-pipelines-viewer`) captures per-core dispatch/result plus
-  aggregate hop/stall/forward counters but has **no per-link data-plane packet
-  trace**, so data-in-motion is not animated. Add per-router/per-link packet
-  trace emission + a parallel data-movement-and-operation view now that the
-  coordinator actually drives concurrent traffic.
+- Viewer/observability follow-up (in progress 2026-06-01): the pipelines viewer
+  now traces **per-core data-plane deliveries** (`ddeliv=...`: a result packet
+  arriving at a core over the data mesh, with src core + value + flow/stage),
+  closing the "no data-in-motion trace" gap. `graph_view` renders animated
+  rounded-square `DataPacketItem`s — operands easing from the coordinator to the
+  compute core, and results easing back over the mesh with an elaboration "pop"
+  where they land. `tests/python/test_viewer_data_trace.py` covers the parser
+  and a full iverilog-driven capture. Still open: per-router hop-by-hop path
+  animation (intermediate routers, not just src→dst endpoints), and overlaying
+  the operation applied at each transform; GUI rendering is currently
+  unverified in CI (no PySide6 in the headless environment).
 - Quantitative area/timing analysis scripts per device preset.
 - Automatic design-space exploration for FPGA synthesis candidates:
   - core disposition / grid reshaping,
