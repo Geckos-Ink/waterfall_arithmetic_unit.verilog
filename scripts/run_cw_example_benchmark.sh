@@ -37,6 +37,11 @@ TUNE_CW_MAX_IN_FLIGHT_SET="${TUNE_CW_MAX_IN_FLIGHT_SET:-2,4}"
 TUNE_PLACEMENT_POLICY_SET="${TUNE_PLACEMENT_POLICY_SET:-locality,balance}"
 TUNE_LOWERING_PROFILE_SET="${TUNE_LOWERING_PROFILE_SET:-latency_optimized,reference,throughput_optimized}"
 TUNE_SUMMARY_FILE="${TUNE_SUMMARY_FILE:-benchmarks/example_pogram_tuning_latest.txt}"
+REPLAY_MODE="${REPLAY_MODE:-off}"
+REPLAY_SUMMARY_FILE="${REPLAY_SUMMARY_FILE:-$TUNE_SUMMARY_FILE}"
+REPLAY_OUTPUT_FILE="${REPLAY_OUTPUT_FILE:-benchmarks/example_pogram_replay_latest.txt}"
+REPLAY_ROOT="${REPLAY_ROOT:-.build/cw_replay}"
+REPLAY_REQUIRE_ALL_PASS="${REPLAY_REQUIRE_ALL_PASS:-1}"
 MULTI_RUNS="${MULTI_RUNS:-1}"
 MULTI_REQUIRE_ALL_PASS="${MULTI_REQUIRE_ALL_PASS:-1}"
 MULTI_SUMMARY_FILE="${MULTI_SUMMARY_FILE:-benchmarks/example_pogram_multirun_latest.txt}"
@@ -66,6 +71,7 @@ mkdir -p \
   "$(dirname "$OUT_CONFIG")" \
   "$(dirname "$BENCH_FILE")" \
   "$(dirname "$TUNE_SUMMARY_FILE")" \
+  "$(dirname "$REPLAY_OUTPUT_FILE")" \
   "$(dirname "$MULTI_SUMMARY_FILE")" \
   "$(dirname "$SIDECAR_LATEST_JSON")" \
   "$(dirname "$SIDECAR_BEST_JSON")" \
@@ -174,14 +180,19 @@ run_tune_candidate() {
   local placement_policy="${13}"
   local lowering_profile="${14}"
   local rows_file="${15}"
+  local candidate_profile="autotune_candidate"
+  if [[ "$stage" == replay_* ]]; then
+    candidate_profile="autotune_replay_candidate"
+  fi
 
   echo "[cw-bench][tune] stage=${stage} run=${run_name}"
 
   if TUNE_MODE=0 \
+    REPLAY_MODE=off \
     MULTI_RUNS=1 \
     REGRESSION_CHECK=0 \
     UPDATE_BENCH_SIDECAR=0 \
-    RUN_PROFILE="autotune_candidate" \
+    RUN_PROFILE="$candidate_profile" \
     CW_LANE_PARALLELISM="$lane" \
     PROGRAM_REPLICAS="$rep" \
     PROGRAM_MAX_PARALLEL="$mp" \
@@ -346,6 +357,284 @@ if [[ "$TUNE_MODE" == "1" && "$MULTI_RUNS" -gt 1 ]]; then
   exit 2
 fi
 
+if [[ "$REPLAY_MODE" != "off" ]]; then
+  if [[ "$TUNE_MODE" == "1" || "$MULTI_RUNS" -gt 1 || "$REGRESSION_CHECK" == "1" ]]; then
+    echo "[cw-bench] ERROR: REPLAY_MODE cannot be combined with TUNE_MODE=1, MULTI_RUNS>1, or REGRESSION_CHECK=1"
+    exit 2
+  fi
+
+  case "$REPLAY_MODE" in
+    best|stage-winners|best-and-stage-winners|worst)
+      ;;
+    *)
+      echo "[cw-bench] ERROR: unsupported REPLAY_MODE=${REPLAY_MODE}"
+      echo "[cw-bench] supported replay modes: best, stage-winners, best-and-stage-winners, worst"
+      exit 2
+      ;;
+  esac
+
+  echo "[cw-bench] replay mode enabled (mode=${REPLAY_MODE}, summary=${REPLAY_SUMMARY_FILE})"
+  REPLAY_PLAN="$REPLAY_ROOT/plan.txt"
+  REPLAY_ROWS="$REPLAY_ROOT/rows.csv"
+  mkdir -p "$REPLAY_ROOT" "$(dirname "$REPLAY_OUTPUT_FILE")"
+  : > "$REPLAY_ROWS"
+
+  python3 -m waugen.benchmark_replay \
+    --summary "$REPLAY_SUMMARY_FILE" \
+    --mode "$REPLAY_MODE" \
+    --format shell > "$REPLAY_PLAN"
+
+  replay_idx=0
+  while IFS='|' read -r source_stage source_run lane rep mp priority load_balance scheduler_policy max_in_flight placement_policy lowering_profile _expected_lat _expected_p95 _expected_makespan _expected_fallback _expected_hops _expected_total; do
+    [[ -n "$source_run" ]] || continue
+    replay_idx=$((replay_idx + 1))
+    run_name="replay_${replay_idx}_${source_run}"
+    run_bench="$REPLAY_ROOT/${run_name}.txt"
+    run_out_dir="$REPLAY_ROOT/${run_name}_generated"
+    run_build_dir="$REPLAY_ROOT/${run_name}_iverilog"
+    run_config="$REPLAY_ROOT/${run_name}_compiled.json"
+
+    OUT_CONFIG="$run_config" run_tune_candidate \
+      "replay_${source_stage}" \
+      "$run_name" \
+      "$run_bench" \
+      "$run_out_dir" \
+      "$run_build_dir" \
+      "$lane" \
+      "$rep" \
+      "$mp" \
+      "$priority" \
+      "$load_balance" \
+      "$scheduler_policy" \
+      "$max_in_flight" \
+      "$placement_policy" \
+      "$lowering_profile" \
+      "$REPLAY_ROWS"
+  done < "$REPLAY_PLAN"
+
+  export CW_REPLAY_PLAN="$REPLAY_PLAN"
+  export CW_REPLAY_ROWS="$REPLAY_ROWS"
+  export CW_REPLAY_MODE="$REPLAY_MODE"
+  export CW_REPLAY_SOURCE_SUMMARY="$REPLAY_SUMMARY_FILE"
+  export CW_REPLAY_OUTPUT="$REPLAY_OUTPUT_FILE"
+  export CW_REPLAY_REQUIRE_ALL_PASS="$REPLAY_REQUIRE_ALL_PASS"
+  python3 - <<'PY'
+from __future__ import annotations
+
+import csv
+import datetime as dt
+import math
+import os
+from pathlib import Path
+
+plan_path = Path(os.environ["CW_REPLAY_PLAN"])
+rows_path = Path(os.environ["CW_REPLAY_ROWS"])
+output_path = Path(os.environ["CW_REPLAY_OUTPUT"])
+mode = os.environ["CW_REPLAY_MODE"]
+source_summary = os.environ["CW_REPLAY_SOURCE_SUMMARY"]
+require_all_pass = os.environ["CW_REPLAY_REQUIRE_ALL_PASS"] == "1"
+
+source_summary_path = Path(source_summary)
+source_hops_metric = "legacy_unversioned"
+for line in source_summary_path.read_text().splitlines():
+    if line.startswith("estimated_transfer_hops_metric: "):
+        source_hops_metric = line.split(": ", 1)[1].strip()
+        break
+
+plan_rows: list[list[str]] = []
+for line in plan_path.read_text().splitlines():
+    if line.strip():
+        plan_rows.append(line.split("|"))
+
+with rows_path.open(newline="") as f:
+    actual_rows = list(csv.reader(f))
+
+if not plan_rows:
+    raise SystemExit("Replay plan is empty")
+if len(plan_rows) != len(actual_rows):
+    raise SystemExit(
+        f"Replay plan/result count mismatch: planned={len(plan_rows)} actual={len(actual_rows)}"
+    )
+
+
+def as_float(value: str) -> float:
+    if value == "inf":
+        return math.inf
+    return float(value)
+
+
+def as_int(value: str) -> int:
+    if value == "inf":
+        return 2**31 - 1
+    return int(float(value))
+
+
+results: list[dict[str, str]] = []
+for planned, actual in zip(plan_rows, actual_rows):
+    if len(planned) != 17 or len(actual) != 19:
+        raise SystemExit("Malformed replay plan or result row")
+
+    (
+        source_stage,
+        source_run,
+        lane,
+        replicas,
+        max_parallel,
+        priority,
+        load_balance,
+        scheduler_policy,
+        max_in_flight,
+        placement,
+        profile,
+        expected_lat,
+        expected_p95,
+        expected_makespan,
+        expected_fallback,
+        expected_hops,
+        expected_total_ms,
+    ) = planned
+    (
+        _actual_stage,
+        replay_run,
+        status,
+        _lane,
+        _replicas,
+        _max_parallel,
+        _priority,
+        _load_balance,
+        _scheduler_policy,
+        _max_in_flight,
+        _placement,
+        _profile,
+        actual_lat,
+        actual_p95,
+        actual_makespan,
+        actual_fallback,
+        actual_hops,
+        actual_total_ms,
+        bench_path,
+    ) = actual
+    bench_lines = Path(bench_path).read_text().splitlines()
+    results.append(
+        {
+            "source_stage": source_stage,
+            "source_run": source_run,
+            "replay_run": replay_run,
+            "status": status,
+            "lane": lane,
+            "replicas": replicas,
+            "max_parallel": max_parallel,
+            "priority": priority or "auto",
+            "load_balance": load_balance or "auto",
+            "scheduler_policy": scheduler_policy or "auto",
+            "max_in_flight": max_in_flight,
+            "placement": placement or "auto",
+            "profile": profile or "auto",
+            "expected_lat": expected_lat,
+            "expected_p95": expected_p95,
+            "expected_makespan": expected_makespan,
+            "expected_fallback": expected_fallback,
+            "expected_hops": expected_hops,
+            "expected_total_ms": expected_total_ms,
+            "actual_lat": actual_lat,
+            "actual_p95": actual_p95,
+            "actual_makespan": actual_makespan,
+            "actual_fallback": actual_fallback,
+            "actual_hops": actual_hops,
+            "actual_total_ms": actual_total_ms,
+            "bench_path": bench_path,
+            "actual_hops_metric": next(
+                (
+                    line.split(": ", 1)[1].strip()
+                    for line in bench_lines
+                    if line.startswith("estimated_transfer_hops_metric: ")
+                ),
+                "unknown",
+            ),
+            "scoreboard_pass_ratio": next(
+                (
+                    line.split(": ", 1)[1].strip()
+                    for line in bench_lines
+                    if line.startswith("scoreboard_pass_ratio: ")
+                ),
+                "0.0000",
+            ),
+        }
+    )
+
+passing = [row for row in results if row["status"] == "pass"]
+if not passing:
+    raise SystemExit("No replay candidates passed")
+if require_all_pass and len(passing) != len(results):
+    raise SystemExit(
+        f"Replay required all candidates to pass: passed={len(passing)} total={len(results)}"
+    )
+
+best = min(
+    passing,
+    key=lambda row: (
+        as_float(row["actual_lat"]),
+        as_float(row["actual_p95"]),
+        as_int(row["actual_makespan"]),
+        as_float(row["actual_fallback"]),
+        as_int(row["actual_hops"]),
+        as_int(row["actual_total_ms"]),
+        row["source_run"],
+    ),
+)
+
+lines = [
+    "WAU CW Autotune Replay Summary (latest)",
+    f"run_utc: {dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')}",
+    f"replay_mode: {mode}",
+    f"source_summary: {source_summary}",
+    f"source_hops_metric: {source_hops_metric}",
+    f"actual_hops_metric: {best['actual_hops_metric']}",
+    f"replay_candidates: {len(results)}",
+    f"replay_passed: {len(passing)}",
+    f"replay_failed: {len(results) - len(passing)}",
+    f"best_replay_source_run: {best['source_run']}",
+    f"best_replay_benchmark: {best['bench_path']}",
+    "",
+    "Replay Results",
+]
+for row in results:
+    if row["status"] == "pass":
+        latency_delta = as_float(row["actual_lat"]) - as_float(row["expected_lat"])
+        makespan_delta = as_int(row["actual_makespan"]) - as_int(row["expected_makespan"])
+        lines.append(
+            f"source_run={row['source_run']} source_stage={row['source_stage']} status=pass "
+            f"lane={row['lane']} replicas={row['replicas']} max_parallel={row['max_parallel']} "
+            f"priority={row['priority']} load_balance={row['load_balance']} "
+            f"scheduler_policy={row['scheduler_policy']} max_in_flight={row['max_in_flight']} "
+            f"placement={row['placement']} profile={row['profile']} "
+            f"expected_latency_avg={row['expected_lat']} actual_latency_avg={row['actual_lat']} "
+            f"latency_delta={latency_delta:+.2f} expected_makespan={row['expected_makespan']} "
+            f"actual_makespan={row['actual_makespan']} makespan_delta={makespan_delta:+d} "
+            f"expected_fallback_ratio={row['expected_fallback']} actual_fallback_ratio={row['actual_fallback']} "
+            f"expected_hops_metric={source_hops_metric} expected_hops={row['expected_hops']} "
+            f"actual_hops_metric={row['actual_hops_metric']} actual_hops={row['actual_hops']} "
+            f"scoreboard_pass_ratio={row['scoreboard_pass_ratio']} "
+            f"total_ms={row['actual_total_ms']} bench={row['bench_path']}"
+        )
+    else:
+        lines.append(
+            f"source_run={row['source_run']} source_stage={row['source_stage']} status=fail "
+            f"bench={row['bench_path']}"
+        )
+
+output_path.write_text("\n".join(lines) + "\n")
+print(
+    "[cw-bench][replay] complete "
+    f"mode={mode} passed={len(passing)}/{len(results)} best_source={best['source_run']}"
+)
+print(f"[cw-bench][replay] wrote summary: {output_path}")
+PY
+
+  echo "[cw-bench] done (replay mode)"
+  exit 0
+fi
+
 if [[ "$TUNE_MODE" != "1" && "$MULTI_RUNS" -gt 1 ]]; then
   echo "[cw-bench] multi-run mode enabled (runs=${MULTI_RUNS})"
   MULTI_ROOT=".build/cw_multi"
@@ -361,6 +650,7 @@ if [[ "$TUNE_MODE" != "1" && "$MULTI_RUNS" -gt 1 ]]; then
 
     echo "[cw-bench][multi] run=${run_name}"
     if TUNE_MODE=0 \
+      REPLAY_MODE=off \
       MULTI_RUNS=1 \
       REGRESSION_CHECK=0 \
       UPDATE_BENCH_SIDECAR=0 \
@@ -1009,6 +1299,7 @@ PY
   if [[ -n "$best_lane" && -n "$best_rep" && -n "$best_mp" ]]; then
     echo "[cw-bench][tune] refreshing OUT_CONFIG with best candidate"
     TUNE_MODE=0 \
+      REPLAY_MODE=off \
       MULTI_RUNS=1 \
       REGRESSION_CHECK=0 \
       UPDATE_BENCH_SIDECAR=0 \

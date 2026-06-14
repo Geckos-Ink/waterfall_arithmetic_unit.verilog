@@ -27,6 +27,8 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 9. For CW kernel performance validation/tuning, run and persist the benchmark reference:
    - `./scripts/run_cw_example_benchmark.sh`
    - optional autotune sweep for best score: `TUNE_MODE=1 ./scripts/run_cw_example_benchmark.sh`
+   - optional low-noise replay of saved best + stage winners:
+     `REPLAY_MODE=best-and-stage-winners ./scripts/run_cw_example_benchmark.sh`
    - optional stability run summary: `MULTI_RUNS=5 ./scripts/run_cw_example_benchmark.sh`
    - optional regression guardrail check: `REGRESSION_CHECK=1 ./scripts/run_cw_example_benchmark.sh`
 10. For program-level stress and scheduler regression, run randomized stress (also wired into CI):
@@ -37,6 +39,8 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - `compiler.py`: mapping flows/nodes onto 2D cores and adaptive placement strategy.
 - `basic_compiler.py`: expression/pseudo-C lowering rules for basic WAU compilation.
 - `cw_compiler.py`: `.cw` kernel-structured program lowering into DAG flow/program configs; reads `compiler.core_capabilities` for capability-aware candidate pruning.
+- `benchmark_replay.py`: deterministic parsing and selection of saved CW
+  autotune candidates for best/stage-winner/worst replay modes.
 - `cw_reference.py`: software reference model for CW flows (one pass over `flow.stages` linear order, mirroring the coordinator state machine); consumed by the benchmark scoreboard and tests.
 - `cw_lang.py`: the real `.cw` front-end (lexer → AST → recursive-descent parser → host-side tree-walking interpreter). Independent of `cw_compiler.py`'s regex/template RTL-lowering path. Owns **compile-time class magic methods** (operator overloading + type-conversion hooks `__to_int__`/`__to_float__`/`__convert__`); `Interpreter.convert()` is the toolchain hook for dynamic type-format conversion. Driven by the `cw-eval` CLI subcommand. Must not be wired into RTL lowering or the benchmark gate.
 - `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.

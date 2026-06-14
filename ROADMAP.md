@@ -108,6 +108,14 @@ Implemented this cycle:
   compares complete schedules across multiple `PYTHONHASHSEED` values.
 - On `wau_2d_multiprogram_demo`, `locality_bias=1.0` now reduces
   `dependency_edges_v1` from 29 to 23 hops at the same 8-cycle makespan.
+- Track D/E replay slice: `run_cw_example_benchmark.sh` now accepts
+  `REPLAY_MODE=best|stage-winners|best-and-stage-winners|worst`. A tested
+  `waugen.benchmark_replay` parser builds deterministic plans from the saved
+  autotune summary, excludes failed candidates, converts saved `auto` knobs
+  back to omitted overrides, and replays each candidate in isolated config/build
+  paths. The persisted replay report compares expected/current latency,
+  makespan, fallback ratio, and hops while labeling old versus current hop
+  metric versions.
 
 ## Progress Update (2026-06-01)
 Implemented this cycle:
@@ -289,7 +297,7 @@ Scope:
 - Add optional guardrail thresholds:
   - fail benchmark if `exec_latency_cycles_avg` regresses over configurable baseline. (supported)
 - Persist and compare historical bests in a machine-readable sidecar (JSON) for CI trend checks. (supported)
-- Add a low-noise autotune replay mode that can rerun only the saved winning candidate and stage winners from `example_pogram_tuning_latest.txt`.
+- Add a low-noise autotune replay mode that can rerun only the saved winning candidate and stage winners from `example_pogram_tuning_latest.txt`. (supported)
 - Add persistent hardware-run history and score sidecars so simulator vs real-board vs synthesized-architecture results can be compared over time.
 
 Acceptance:
@@ -297,6 +305,7 @@ Acceptance:
   - single-run reference mode,
   - multi-run stability mode,
   - autotune mode,
+  - saved-candidate replay mode,
   - regression-check mode.
 - CI-ready output is available for parsing pass/fail and score deltas.
 - Real-board benchmark output is normalized enough to compare directly against simulation/reference runs.
@@ -305,14 +314,14 @@ Acceptance:
 Scope:
 - Add CW-specific software reference model for smoke vector validation against RTL output values. (supported via `waugen.cw_reference`; benchmark TB now `$fatal`s on value mismatch and `scoreboard_pass_ratio` is emitted to logs and sidecars)
 - Expand execution testbench vectors (signed/zero/mixed stress, boundary values, recurrent stress). (partially supported: wider deterministic stress vector set now in benchmark TB)
-- Add deterministic replay command for best/worst tuning runs from summary files.
+- Add deterministic replay command for best/worst tuning runs from summary files. (supported)
 
 Acceptance:
 - CW execution checks validate both timing and value correctness (not timing only).
 - Failing vectors include replay parameters and seed in logs.
 
 ### Near-Term Targets
-1. Keep best-known `exec_latency_cycles_avg` at or below `68.00` while preserving pass status for all RTL tests and multirun stability. (held at 68.00 on 2026-05-22 with scoreboard pass ratio 1.0 and 3-run stability median/p95=68.00)
+1. Keep best-known `exec_latency_cycles_avg` at or below `68.00` while preserving pass status for all RTL tests and multirun stability. (held at 68.00 on 2026-06-14 with scoreboard pass ratio 1.0, 3-run stability median/p95=68.00, and saved best/stage-winner replay passing 3/3)
 2. Add capability-aware CW candidate generation so known-invalid topology combinations fail earlier and less often during autotune. (supported)
 3. Add a CW software reference/value scoreboard so benchmark execution checks cover correctness, not timing shape alone. (supported)
 4. Stand up a first closed-loop FPGA benchmark path that can re-run workloads and remap programs on real hardware without full restart between each tuning attempt.

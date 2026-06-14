@@ -190,6 +190,20 @@ Default autotune now uses a staged coordinate search rather than one flat exhaus
 - program stage: `replicas`, `max_parallel_flows`, `priority`, `max_in_flight`
 - scheduler stage: `load_balance`, `scheduler.program_policy`
 
+Replay saved autotune candidates without rerunning the full sweep:
+
+```bash
+REPLAY_MODE=best-and-stage-winners ./scripts/run_cw_example_benchmark.sh
+```
+
+Supported modes are `best`, `stage-winners`, `best-and-stage-winners`, and
+`worst`. `REPLAY_SUMMARY_FILE` selects the source summary; replay uses isolated
+configs/build directories and writes
+`benchmarks/example_pogram_replay_latest.txt` without replacing the canonical
+benchmark sidecars. The report compares saved and current latency/makespan and
+labels both hop-metric versions so historical proxy values are not treated as
+directly comparable to `dependency_edges_v1`.
+
 Run stability mode with repeated samples (`median` and `p95` latency summary):
 
 ```bash
@@ -241,6 +255,7 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
   - `operation_library.py`: built-in operation templates
   - `basic_compiler.py`: basic high-level expression compiler to WAU flow stages
   - `cw_compiler.py`: `.cw` kernel-style lowering with capability-aware candidate pruning
+  - `benchmark_replay.py`: saved autotune summary parser and replay-plan selection
   - `cw_reference.py`: software reference model for CW flows (drives the value scoreboard)
   - `compiler.py`: flow-to-core compilation with adaptive fallbacks
   - `scheduler.py`: offline schedule timeline + 64-bit word encoding
@@ -256,10 +271,11 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `tests/python/`: Python unit tests for compiler helpers, CW reference scoreboard, and program-level priority/replicas/policy stress matrix
 - `scripts/run_randomized_stress.py`: randomized multi-flow stress (CI input)
 - `scripts/run_iverilog_tests.sh`: iverilog test runner
-- `scripts/run_cw_example_benchmark.sh`: CW kernel benchmark, autotune, multi-run stability, regression check
+- `scripts/run_cw_example_benchmark.sh`: CW kernel benchmark, autotune, saved-candidate replay, multi-run stability, regression check
 - `.github/workflows/ci.yml`: CI matrix (python tests, randomized stress, iverilog tests, autotuned CW benchmark) with artifact uploads
 - `benchmarks/example_pogram_benchmark.txt`: tracked benchmark/reference metrics for `.cw` flow compilation
 - `benchmarks/example_pogram_tuning_latest.txt`: latest autotune sweep summary
+- `benchmarks/example_pogram_replay_latest.txt`: latest saved-candidate replay comparison
 - `benchmarks/example_pogram_multirun_latest.txt`: latest multi-run stability summary
 - `benchmarks/example_pogram_benchmark_latest.json`: machine-readable latest benchmark snapshot
 - `benchmarks/example_pogram_benchmark_best.json`: machine-readable best-known benchmark snapshot

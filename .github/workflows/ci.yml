@@ -120,6 +120,7 @@ jobs:
             benchmarks/example_pogram_benchmark_best.json
             benchmarks/example_pogram_benchmark_history.json
             benchmarks/example_pogram_multirun_latest.txt
+            benchmarks/example_pogram_replay_latest.txt
             benchmarks/example_pogram_tuning_latest.txt
             .build/cw_iverilog/cw_scoreboard.json
           if-no-files-found: warn

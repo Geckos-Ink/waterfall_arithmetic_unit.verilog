@@ -1,0 +1,16 @@
+WAU CW Autotune Replay Summary (latest)
+run_utc: 2026-06-14T13:23:17Z
+replay_mode: best-and-stage-winners
+source_summary: benchmarks/example_pogram_tuning_latest.txt
+source_hops_metric: legacy_unversioned
+actual_hops_metric: dependency_edges_v1
+replay_candidates: 3
+replay_passed: 3
+replay_failed: 0
+best_replay_source_run: r6_topology
+best_replay_benchmark: .build/cw_replay/replay_2_r6_topology.txt
+
+Replay Results
+source_run=r33_program source_stage=stage2_program status=pass lane=2 replicas=2 max_parallel=1 priority=4 load_balance=auto scheduler_policy=auto max_in_flight=2 placement=balance profile=throughput_optimized expected_latency_avg=68.00 actual_latency_avg=68.00 latency_delta=+0.00 expected_makespan=42 actual_makespan=42 makespan_delta=+0 expected_fallback_ratio=0.2899 actual_fallback_ratio=0.3043 expected_hops_metric=legacy_unversioned expected_hops=53 actual_hops_metric=dependency_edges_v1 actual_hops=104 scoreboard_pass_ratio=1.0000 total_ms=2111 bench=.build/cw_replay/replay_1_r33_program.txt
+source_run=r6_topology source_stage=stage1_topology status=pass lane=2 replicas=2 max_parallel=1 priority=auto load_balance=auto scheduler_policy=auto max_in_flight=4 placement=balance profile=throughput_optimized expected_latency_avg=68.00 actual_latency_avg=68.00 latency_delta=+0.00 expected_makespan=42 actual_makespan=42 makespan_delta=+0 expected_fallback_ratio=0.2899 actual_fallback_ratio=0.3043 expected_hops_metric=legacy_unversioned expected_hops=53 actual_hops_metric=dependency_edges_v1 actual_hops=104 scoreboard_pass_ratio=1.0000 total_ms=2031 bench=.build/cw_replay/replay_2_r6_topology.txt
+source_run=r43_scheduler source_stage=stage3_scheduler status=pass lane=2 replicas=2 max_parallel=1 priority=4 load_balance=least_busy scheduler_policy=weighted_fair max_in_flight=2 placement=balance profile=throughput_optimized expected_latency_avg=68.00 actual_latency_avg=68.00 latency_delta=+0.00 expected_makespan=42 actual_makespan=42 makespan_delta=+0 expected_fallback_ratio=0.2899 actual_fallback_ratio=0.3043 expected_hops_metric=legacy_unversioned expected_hops=54 actual_hops_metric=dependency_edges_v1 actual_hops=104 scoreboard_pass_ratio=1.0000 total_ms=2208 bench=.build/cw_replay/replay_3_r43_scheduler.txt
