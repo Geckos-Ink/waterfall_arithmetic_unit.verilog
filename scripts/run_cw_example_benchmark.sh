@@ -458,6 +458,14 @@ lat_median = percentile_ceil(lat_values, 50.0)
 lat_p95 = percentile_ceil(lat_values, 95.0)
 
 best_text = best_path.read_text()
+hops_metric = next(
+    (
+        line.split(": ", 1)[1]
+        for line in best_text.splitlines()
+        if line.startswith("estimated_transfer_hops_metric: ")
+    ),
+    "unknown",
+)
 stability_section = [
     "",
     "Multi-Run Stability",
@@ -470,6 +478,7 @@ stability_section = [
     f"best_sample_exec_latency_cycles_avg: {best['lat_avg']}",
     f"best_sample_makespan_cycles: {best['makespan']}",
     f"best_sample_total_ms: {best['total_ms']}",
+    f"estimated_transfer_hops_metric: {hops_metric}",
 ]
 target_bench.write_text(best_text.rstrip() + "\n" + "\n".join(stability_section) + "\n")
 
@@ -481,6 +490,7 @@ summary_lines = [
     f"multi_runs_failed: {len(rows) - len(passing)}",
     f"exec_latency_cycles_median: {lat_median:.2f}",
     f"exec_latency_cycles_p95: {lat_p95:.2f}",
+    f"estimated_transfer_hops_metric: {hops_metric}",
     "",
     "Top Samples (lowest exec latency avg, then makespan, then total_ms)",
 ]
@@ -775,6 +785,14 @@ if not best_path.exists():
     raise SystemExit(f"Best benchmark file missing: {best_path}")
 
 best_text = best_path.read_text()
+hops_metric = next(
+    (
+        line.split(": ", 1)[1]
+        for line in best_text.splitlines()
+        if line.startswith("estimated_transfer_hops_metric: ")
+    ),
+    "unknown",
+)
 tuning_section = [
     "",
     "Tuning Selection",
@@ -804,6 +822,7 @@ tuning_section = [
     f"best_exec_latency_cycles_p95: {best['lat_p95']}",
     f"best_makespan_cycles: {best['makespan']}",
     f"best_fallback_instruction_ratio: {best['fallback_ratio']}",
+    f"estimated_transfer_hops_metric: {hops_metric}",
     f"best_estimated_transfer_hops_total: {best['hops_total']}",
     f"best_total_ms: {best['total_ms']}",
 ]
@@ -822,6 +841,7 @@ summary_lines = [
     f"search_cw_max_in_flight: {max_in_flight_set}",
     f"search_placement_policy: {placement_policy_set}",
     f"search_lowering_profile: {lowering_profile_set}",
+    f"estimated_transfer_hops_metric: {hops_metric}",
     "",
     "Top Candidates (avg latency, p95 latency, makespan, fallback ratio, hops, total_ms)",
 ]
@@ -1513,41 +1533,13 @@ per_flow_fallback_ratio = {
 }
 per_flow_fallback_ratio_repr = "{" + ", ".join(f"{flow}: {ratio:.3f}" for flow, ratio in per_flow_fallback_ratio.items()) + "}"
 
-def core_xy(ins: dict) -> tuple[int, int]:
-    core = ins.get("core")
-    if isinstance(core, dict):
-        return int(core.get("x", ins.get("core_x", 0))), int(core.get("y", ins.get("core_y", 0)))
-    return int(ins.get("core_x", 0)), int(ins.get("core_y", 0))
-
-
-grouped_instructions: dict[tuple[int, int, int], list[dict]] = defaultdict(list)
-for ins in instructions:
-    key = (
-        int(ins.get("program_id", 0)),
-        int(ins.get("program_replica", 0)),
-        int(ins.get("flow_id", 0)),
-    )
-    grouped_instructions[key].append(ins)
-
-estimated_hops_total = 0
-estimated_hop_edges = 0
-for group in grouped_instructions.values():
-    ordered = sorted(
-        group,
-        key=lambda ins: (
-            int(ins.get("iteration", 0)),
-            int(ins.get("cycle_start", 0)),
-            int(ins.get("stage_index", 0)),
-            str(ins.get("node_id", "")),
-        ),
-    )
-    for prev, cur in zip(ordered, ordered[1:]):
-        prev_x, prev_y = core_xy(prev)
-        cur_x, cur_y = core_xy(cur)
-        estimated_hops_total += abs(cur_x - prev_x) + abs(cur_y - prev_y)
-        estimated_hop_edges += 1
-
-estimated_hops_avg = (estimated_hops_total / estimated_hop_edges) if estimated_hop_edges else 0.0
+estimated_hops_metric = str(schedule["estimated_transfer_hops_metric"])
+estimated_hops_total = int(schedule["estimated_transfer_hops_total"])
+estimated_hop_edges = int(schedule["estimated_transfer_hops_edge_count"])
+estimated_hops_avg = float(schedule["estimated_transfer_hops_avg_edge"])
+estimated_hops_unresolved = int(
+    schedule["estimated_transfer_hops_unresolved_edges"]
+)
 
 core_issue_counts: dict[int, int] = defaultdict(int)
 core_busy_cycles: dict[int, int] = defaultdict(int)
@@ -1775,8 +1767,11 @@ lines.extend(
         f"fallback_instruction_count: {fallback_count}",
         f"fallback_instruction_ratio: {fallback_ratio:.4f}",
         f"fallback_ratio_by_flow: {per_flow_fallback_ratio_repr}",
+        f"estimated_transfer_hops_metric: {estimated_hops_metric}",
         f"estimated_transfer_hops_total: {estimated_hops_total}",
+        f"estimated_transfer_hops_edge_count: {estimated_hop_edges}",
         f"estimated_transfer_hops_avg_edge: {estimated_hops_avg:.4f}",
+        f"estimated_transfer_hops_unresolved_edges: {estimated_hops_unresolved}",
         f"unique_core_count: {core_count}",
         f"busiest_core_index: {busiest_core_index}",
         f"busiest_core_issue_count: {busiest_core_issue_count}",
@@ -1809,8 +1804,11 @@ if update_sidecar:
         "instruction_count": instruction_count,
         "fallback_instruction_count": fallback_count,
         "fallback_instruction_ratio": round(fallback_ratio, 6),
+        "estimated_transfer_hops_metric": estimated_hops_metric,
         "estimated_transfer_hops_total": estimated_hops_total,
+        "estimated_transfer_hops_edge_count": estimated_hop_edges,
         "estimated_transfer_hops_avg_edge": round(estimated_hops_avg, 6),
+        "estimated_transfer_hops_unresolved_edges": estimated_hops_unresolved,
         "busiest_core_index": busiest_core_index,
         "busiest_core_issue_count": busiest_core_issue_count,
         "busiest_core_busy_cycles": busiest_core_busy_cycles,

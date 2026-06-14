@@ -1,8 +1,8 @@
 WAU CW Example Benchmark Reference (latest)
-run_utc: 2026-05-22T03:36:34Z
-git_commit: 258b9fd
+run_utc: 2026-06-14T11:11:34Z
+git_commit: 7d1316f
 git_tree_state: dirty
-python_version: Python 3.9.6
+python_version: Python 3.14.3
 iverilog_version: Icarus Verilog version 12.0 (stable) ()
 cw_source: docs/example-program.cw
 base_config: src/python/configs/wau_2d_multiprogram_demo.json
@@ -39,11 +39,11 @@ dtype: float32
 tile_counter_max_iterations: 32
 
 Timing (ms)
-compile_cw_ms: 247
-validate_ms: 164
-generate_ms: 177
-iverilog_tests_ms: 1867
-total_ms: 2620
+compile_cw_ms: 178
+validate_ms: 127
+generate_ms: 164
+iverilog_tests_ms: 1387
+total_ms: 1987
 
 Effective Execution Benchmark (CW flow stress)
 exec_flow_id: 90
@@ -53,7 +53,7 @@ exec_latency_cycles_max: 70
 exec_latency_cycles_avg: 68.00
 exec_latency_cycles_p50: 70.00
 exec_latency_cycles_p95: 70.00
-benchmark_ranking_score: 68044620.00
+benchmark_ranking_score: 68043987.00
 exec_case_1: flow=90, latency_cycles=70, out_value=481, expected_value=481, scoreboard=match
 exec_case_2: flow=90, latency_cycles=70, out_value=421, expected_value=421, scoreboard=match
 exec_case_3: flow=90, latency_cycles=68, out_value=0, expected_value=0, scoreboard=match
@@ -69,19 +69,22 @@ scoreboard_pass_ratio: 1.0000
 Schedule Metrics
 makespan_cycles: 42
 instruction_count: 69
-fallback_instruction_count: 20
-fallback_instruction_ratio: 0.2899
-fallback_ratio_by_flow: {10: 0.667, 11: 0.000, 12: 0.556, 90: 0.229}
-estimated_transfer_hops_total: 53
-estimated_transfer_hops_avg_edge: 0.8413
+fallback_instruction_count: 21
+fallback_instruction_ratio: 0.3043
+fallback_ratio_by_flow: {10: 0.667, 11: 0.333, 12: 0.667, 90: 0.188}
+estimated_transfer_hops_metric: dependency_edges_v1
+estimated_transfer_hops_total: 104
+estimated_transfer_hops_edge_count: 105
+estimated_transfer_hops_avg_edge: 0.9905
+estimated_transfer_hops_unresolved_edges: 0
 unique_core_count: 12
 busiest_core_index: 8
-busiest_core_issue_count: 36
-busiest_core_busy_cycles: 38
+busiest_core_issue_count: 35
+busiest_core_busy_cycles: 35
 flow_ids_in_schedule: [10, 11, 12, 90]
 program_ids_in_schedule: [1, 2, 90]
 operations_seen: ['add', 'max', 'mul', 'sub']
-core_issue_hotspots: ['core=8 issues=36 busy_cycles=38', 'core=2 issues=5 busy_cycles=5', 'core=6 issues=5 busy_cycles=5', 'core=7 issues=4 busy_cycles=4', 'core=9 issues=4 busy_cycles=4']
+core_issue_hotspots: ['core=8 issues=35 busy_cycles=35', 'core=6 issues=6 busy_cycles=6', 'core=2 issues=5 busy_cycles=5', 'core=7 issues=4 busy_cycles=6', 'core=9 issues=4 busy_cycles=6']
 node_latency_hotspots: ['node=tile_counter total_latency=32 issues=32', 'node=merge_mul total_latency=6 issues=2', 'node=n_mul total_latency=6 issues=2', 'node=acc total_latency=4 issues=4', 'node=mix total_latency=4 issues=4']
 dependency_hotspots: ['node=store_tile max_dependencies=3', 'node=acc max_dependencies=2', 'node=lane0_bias max_dependencies=2', 'node=lane0_mul max_dependencies=2', 'node=lane1_bias max_dependencies=2']
 critical_path_tail_by_node: ['node=tile_done_gate program=90:0 flow=90 cycle_end=42', 'node=tile_counter program=90:0 flow=90 cycle_end=41', 'node=tile_counter program=90:0 flow=90 cycle_end=40', 'node=tile_counter program=90:0 flow=90 cycle_end=39', 'node=tile_counter program=90:0 flow=90 cycle_end=38']
@@ -100,4 +103,5 @@ exec_latency_cycles_p95: 68.00
 best_sample_run: run_2
 best_sample_exec_latency_cycles_avg: 68.00
 best_sample_makespan_cycles: 42
-best_sample_total_ms: 2620
+best_sample_total_ms: 1987
+estimated_transfer_hops_metric: dependency_edges_v1

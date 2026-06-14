@@ -30,6 +30,8 @@ class ScheduleInstruction:
     node_id: str = ""
     iteration: int = 0
     dependency_count: int = 0
+    runtime_node_key: str = ""
+    data_dependency_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -38,8 +40,10 @@ class SchedulePlan:
     makespan_cycles: int
 
     def to_json(self) -> dict:
+        dependency_metrics = _dependency_transfer_metrics(self.instructions)
         return {
             "makespan_cycles": self.makespan_cycles,
+            **dependency_metrics,
             "instructions": [
                 {
                     "cycle_start": ins.cycle_start,
@@ -61,6 +65,9 @@ class SchedulePlan:
                     "immediate_b": ins.immediate_b,
                     "dtype": ins.dtype,
                     "dependency_count": ins.dependency_count,
+                    "data_dependency_count": len(ins.data_dependency_keys),
+                    "runtime_node_key": ins.runtime_node_key,
+                    "data_dependency_keys": list(ins.data_dependency_keys),
                 }
                 for ins in self.instructions
             ],
@@ -68,6 +75,36 @@ class SchedulePlan:
 
     def to_hex_lines(self) -> list[str]:
         return [f"{encode_instruction_word(ins):016X}" for ins in self.instructions]
+
+
+def _dependency_transfer_metrics(
+    instructions: tuple[ScheduleInstruction, ...],
+) -> dict[str, str | int | float]:
+    """Estimate routed movement across true runtime data-dependency edges."""
+    by_runtime_key = {
+        ins.runtime_node_key: ins for ins in instructions if ins.runtime_node_key
+    }
+    total_hops = 0
+    edge_count = 0
+    unresolved_edges = 0
+
+    for ins in instructions:
+        for dep_key in ins.data_dependency_keys:
+            dep = by_runtime_key.get(dep_key)
+            if dep is None:
+                unresolved_edges += 1
+                continue
+            total_hops += abs(ins.core_x - dep.core_x) + abs(ins.core_y - dep.core_y)
+            edge_count += 1
+
+    average_hops = (total_hops / edge_count) if edge_count else 0.0
+    return {
+        "estimated_transfer_hops_metric": "dependency_edges_v1",
+        "estimated_transfer_hops_total": total_hops,
+        "estimated_transfer_hops_edge_count": edge_count,
+        "estimated_transfer_hops_avg_edge": average_hops,
+        "estimated_transfer_hops_unresolved_edges": unresolved_edges,
+    }
 
 
 def core_index(x: int, y: int, grid_x: int) -> int:
@@ -98,6 +135,7 @@ class _RuntimeNode:
     allow_adaptive: bool
     iteration: int
     dep_keys: list[str]
+    data_dep_keys: list[str]
 
 
 @dataclass(frozen=True)
@@ -198,6 +236,7 @@ def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNo
                         allow_adaptive=node.allow_adaptive,
                         iteration=iteration,
                         dep_keys=[],
+                        data_dep_keys=[],
                     )
 
             for node in node_order:
@@ -230,6 +269,7 @@ def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNo
                         dedup.append(dep_key)
 
                     runtime_nodes[current_key].dep_keys = dedup
+                    runtime_nodes[current_key].data_dep_keys = list(dedup)
 
             if not program.allow_async or not program.allow_out_of_order:
                 serial_keys: list[str] = []
@@ -401,10 +441,12 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
                 available,
                 key=lambda k: (
                     runtime_nodes[k].program_id,
+                    runtime_nodes[k].program_replica,
                     runtime_nodes[k].flow_slot,
                     runtime_nodes[k].iteration,
                     runtime_nodes[k].node_slot,
                     runtime_nodes[k].node_id,
+                    k,
                 ),
             )
         else:
@@ -430,21 +472,25 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
                     program_keys,
                     key=lambda k: (
                         ready_time(k),
+                        runtime_nodes[k].program_replica,
                         runtime_nodes[k].flow_slot,
                         runtime_nodes[k].iteration,
                         runtime_nodes[k].node_slot,
                         runtime_nodes[k].node_id,
+                        k,
                     ),
                 )
             else:
                 selected_key = min(
                     program_keys,
                     key=lambda k: (
+                        runtime_nodes[k].program_replica,
                         runtime_nodes[k].flow_slot,
                         runtime_nodes[k].iteration,
                         runtime_nodes[k].node_slot,
                         ready_time(k),
                         runtime_nodes[k].node_id,
+                        k,
                     ),
                 )
 
@@ -453,7 +499,9 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
         ready_time = max((dep_end_cycle.get(dep_key, 0) for dep_key in deps), default=0)
 
         dep_core_indices = tuple(
-            placed_core[dep_key] for dep_key in deps if dep_key in placed_core
+            placed_core[dep_key]
+            for dep_key in node.data_dep_keys
+            if dep_key in placed_core
         )
 
         chosen_core, start, used_fallback = _select_core(
@@ -502,6 +550,8 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
                 node_id=node.node_id,
                 iteration=node.iteration,
                 dependency_count=len(node.dep_keys),
+                runtime_node_key=node.key,
+                data_dependency_keys=tuple(node.data_dep_keys),
             )
         )
 

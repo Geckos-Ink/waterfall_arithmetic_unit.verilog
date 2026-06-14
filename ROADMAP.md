@@ -88,6 +88,27 @@ Implemented this cycle:
   and PR, uploading benchmark logs, scoreboard JSON, randomized-stress JSON,
   and generated RTL as workflow artifacts (30-day retention).
 
+## Progress Update (2026-06-14)
+Implemented this cycle:
+- Track C slice: aligned the scheduler locality target and benchmark transfer-hop
+  metric. Runtime nodes now retain true data-dependency edges separately from
+  ordering-only constraints; locality scoring ignores serialization edges, and
+  `wau_schedule.json` exports stable runtime-node/dependency keys plus
+  dependency-edge Manhattan hop total, edge count, average, and unresolved-edge
+  count. The CW benchmark consumes those scheduler metrics directly instead of
+  reconstructing a stage-order adjacency proxy. A branched-DAG regression test
+  proves the reported value follows fan-in dependencies rather than issue order.
+- The metric is explicitly versioned as `dependency_edges_v1`. The prior tuned
+  benchmark's value of 54 was produced by the retired stage-adjacency proxy;
+  deterministic regeneration of that same 42-cycle/69-instruction config
+  reports 104 hops across 105 dependency edges with the new definition.
+- Scheduler determinism hardening: replica ties now include explicit
+  `program_replica` and runtime-node-key tiebreakers. This removes cross-process
+  placement drift caused by Python hash/set iteration order; a subprocess test
+  compares complete schedules across multiple `PYTHONHASHSEED` values.
+- On `wau_2d_multiprogram_demo`, `locality_bias=1.0` now reduces
+  `dependency_edges_v1` from 29 to 23 hops at the same 8-cycle makespan.
+
 ## Progress Update (2026-06-01)
 Implemented this cycle:
 - Track A/B slice (real `.cw` front-end with class magic methods): added
@@ -156,21 +177,17 @@ Implemented this cycle:
   latency/makespan; it only shrinks data movement among cores that become free
   at the same time. `build_schedule` now tracks the placed core per runtime
   node (`placed_core`) so dependency locations are known at selection time.
-  - Default `0.0` reproduces the existing tuned baseline byte-for-byte
-    (`wau_example_pogram_compiled`: makespan 42, fallback 20 unchanged), keeping
-    the gated CW benchmark and its best-known `exec_latency_cycles_avg=68.00`
-    intact.
+  - At introduction, default `0.0` reproduced the then-observed tuned baseline.
+    The 2026-06-14 determinism hardening later canonicalized replica ties that
+    had previously varied with Python hash order; makespan remains 42.
   - Enabling it cuts the estimated transfer-hop proxy on a contended workload
     (`wau_2d_multiprogram_demo`: 27 -> 22 hops, ~18.5%) at identical makespan.
   - New `tests/python/test_scheduler_locality.py` covers default-off baseline
     equivalence, no-makespan-inflation + hop reduction when enabled, determinism
     for a fixed bias, and rejection of negative bias.
-- Note: the benchmark's logged `estimated_transfer_hops_total` is a stage-order
-  adjacency proxy rather than a true dependency-edge metric, so on some flows the
-  dependency-aware locality optimization and the logged proxy can diverge; this
-  is why `locality_bias` ships off-by-default and is offered as an explicit
-  tuning knob rather than forced on. Tightening the logged proxy to follow real
-  dependency edges is a follow-up (see Track C below).
+- Historical note: benchmark logs produced before 2026-06-14 used a stage-order
+  adjacency proxy. This was replaced by the versioned `dependency_edges_v1`
+  metric so the report and scheduler locality target now agree.
 
 ## CW Compiler and Benchmark Next Steps (2026-05-18+)
 Goal: move from reference-level CW lowering to deeper, reproducible, performance-oriented compilation and execution validation.
@@ -241,11 +258,10 @@ Acceptance:
 ### Track C: Scheduler and Placement for CW Workloads
 Scope:
 - Add CW-aware cost heuristics:
-  - lane locality weighting (partially supported: `scheduler.locality_bias`
-    adds hop-distance-to-dependency weighting as a core-selection tiebreaker;
-    still open: make the logged `estimated_transfer_hops_total` follow true
-    dependency edges instead of stage-order adjacency so the metric and the
-    optimization target agree),
+  - lane locality weighting (supported: `scheduler.locality_bias` adds
+    hop-distance-to-data-dependency weighting as a core-selection tiebreaker,
+    and `estimated_transfer_hops_total` is computed from the same true
+    dependency edges),
   - fallback penalty minimization,
   - memory-path pressure balancing.
 - Tune recurrent-node handling to reduce schedule inflation under multiprogram contention.

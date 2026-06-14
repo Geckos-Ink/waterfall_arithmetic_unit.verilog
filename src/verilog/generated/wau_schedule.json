@@ -1,5 +1,10 @@
 {
   "makespan_cycles": 10,
+  "estimated_transfer_hops_metric": "dependency_edges_v1",
+  "estimated_transfer_hops_total": 3,
+  "estimated_transfer_hops_edge_count": 3,
+  "estimated_transfer_hops_avg_edge": 1.0,
+  "estimated_transfer_hops_unresolved_edges": 0,
   "instructions": [
     {
       "cycle_start": 0,
@@ -23,7 +28,10 @@
       "used_fallback": false,
       "immediate_b": null,
       "dtype": "int32",
-      "dependency_count": 0
+      "dependency_count": 0,
+      "data_dependency_count": 0,
+      "runtime_node_key": "p0_r0_f0_ns0_i0",
+      "data_dependency_keys": []
     },
     {
       "cycle_start": 0,
@@ -47,7 +55,10 @@
       "used_fallback": false,
       "immediate_b": null,
       "dtype": "int32",
-      "dependency_count": 0
+      "dependency_count": 0,
+      "data_dependency_count": 0,
+      "runtime_node_key": "p0_r0_f1_ns0_i0",
+      "data_dependency_keys": []
     },
     {
       "cycle_start": 1,
@@ -71,7 +82,12 @@
       "used_fallback": false,
       "immediate_b": 3,
       "dtype": "int32",
-      "dependency_count": 1
+      "dependency_count": 1,
+      "data_dependency_count": 1,
+      "runtime_node_key": "p0_r0_f0_ns1_i0",
+      "data_dependency_keys": [
+        "p0_r0_f0_ns0_i0"
+      ]
     },
     {
       "cycle_start": 1,
@@ -95,7 +111,12 @@
       "used_fallback": false,
       "immediate_b": null,
       "dtype": "int32",
-      "dependency_count": 1
+      "dependency_count": 1,
+      "data_dependency_count": 1,
+      "runtime_node_key": "p0_r0_f1_ns1_i0",
+      "data_dependency_keys": [
+        "p0_r0_f1_ns0_i0"
+      ]
     },
     {
       "cycle_start": 9,
@@ -119,7 +140,12 @@
       "used_fallback": false,
       "immediate_b": null,
       "dtype": "int32",
-      "dependency_count": 1
+      "dependency_count": 1,
+      "data_dependency_count": 1,
+      "runtime_node_key": "p0_r0_f0_ns2_i0",
+      "data_dependency_keys": [
+        "p0_r0_f0_ns1_i0"
+      ]
     }
   ]
 }

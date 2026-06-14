@@ -152,7 +152,7 @@ This script updates `benchmarks/example_pogram_benchmark.txt` as the persistent 
 - effective CW execution stress-benchmark latency/results from generated RTL simulation,
 - per-case `expected_value` and `scoreboard=match|...` lines plus aggregate `scoreboard_total`, `scoreboard_matches`, `scoreboard_pass_ratio`,
 - stress latency percentiles (`p50`, `p95`),
-- placement-quality metrics (`fallback_instruction_ratio`, per-flow fallback ratio, estimated transfer hops, critical-path tail),
+- placement-quality metrics (`fallback_instruction_ratio`, per-flow fallback ratio, true dependency-edge estimated transfer hops, critical-path tail),
 - bottleneck summaries (`busiest_core`, core hotspots, node latency hotspots, dependency hotspots),
 - reproducibility profile metadata and benchmark ranking score.
 
@@ -161,11 +161,13 @@ The testbench `$fatal`s on any value mismatch against the software reference in
 the latency/makespan targets. The reference is also exposed as
 `.build/cw_iverilog/cw_scoreboard.json` for downstream tooling.
 
-Latest tuned result as of 2026-05-22 UTC (re-validated with capability-aware CW
-lowering, configurable station cache, and the value scoreboard):
+Latest tuned result as of 2026-06-14 UTC (retaining the staged autotune winner
+and re-validating deterministic scheduling, capability-aware CW lowering,
+configurable station cache, and the value scoreboard):
 - selected tuning point: `lane=2`, `placement=balance`, `profile=throughput_optimized`, `priority=4`, `replicas=2`, `max_parallel=1`, `max_in_flight=2`, `load_balance=least_busy`, `scheduler_policy=weighted_fair`
 - `exec_latency_cycles_avg=68.00`, `exec_latency_cycles_p95=70.00`, `makespan_cycles=42`
-- `fallback_instruction_ratio=0.2899`, `estimated_transfer_hops_total=54`
+- `fallback_instruction_ratio=0.3043` (21/69) and
+  `dependency_edges_v1=104` hops across 105 true data-dependency edges
 - 3-run stability check: `median=68.00`, `p95=68.00`, `3/3` passing
 - scoreboard: `8/8` deterministic cases match the software reference (`scoreboard_pass_ratio=1.0`)
 
@@ -304,7 +306,7 @@ Main JSON fields:
 - `scheduler`
   - `strategy` (`round_robin`, `serial`, or `dependency_aware`)
   - `program_policy` (`weighted_fair`, `strict_priority`, `round_robin`)
-  - `locality_bias` (float `>= 0`, default `0.0`): routing-aware core-selection tiebreaker that weights each candidate core by its Manhattan hop distance to the cores holding the node's dependency results. Applied only after the earliest-free-cycle key, so it shrinks transfer hops without inflating makespan/latency; `0.0` disables it and reproduces the untuned schedule exactly.
+  - `locality_bias` (float `>= 0`, default `0.0`): routing-aware core-selection tiebreaker that weights each candidate core by its Manhattan hop distance to the cores holding the node's true data-dependency results. Applied only after the earliest-free-cycle key, so it shrinks transfer hops without inflating makespan/latency; `0.0` disables locality weighting. Scheduler ties use explicit replica/runtime-node keys, so output is stable across Python hash seeds. `wau_schedule.json` exports the matching `dependency_edges_v1` metric name, hop total/count/average, and unresolved-edge count.
 - `coordinator`
   - `max_in_flight` (int `[1,16]`, default `4`): hardware capacity of the generated `wau_coordinator` — the number of **distinct** flows it can keep executing concurrently across the core mesh (one accumulator context per slot). Independent flows injected back-to-back overlap on different cores instead of running strictly one-at-a-time. `1` reproduces the legacy serial coordinator. Emitted as `WAU_COORD_MAX_IN_FLIGHT`. Per-flow results are unchanged; a single in-flight flow keeps identical timing.
 - `flows`

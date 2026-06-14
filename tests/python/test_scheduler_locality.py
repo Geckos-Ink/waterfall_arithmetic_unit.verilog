@@ -10,20 +10,21 @@ trades away latency/makespan; it only shrinks transfer hops among cores that
 become free at the same time.
 
 These tests verify that:
-  * the knob defaults to 0.0 (off) and reproduces the untuned baseline exactly;
+  * the knob defaults to 0.0 (off), matching an explicitly configured 0.0;
   * enabling it never inflates makespan on the demo config;
-  * it reduces the estimated transfer-hop proxy on a workload with real
+  * it reduces true dependency-edge transfer hops on a workload with real
     placement contention;
-  * scheduling stays deterministic for a fixed bias;
+  * scheduling stays deterministic across Python hash seeds;
   * invalid (negative) bias is rejected at config load.
 """
 from __future__ import annotations
 
 import copy
-import dataclasses
 import json
-from collections import defaultdict
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -48,17 +49,40 @@ def _build(payload: dict):
 
 
 def _transfer_hops(plan) -> int:
-    """Same stage-order Manhattan proxy the benchmark logs as
-    `estimated_transfer_hops_total`."""
-    groups: dict[tuple[int, int, int], list] = defaultdict(list)
-    for ins in plan.instructions:
-        groups[(ins.program_id, ins.program_replica, ins.flow_id)].append(ins)
-    total = 0
-    for group in groups.values():
-        group.sort(key=lambda i: (i.iteration, i.cycle_start, i.stage_index, i.node_id))
-        for prev, cur in zip(group, group[1:]):
-            total += abs(cur.core_x - prev.core_x) + abs(cur.core_y - prev.core_y)
-    return total
+    """Dependency-edge Manhattan metric exported in `wau_schedule.json`."""
+    return int(plan.to_json()["estimated_transfer_hops_total"])
+
+
+def _branched_dependency_payload() -> dict:
+    payload = _load_payload()
+    branch_flow = next(flow for flow in payload["flows"] if flow["id"] == 11)
+    branch_flow["nodes"][0]["placement"] = {
+        "core": {"x": 0, "y": 0},
+        "fixed": True,
+    }
+    branch_flow["nodes"][1]["placement"] = {
+        "core": {"x": 3, "y": 0},
+        "fixed": True,
+    }
+    branch_flow["nodes"][2]["placement"] = {
+        "core": {"x": 0, "y": 0},
+        "fixed": True,
+    }
+    payload["flows"] = [branch_flow]
+    payload["programs"] = [
+        {
+            "id": 1,
+            "name": "branch_metric",
+            "flows": [11],
+            "priority": 1,
+            "replicas": 1,
+            "max_parallel_flows": 1,
+            "load_balance": "least_busy",
+            "allow_async": True,
+            "allow_out_of_order": True,
+        }
+    ]
+    return payload
 
 
 class SchedulerLocalityTests(unittest.TestCase):
@@ -100,6 +124,66 @@ class SchedulerLocalityTests(unittest.TestCase):
         payload = _load_payload()
         payload.setdefault("scheduler", {})["locality_bias"] = 1.5
         self.assertEqual(_build(payload).to_json(), _build(payload).to_json())
+
+    def test_schedule_is_hash_seed_independent_across_processes(self) -> None:
+        code = "\n".join(
+            [
+                "import json",
+                "from waugen.compiler import compile_project",
+                "from waugen.config import load_config",
+                "from waugen.scheduler import build_schedule",
+                "from pathlib import Path",
+                f"config = load_config(Path({str(CONFIG_PATH.resolve())!r}))",
+                "schedule = build_schedule(compile_project(config)).to_json()",
+                "print(json.dumps(schedule, sort_keys=True))",
+            ]
+        )
+        outputs = []
+        for seed in ("1", "2", "3", "4"):
+            env = os.environ.copy()
+            env["PYTHONHASHSEED"] = seed
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            outputs.append(result.stdout)
+
+        self.assertTrue(all(output == outputs[0] for output in outputs[1:]))
+
+    def test_transfer_metric_follows_dependency_edges_not_stage_adjacency(self) -> None:
+        plan = _build(_branched_dependency_payload())
+        schedule = plan.to_json()
+
+        self.assertEqual(
+            schedule["estimated_transfer_hops_metric"], "dependency_edges_v1"
+        )
+        self.assertEqual(schedule["estimated_transfer_hops_total"], 3)
+        self.assertEqual(schedule["estimated_transfer_hops_edge_count"], 2)
+        self.assertEqual(schedule["estimated_transfer_hops_avg_edge"], 1.5)
+        self.assertEqual(schedule["estimated_transfer_hops_unresolved_edges"], 0)
+
+        merge = next(
+            ins for ins in schedule["instructions"] if ins["node_id"] == "merge_mul"
+        )
+        self.assertEqual(merge["data_dependency_count"], 2)
+        self.assertEqual(len(merge["data_dependency_keys"]), 2)
+
+    def test_transfer_metric_excludes_ordering_only_edges(self) -> None:
+        payload = _branched_dependency_payload()
+        payload["programs"][0]["allow_async"] = False
+        schedule = _build(payload).to_json()
+
+        self.assertEqual(schedule["estimated_transfer_hops_total"], 3)
+        self.assertEqual(schedule["estimated_transfer_hops_edge_count"], 2)
+
+        right = next(
+            ins for ins in schedule["instructions"] if ins["node_id"] == "right_max"
+        )
+        self.assertEqual(right["dependency_count"], 1)
+        self.assertEqual(right["data_dependency_count"], 0)
 
     def test_negative_bias_rejected(self) -> None:
         payload = _load_payload()

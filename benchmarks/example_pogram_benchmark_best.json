@@ -19,25 +19,28 @@
     "scheduler_program_policy_requested": "weighted_fair"
   },
   "metrics": {
-    "benchmark_ranking_score": 68044281.0,
-    "busiest_core_busy_cycles": 38,
+    "benchmark_ranking_score": 68044234.0,
+    "busiest_core_busy_cycles": 35,
     "busiest_core_index": 8,
-    "busiest_core_issue_count": 36,
-    "estimated_transfer_hops_avg_edge": 0.84127,
-    "estimated_transfer_hops_total": 53,
+    "busiest_core_issue_count": 35,
+    "estimated_transfer_hops_avg_edge": 0.990476,
+    "estimated_transfer_hops_edge_count": 105,
+    "estimated_transfer_hops_metric": "dependency_edges_v1",
+    "estimated_transfer_hops_total": 104,
+    "estimated_transfer_hops_unresolved_edges": 0,
     "exec_latency_cycles_avg": 68.0,
     "exec_latency_cycles_max": 70,
     "exec_latency_cycles_min": 58,
     "exec_latency_cycles_p50": 70.0,
     "exec_latency_cycles_p95": 70.0,
-    "fallback_instruction_count": 20,
-    "fallback_instruction_ratio": 0.289855,
+    "fallback_instruction_count": 21,
+    "fallback_instruction_ratio": 0.304348,
     "instruction_count": 69,
     "makespan_cycles": 42,
     "scoreboard_matches": 8,
     "scoreboard_pass_ratio": 1.0,
     "scoreboard_total": 8,
-    "total_ms": 2281
+    "total_ms": 2234
   },
   "paths": {
     "benchmark_text": "benchmarks/example_pogram_benchmark.txt",
@@ -45,11 +48,11 @@
   },
   "placement_quality": {
     "core_issue_hotspots": [
-      "core=8 issues=36 busy_cycles=38",
+      "core=8 issues=35 busy_cycles=35",
+      "core=6 issues=6 busy_cycles=6",
       "core=2 issues=5 busy_cycles=5",
-      "core=6 issues=5 busy_cycles=5",
-      "core=7 issues=4 busy_cycles=4",
-      "core=9 issues=4 busy_cycles=4"
+      "core=7 issues=4 busy_cycles=6",
+      "core=9 issues=4 busy_cycles=6"
     ],
     "critical_path_tail_by_node": [
       "node=tile_done_gate program=90:0 flow=90 cycle_end=42",
@@ -67,9 +70,9 @@
     ],
     "fallback_ratio_by_flow": {
       "10": 0.666667,
-      "11": 0.0,
-      "12": 0.555556,
-      "90": 0.229167
+      "11": 0.333333,
+      "12": 0.666667,
+      "90": 0.1875
     },
     "node_latency_hotspots": [
       "node=tile_counter total_latency=32 issues=32",
@@ -79,19 +82,19 @@
       "node=mix total_latency=4 issues=4"
     ]
   },
-  "run_profile": "reference",
-  "run_utc": "2026-05-22T03:02:26Z",
+  "run_profile": "dependency_metric_refresh",
+  "run_utc": "2026-06-14T11:11:06Z",
   "timing_ms": {
-    "compile_cw_ms": 243,
+    "compile_cw_ms": 279,
     "generate_ms": 152,
-    "iverilog_tests_ms": 1607,
-    "total_ms": 2281,
-    "validate_ms": 147
+    "iverilog_tests_ms": 1530,
+    "total_ms": 2234,
+    "validate_ms": 119
   },
   "tool_versions": {
-    "git_commit": "def3f97",
+    "git_commit": "7d1316f",
     "git_tree_state": "dirty",
     "iverilog_version": "Icarus Verilog version 12.0 (stable) ()",
-    "python_version": "Python 3.9.6"
+    "python_version": "Python 3.14.3"
   }
 }

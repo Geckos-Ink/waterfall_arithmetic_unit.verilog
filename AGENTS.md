@@ -51,7 +51,10 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - Core indices must stay within `grid_x * grid_y`.
 - Compiler core capability constraints must reference existing operations/data types.
 - `compiler.station_cache.entries` must stay within `[1, 32]`; `replacement_policy` must be `fifo` or `lru`. The matching `WAU_STATION_CACHE_*` defs in `wau_defs.vh` must agree with the emitted `wau_core_station.v`.
-- `scheduler.locality_bias` must be `>= 0`. It is a pure core-selection tiebreaker (after earliest-free-cycle), so it must never change makespan/latency for `locality_bias=0.0`; the default `0.0` must reproduce the prior schedule byte-for-byte (guarded by `tests/python/test_scheduler_locality.py`). It is a Python-side scheduling knob only and emits no RTL/`wau_defs.vh` changes.
+- `scheduler.locality_bias` must be `>= 0`. It is a pure core-selection tiebreaker (after earliest-free-cycle), so `locality_bias=0.0` must not change makespan/latency; explicit `0.0` and an omitted knob must produce the same schedule byte-for-byte (guarded by `tests/python/test_scheduler_locality.py`). It is a Python-side scheduling knob only and emits no RTL/`wau_defs.vh` changes.
+- Scheduler ties must be deterministic across Python processes and
+  `PYTHONHASHSEED` values. Explicit `program_replica`/runtime-node tiebreakers
+  canonicalize ties that older revisions left to set iteration order.
 - `coordinator.max_in_flight` must be in `[1,16]` and must match the emitted `WAU_COORD_MAX_IN_FLIGHT` macro and the `wau_coordinator` `MAX_IN_FLIGHT` localparam. The coordinator must preserve per-flow semantics: a single in-flight flow stays cycle-identical to the legacy serial design (`tb_wau_top_demo` timing, CW exec per-case latencies, and the scoreboard must not regress), unknown flow ids stay accepted-but-dropped, and `tb_wau_coordinator_multiissue` must keep proving ≥2 cores busy concurrently for independent flows. Result matching relies on at most one in-flight slot per flow id (`host_in_ready` enforces this) since the dispatch/result packet format carries no tag.
 - Verilog macros in `wau_defs.vh` must match emitted modules.
 - `wau_top` must keep exporting the `obs_total_*` observability bus; `wau_host_mmio` must keep its existing register map (CTRL/STATUS/FLOW_ID/IN_A/IN_B/TRIGGER/OUT_FLOW/OUT_VAL/HOPS/STALLS/FORWARDS/DELIVRD/CACHE_H/CACHE_L) stable so host software targeting it doesn't silently break.
@@ -68,13 +71,15 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - Always keep `benchmarks/example_pogram_benchmark.txt` updated to the latest best known run when tuning is performed.
 - Keep `benchmarks/example_pogram_tuning_latest.txt` as the full sweep/reference summary when autotune mode is used.
 
-Current best-known score (as of 2026-05-22, from staged `TUNE_MODE=1` sweep,
-re-validated with capability-aware CW lowering and the value scoreboard):
+Current best-known score (as of 2026-06-14, retaining the staged `TUNE_MODE=1`
+winner and re-validating deterministic scheduling, dependency-edge metrics, and
+the value scoreboard):
 - `cw_lane_parallelism_requested=2`, `program_replicas=2`, `program_max_parallel_flows=1`
 - `cw_max_in_flight=2`, `placement=balance`, `profile=throughput_optimized`
 - `program_priority=4`, `program_load_balance=least_busy`, `scheduler_program_policy=weighted_fair`
 - `exec_latency_cycles_avg=68.00` (min `58`, max `70`, p95 `70.00`)
-- `makespan_cycles=42`, `fallback_instruction_ratio=0.2899`, `estimated_transfer_hops_total=54`
+- `makespan_cycles=42`, `fallback_instruction_ratio=0.3043` (21/69),
+  `dependency_edges_v1=104` hops across 105 true data-dependency edges
 - 3-run stability: `median=68.00`, `p95=68.00`, `3/3` passing
 - 8/8 scoreboard cases match the software reference (`scoreboard_pass_ratio=1.0`)
 
