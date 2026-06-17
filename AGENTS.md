@@ -16,8 +16,10 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 5. If touching pseudo-C lowering, validate the pseudo-C compiler path:
    - `PYTHONPATH=src/python python3 -m waugen compile-pseudoc --program 'acc = a; acc = acc + b; acc *= 3;' --flow-id <id> --base-config <in> --out-config <out>`
 6. If touching `.cw` kernel lowering, validate the CW compiler path:
+   - syntax/template preflight: `PYTHONPATH=src/python python3 -m waugen cw-lint --program-file docs/example-program.cw --compile-template`
    - `PYTHONPATH=src/python python3 -m waugen compile-cw --program-file docs/example-program.cw --flow-id <id> --base-config <in> --out-config <out> --replace-existing`
 6b. If touching the `.cw` language front-end (`cw_lang.py`), validate the host-side parser/interpreter path:
+   - `PYTHONPATH=src/python python3 -m waugen cw-lint --program-file docs/samples/types/fixed_point.cw`
    - `PYTHONPATH=src/python python3 -m waugen cw-eval --program-file docs/samples/types/fixed_point.cw`
    - conversion hook: `PYTHONPATH=src/python python3 -m waugen cw-eval --program-file docs/samples/types/fixed_point.cw --convert 'new q8_8(384)' float32`
 7. Regenerate artifacts when behavior changes:
@@ -42,7 +44,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - `benchmark_replay.py`: deterministic parsing and selection of saved CW
   autotune candidates for best/stage-winner/worst replay modes.
 - `cw_reference.py`: software reference model for CW flows (one pass over `flow.stages` linear order, mirroring the coordinator state machine); consumed by the benchmark scoreboard and tests.
-- `cw_lang.py`: the real `.cw` front-end (lexer → AST → recursive-descent parser → host-side tree-walking interpreter). Independent of `cw_compiler.py`'s regex/template RTL-lowering path. Owns **compile-time class magic methods** (operator overloading + type-conversion hooks `__to_int__`/`__to_float__`/`__convert__`); `Interpreter.convert()` is the toolchain hook for dynamic type-format conversion. Driven by the `cw-eval` CLI subcommand. Must not be wired into RTL lowering or the benchmark gate.
+- `cw_lang.py`: the real `.cw` front-end (lexer → AST → recursive-descent parser → host-side tree-walking interpreter). Independent of `cw_compiler.py`'s regex/template RTL-lowering path. Owns **compile-time class magic methods** (operator overloading + type-conversion hooks `__to_int__`/`__to_float__`/`__convert__`); `Interpreter.convert()` is the toolchain hook for dynamic type-format conversion. Driven by the `cw-eval` CLI subcommand and the syntax side of `cw-lint`. Must not be wired into RTL lowering or the benchmark gate.
 - `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.
 - `verilog_emit.py`: text emission only; no scheduling decisions should live here. Also owns the per-router/per-station observability counter wiring, the `wau_host_mmio` register file emission, and the multi-issue `wau_coordinator` emission (N-slot in-flight table sized by `coordinator.max_in_flight` / `WAU_COORD_MAX_IN_FLIGHT`).
 - Generated files under `src/verilog/generated/` are build outputs and may be overwritten.

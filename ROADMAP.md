@@ -117,6 +117,19 @@ Implemented this cycle:
   makespan, fallback ratio, and hops while labeling old versus current hop
   metric versions.
 
+## Progress Update (2026-06-17)
+Implemented this cycle:
+- Track A slice: added a documented `.cw` language contract
+  (`docs/cw-language.md`) covering lexical rules, top-level declarations, class
+  members, statements, expressions, magic methods, WAU pragmas, and the narrower
+  RTL-lowering template accepted by `compile-cw`.
+- Track A tooling slice: added `waugen cw-lint`, a fast front-end validation
+  command that parses `.cw` through `cw_lang`, validates `// @wau` pragma syntax
+  and values, and can optionally enforce current `compile-cw` template
+  compatibility with `--compile-template`. This gives host-side `.cw` programs
+  and RTL-lowered kernels separate preflight paths without wiring `cw_lang.py`
+  into RTL lowering.
+
 ## Progress Update (2026-06-01)
 Implemented this cycle:
 - Track A/B slice (real `.cw` front-end with class magic methods): added
@@ -233,7 +246,7 @@ Acceptance:
 
 ### Track A: CW Syntax and Grammar Maturity
 Scope:
-- Formalize a minimal `.cw` grammar contract (token/statement rules) beyond regex-symbol presence checks. (supported: `cw_lang.py` is a real lexer + recursive-descent parser producing an AST, covering the full surface of the repo's sample `.cw` programs; still open: a written formal grammar doc and wiring the AST into RTL lowering.)
+- Formalize a minimal `.cw` grammar contract (token/statement rules) beyond regex-symbol presence checks. (supported: `cw_lang.py` is a real lexer + recursive-descent parser producing an AST, covering the full surface of the repo's sample `.cw` programs; `docs/cw-language.md` records the written grammar/pragma/template contract; `cw-lint` validates syntax/pragmas and optionally the current `compile-cw` template. Wiring the AST into RTL lowering remains intentionally out of scope under the current ownership boundary.)
 - Add structured pragmas for compilation intent:
   - `@wau lane_parallelism=<N>` (already supported),
   - `@wau max_in_flight=<N>` (supported),
@@ -242,11 +255,11 @@ Scope:
   - `@wau lowering_profile=<reference|latency_optimized|throughput_optimized>` (supported),
   - `@wau program_priority=<N>` (supported),
   - `@wau program_load_balance=<least_busy|round_robin>` (supported).
-- Add parse diagnostics with line-aware errors and suggestion text.
+- Add parse diagnostics with line-aware errors and suggestion text. (partially supported: `cw_lang` and pragma/template lint failures include deterministic 1-based line locations where the failing construct is known; suggestion-style recovery remains open.)
 
 Acceptance:
-- Invalid syntax/pragma inputs produce deterministic, line-located errors.
-- New parser tests cover valid/invalid pragmas and backward compatibility with current `example-program.cw`.
+- Invalid syntax/pragma inputs produce deterministic, line-located errors. (supported for parser and pragma lint paths)
+- New parser tests cover valid/invalid pragmas and backward compatibility with current `example-program.cw`. (supported, including `cw-lint --compile-template`)
 
 ### Track B: Deeper CW-to-Flow Lowering
 Scope:

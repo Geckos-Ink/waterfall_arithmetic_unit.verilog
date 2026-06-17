@@ -10,7 +10,7 @@ import sys
 from .basic_compiler import BasicCompilerError, merge_expression_into_config, merge_pseudoc_into_config
 from .compiler import compile_project
 from .config import ConfigError, load_config
-from .cw_compiler import CWCompilerError, merge_cw_into_config
+from .cw_compiler import CWCompilerError, merge_cw_into_config, parse_cw_program, validate_cw_pragmas
 from .cw_lang import CWLangError, Interpreter, parse
 from .device_library import DEVICE_PRESETS
 from .operation_library import OPERATION_LIBRARY
@@ -234,6 +234,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ev.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
+    lint = sub.add_parser(
+        "cw-lint",
+        help="validate .cw syntax and @wau pragmas without lowering to RTL",
+    )
+    lint_source = lint.add_mutually_exclusive_group(required=True)
+    lint_source.add_argument("--program", help="CW program string")
+    lint_source.add_argument("--program-file", type=Path, help="Path to a .cw program file")
+    lint.add_argument(
+        "--compile-template",
+        action="store_true",
+        help="also require compatibility with the current compile-cw kernel template",
+    )
+    lint.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
     sub.add_parser("list-devices", help="list built-in real device presets")
     sub.add_parser("list-operations", help="list built-in operation templates")
 
@@ -443,6 +457,63 @@ def _run_cw_eval(*, program: str, convert: list[str] | None, as_json: bool) -> i
     return 0
 
 
+def _run_cw_lint(*, program: str, compile_template: bool, as_json: bool) -> int:
+    import json
+
+    parsed = parse(program)
+    pragmas = validate_cw_pragmas(program)
+    payload: dict[str, object] = {
+        "syntax": "ok",
+        "aliases": {name: decl.target for name, decl in sorted(parsed.aliases.items())},
+        "classes": sorted(parsed.classes),
+        "functions": sorted(parsed.functions),
+        "pragmas": pragmas,
+        "compile_template": None,
+    }
+
+    if compile_template:
+        spec, shape = parse_cw_program(program)
+        payload["compile_template"] = {
+            "kernel_name": spec.kernel_name,
+            "kernel_size": spec.kernel_size,
+            "tile_h": spec.tile_h,
+            "tile_w": spec.tile_w,
+            "cin_block": spec.cin_block,
+            "cout_block": spec.cout_block,
+            "worker_count": spec.worker_count,
+            "workload_shape": {
+                "h": shape.h,
+                "w": shape.w,
+                "cin": shape.cin,
+                "cout": shape.cout,
+            },
+        }
+
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print("[cw-lint] syntax: ok")
+        if parsed.classes:
+            print(f"[cw-lint] classes: {', '.join(sorted(parsed.classes))}")
+        if parsed.functions:
+            print(f"[cw-lint] functions: {', '.join(sorted(parsed.functions))}")
+        if pragmas:
+            parts = [f"{key}={value}" for key, value in sorted(pragmas.items())]
+            print(f"[cw-lint] pragmas: {', '.join(parts)}")
+        else:
+            print("[cw-lint] pragmas: none")
+        if compile_template:
+            template = payload["compile_template"]
+            assert isinstance(template, dict)
+            print(
+                "[cw-lint] compile-template: "
+                f"{template['kernel_name']} "
+                f"tile={template['tile_h']}x{template['tile_w']} "
+                f"workers={template['worker_count']}"
+            )
+    return 0
+
+
 def _run_list_devices() -> int:
     for name in sorted(DEVICE_PRESETS):
         preset = DEVICE_PRESETS[name]
@@ -529,6 +600,13 @@ def main(argv: list[str] | None = None) -> int:
             return _run_cw_eval(
                 program=program,
                 convert=args.convert,
+                as_json=args.json,
+            )
+        if args.command == "cw-lint":
+            program = args.program if args.program is not None else args.program_file.read_text()
+            return _run_cw_lint(
+                program=program,
+                compile_template=args.compile_template,
                 as_json=args.json,
             )
         if args.command == "list-devices":

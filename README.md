@@ -19,7 +19,7 @@ This repository now contains a working foundation for:
 - offline scheduling (cycle timeline + encoded schedule words),
 - routing-aware (locality-weighted) core selection via `scheduler.locality_bias` (default off): biases candidate cores toward their dependencies' placed cores to cut transfer hops without inflating makespan/latency,
 - constrained pseudo-C accumulator frontend (`compile-pseudoc`) and kernel-style `.cw` frontend (`compile-cw`) in addition to expression compilation,
-- a real `.cw` language front-end (`cw-eval`: lexer → AST → host-side interpreter) with **classes and magic methods** for compile-time type handling — operator overloading and type-conversion hooks (`__to_float__`/`__to_int__`/`__convert__`) the compiler can invoke to bridge precisions dynamically,
+- a real `.cw` language front-end (`cw-lint`/`cw-eval`: lexer → AST → host-side interpreter) with **classes and magic methods** for compile-time type handling — operator overloading and type-conversion hooks (`__to_float__`/`__to_int__`/`__convert__`) the compiler can invoke to bridge precisions dynamically,
 - CW software reference model + benchmark value scoreboard (`scoreboard_pass_ratio` gate on top of latency/makespan),
 - Verilog emission for a multi-issue coordinator (keeps up to `coordinator.max_in_flight` distinct flows executing concurrently across the core mesh, so independent flows actually overlap on different cores at runtime), core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
 - configurable station cache size and replacement policy (FIFO/LRU) via `compiler.station_cache`,
@@ -106,6 +106,18 @@ PYTHONPATH=src/python python3 -m waugen cw-eval \
   --convert 'new q8_8(384)' float32        # -> 1.5
 ```
 
+Validate `.cw` syntax and `@wau` pragmas without lowering:
+
+```bash
+PYTHONPATH=src/python python3 -m waugen cw-lint \
+  --program-file docs/samples/types/fixed_point.cw
+
+# Add the current compile-cw template check for RTL-lowered kernels.
+PYTHONPATH=src/python python3 -m waugen cw-lint \
+  --program-file docs/example-program.cw \
+  --compile-template
+```
+
 `.cw` classes (declared with `class` or the legacy `space` keyword) support
 Python-style magic methods: `__init__`, the arithmetic/comparison operators
 (`__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__eq__`, `__lt__`, …),
@@ -114,6 +126,10 @@ Python-style magic methods: `__init__`, the arithmetic/comparison operators
 `a.__add__(b)`; a builtin cast like `float32(x)` on an instance dispatches to its
 conversion hook, and the same dispatch is exposed to the toolchain through
 `waugen.cw_lang.Interpreter.convert(value, dtype)`.
+
+The accepted host-side `.cw` grammar, pragma contract, and the narrower
+`compile-cw` RTL-template requirements are documented in
+[`docs/cw-language.md`](docs/cw-language.md).
 
 ## Testing
 Run all RTL test cases with `iverilog` (generation + compile + simulation):
@@ -350,6 +366,10 @@ Precedence is:
 - explicit CLI flags (`--lane-parallelism`, `--max-in-flight`, `--dtype`) win,
 - otherwise pragma values are used,
 - otherwise compile defaults apply.
+
+Use `cw-lint --compile-template` as a fast preflight for `.cw` sources intended
+for `compile-cw`; use plain `cw-lint` for host-side language programs that are
+not meant to lower onto the WAU grid.
 
 ## Host MMIO Register Map
 `wau_host_mmio` exposes a small 32-bit register file with a simple

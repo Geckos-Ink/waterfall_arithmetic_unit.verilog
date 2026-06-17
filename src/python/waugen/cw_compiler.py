@@ -73,6 +73,71 @@ _SUPPORTED_WAU_LOWERING_PROFILES = (
 _SUPPORTED_WAU_PROGRAM_LOAD_BALANCE = ("least_busy", "round_robin")
 
 
+def validate_cw_pragmas(program: str) -> dict[str, int | str]:
+    """Validate ``// @wau`` pragmas and return normalized values.
+
+    This intentionally validates only pragma syntax/values. It does not require
+    the program to match the current ``compile-cw`` template shape.
+    """
+
+    pragmas = _parse_wau_pragmas(program)
+    values: dict[str, int | str] = {}
+
+    lane_parallelism = _extract_wau_pragma_int(
+        pragmas,
+        "lane_parallelism",
+        minimum=1,
+    )
+    if lane_parallelism is not None:
+        values["lane_parallelism"] = lane_parallelism
+
+    max_in_flight = _extract_wau_pragma_int(
+        pragmas,
+        "max_in_flight",
+        minimum=1,
+    )
+    if max_in_flight is not None:
+        values["max_in_flight"] = max_in_flight
+
+    preferred_dtype = _extract_wau_pragma_dtype(pragmas)
+    if preferred_dtype is not None:
+        values["preferred_dtype"] = preferred_dtype
+
+    placement_policy = _extract_wau_pragma_choice(
+        pragmas,
+        "placement_policy",
+        supported=_SUPPORTED_WAU_PLACEMENT_POLICIES,
+    )
+    if placement_policy is not None:
+        values["placement_policy"] = placement_policy
+
+    lowering_profile = _extract_wau_pragma_choice(
+        pragmas,
+        "lowering_profile",
+        supported=_SUPPORTED_WAU_LOWERING_PROFILES,
+    )
+    if lowering_profile is not None:
+        values["lowering_profile"] = lowering_profile
+
+    program_priority = _extract_wau_pragma_int(
+        pragmas,
+        "program_priority",
+        minimum=1,
+    )
+    if program_priority is not None:
+        values["program_priority"] = program_priority
+
+    program_load_balance = _extract_wau_pragma_choice(
+        pragmas,
+        "program_load_balance",
+        supported=_SUPPORTED_WAU_PROGRAM_LOAD_BALANCE,
+    )
+    if program_load_balance is not None:
+        values["program_load_balance"] = program_load_balance
+
+    return values
+
+
 def _strip_comments(program: str) -> str:
     lines: list[str] = []
     for raw_line in program.splitlines():
