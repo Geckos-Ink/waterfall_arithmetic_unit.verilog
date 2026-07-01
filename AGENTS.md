@@ -6,7 +6,7 @@ Maintain and extend a Python-driven generator for Waterfall Arithmetic Unit RTL.
 Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 
 ## Core Workflow
-1. Edit source-of-truth files in `src/python/waugen/` and config samples in `src/python/configs/`.
+1. Edit WAU source-of-truth files in `src/python/waugen/`, config samples in `src/python/configs/`, and the reusable Verilog project builder in `thirds/veribuilder/` when changing generic emission/project assembly.
 2. Sync SPDX license headers for all source files in `src/`:
    - `python3 scripts/sync_license_headers.py`
 3. Validate config and pipeline:
@@ -46,7 +46,8 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - `cw_reference.py`: software reference model for CW flows (one pass over `flow.stages` linear order, mirroring the coordinator state machine); consumed by the benchmark scoreboard and tests.
 - `cw_lang.py`: the real `.cw` front-end (lexer → AST → recursive-descent parser → host-side tree-walking interpreter). Independent of `cw_compiler.py`'s regex/template RTL-lowering path. Owns **compile-time class magic methods** (operator overloading + type-conversion hooks `__to_int__`/`__to_float__`/`__convert__`); `Interpreter.convert()` is the toolchain hook for dynamic type-format conversion. Driven by the `cw-eval` CLI subcommand and the syntax side of `cw-lint`. Must not be wired into RTL lowering or the benchmark gate.
 - `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.
-- `verilog_emit.py`: text emission only; no scheduling decisions should live here. Also owns the per-router/per-station observability counter wiring, the `wau_host_mmio` register file emission, and the multi-issue `wau_coordinator` emission (N-slot in-flight table sized by `coordinator.max_in_flight` / `WAU_COORD_MAX_IN_FLIGHT`).
+- `verilog_emit.py`: WAU-specific RTL text rendering only; no scheduling decisions should live here. Also owns the per-router/per-station observability counter wiring, the `wau_host_mmio` register file emission, and the multi-issue `wau_coordinator` emission (N-slot in-flight table sized by `coordinator.max_in_flight` / `WAU_COORD_MAX_IN_FLIGHT`). Generic generated-project assembly is delegated to `thirds/veribuilder`.
+- `thirds/veribuilder/`: externalizable Python library for dynamic Verilog project construction, feature-gated file manifests, lightweight template rendering, and deterministic file emission. Keep it independent from WAU config/compiler/scheduler types so it can be published as a standalone repository.
 - Generated files under `src/verilog/generated/` are build outputs and may be overwritten.
 - `.github/workflows/ci.yml`: CI matrix (python tests, randomized stress, iverilog tests, CW benchmark) — keep aligned with the local Core Workflow steps.
 

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "veribuilder"
+version = "0.1.0"
+description = "Small Python library for dynamically assembling parameterized Verilog projects."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "PolyForm-Noncommercial-1.0.0" }
+authors = [
+  { name = "Waterfall Arithmetic Unit contributors" }
+]
+keywords = ["verilog", "rtl", "generator", "templates"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Code Generators",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

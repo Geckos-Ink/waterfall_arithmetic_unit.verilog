@@ -5,26 +5,30 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 from .compiler import CompiledProject
 from .scheduler import SchedulePlan, core_index
 from .utils import macro_name
 
+try:
+    from veribuilder import VerilogHeader, VerilogProject
+except ModuleNotFoundError as exc:
+    if exc.name != "veribuilder":
+        raise
+    _VERIBUILDER_SRC = (
+        Path(__file__).resolve().parents[3] / "thirds" / "veribuilder" / "src"
+    )
+    if _VERIBUILDER_SRC.exists():
+        sys.path.insert(0, str(_VERIBUILDER_SRC))
+    from veribuilder import VerilogHeader, VerilogProject
+
 _SPDX_IDENTIFIER = "PolyForm-Noncommercial-1.0.0"
-_VERILOG_LICENSE_HEADER = (
-    f"// SPDX-License-Identifier: {_SPDX_IDENTIFIER}\n"
-    "// See LICENSE at the repository root.\n\n"
-)
+_LICENSE_REF_TEXT = "See LICENSE at the repository root."
 
 
 def _op_macro(op_name: str) -> str:
     return macro_name(op_name)
-
-
-def _with_verilog_license_header(content: str) -> str:
-    if content.startswith(_VERILOG_LICENSE_HEADER):
-        return content
-    return _VERILOG_LICENSE_HEADER + content
 
 
 def _render_defs(project: CompiledProject) -> str:
@@ -2449,44 +2453,36 @@ def _render_program_json(project: CompiledProject) -> dict:
 
 
 def emit_verilog(project: CompiledProject, schedule: SchedulePlan, out_dir: Path) -> list[Path]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     module_name = project.config.output_module_name
+    verilog_project = VerilogProject(
+        header=VerilogHeader.spdx(_SPDX_IDENTIFIER, _LICENSE_REF_TEXT),
+        features=(
+            {"de0_nano"}
+            if project.config.device.name.lower().startswith("intel_de0_nano")
+            else set()
+        ),
+    )
 
-    outputs: dict[str, str] = {
-        "wau_defs.vh": _render_defs(project),
-        "wau_operation_alu.v": _render_operation_alu(project),
-        "wau_neighbor_forward.v": _render_neighbor_forward(),
-        "wau_highway_router.v": _render_highway_router(),
-        "wau_highway_mesh.v": _render_highway_mesh(),
-        "wau_core_station.v": _render_core_station(project),
-        "wau_core.v": _render_core(),
-        "wau_coordinator.v": _render_coordinator(project),
-        "wau_host_mmio.v": _render_host_mmio(),
-        f"{module_name}.v": _render_top(project),
-    }
+    verilog_project.add_verilog("wau_defs.vh", _render_defs(project))
+    verilog_project.add_verilog("wau_operation_alu.v", _render_operation_alu(project))
+    verilog_project.add_verilog("wau_neighbor_forward.v", _render_neighbor_forward())
+    verilog_project.add_verilog("wau_highway_router.v", _render_highway_router())
+    verilog_project.add_verilog("wau_highway_mesh.v", _render_highway_mesh())
+    verilog_project.add_verilog("wau_core_station.v", _render_core_station(project))
+    verilog_project.add_verilog("wau_core.v", _render_core())
+    verilog_project.add_verilog("wau_coordinator.v", _render_coordinator(project))
+    verilog_project.add_verilog("wau_host_mmio.v", _render_host_mmio())
+    verilog_project.add_verilog(f"{module_name}.v", _render_top(project))
+    verilog_project.add_verilog(
+        "wau_de0_nano_top.v",
+        _render_de0_nano_wrapper(project),
+        when="de0_nano",
+    )
+    verilog_project.add_file(
+        "wau_program.json",
+        json.dumps(_render_program_json(project), indent=2),
+    )
+    verilog_project.add_file("wau_schedule.json", json.dumps(schedule.to_json(), indent=2))
+    verilog_project.add_file("wau_schedule.hex", "\n".join(schedule.to_hex_lines()) + "\n")
 
-    if project.config.device.name.lower().startswith("intel_de0_nano"):
-        outputs["wau_de0_nano_top.v"] = _render_de0_nano_wrapper(project)
-
-    written_paths: list[Path] = []
-    for name, content in outputs.items():
-        path = out_dir / name
-        if path.suffix in {".v", ".vh"}:
-            content = _with_verilog_license_header(content)
-        path.write_text(content)
-        written_paths.append(path)
-
-    program_path = out_dir / "wau_program.json"
-    program_path.write_text(json.dumps(_render_program_json(project), indent=2))
-    written_paths.append(program_path)
-
-    schedule_json_path = out_dir / "wau_schedule.json"
-    schedule_json_path.write_text(json.dumps(schedule.to_json(), indent=2))
-    written_paths.append(schedule_json_path)
-
-    schedule_hex_path = out_dir / "wau_schedule.hex"
-    schedule_hex_path.write_text("\n".join(schedule.to_hex_lines()) + "\n")
-    written_paths.append(schedule_hex_path)
-
-    return written_paths
+    return verilog_project.emit(out_dir)

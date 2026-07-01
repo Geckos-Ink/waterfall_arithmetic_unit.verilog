@@ -13,6 +13,20 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-07-01)
+Implemented this cycle:
+- DevX/library split slice: introduced `thirds/veribuilder` as a standalone-ready
+  Python package for dynamic Verilog project construction. The library owns
+  generated file manifests, feature-gated project variants, lightweight
+  `{{ parameter }}` rendering, Verilog headers, and deterministic file emission.
+  `waugen.verilog_emit` now delegates artifact assembly to this package while
+  keeping WAU-specific RTL rendering in the WAU generator.
+
+Future work:
+- Promote `thirds/veribuilder` into its own repository/package release once the
+  API has covered at least one more non-WAU generator use case. Keep WAU using
+  the vendored path or an installed package during the transition.
+
 ## Progress Update (2026-05-18)
 Implemented this cycle:
 - Phase 1 slice: explicit highway routing RTL (`wau_highway_router`, `wau_neighbor_forward`, `wau_highway_mesh`) integrated into generated top-level.

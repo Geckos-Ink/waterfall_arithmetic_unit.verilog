@@ -22,6 +22,7 @@ This repository now contains a working foundation for:
 - a real `.cw` language front-end (`cw-lint`/`cw-eval`: lexer → AST → host-side interpreter) with **classes and magic methods** for compile-time type handling — operator overloading and type-conversion hooks (`__to_float__`/`__to_int__`/`__convert__`) the compiler can invoke to bridge precisions dynamically,
 - CW software reference model + benchmark value scoreboard (`scoreboard_pass_ratio` gate on top of latency/makespan),
 - Verilog emission for a multi-issue coordinator (keeps up to `coordinator.max_in_flight` distinct flows executing concurrently across the core mesh, so independent flows actually overlap on different cores at runtime), core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
+- reusable generated-project assembly through `thirds/veribuilder`, an externalizable Python package for parameterized Verilog project manifests, feature-gated files, simple templates, headers, and deterministic file emission,
 - configurable station cache size and replacement policy (FIFO/LRU) via `compiler.station_cache`,
 - runtime observability counters for highway hops/stalls/forwards/local-deliveries and per-core cache hit/lookup rate, aggregated at top-level and exposed via MMIO,
 - CI matrix (python tests + randomized stress + iverilog tests + autotuned CW benchmark) with artifact archival.
@@ -275,8 +276,11 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
   - `cw_reference.py`: software reference model for CW flows (drives the value scoreboard)
   - `compiler.py`: flow-to-core compilation with adaptive fallbacks
   - `scheduler.py`: offline schedule timeline + 64-bit word encoding
-  - `verilog_emit.py`: RTL + reports emission (router/cache observability counters and the `wau_host_mmio` register file live here)
+  - `verilog_emit.py`: WAU-specific RTL + report renderers (router/cache observability counters and the `wau_host_mmio` register file live here); generated-project assembly is delegated to `thirds/veribuilder`
   - `cli.py`: CLI entrypoint
+- `thirds/veribuilder/`: standalone-ready Python package for dynamic Verilog project construction
+  - `src/veribuilder/core.py`: `VerilogProject`, `GeneratedFile`, `VerilogHeader`, and `TemplateRenderer`
+  - `pyproject.toml`: package metadata for publishing or installing separately
 - `src/python/configs/wau_de0_nano_demo.json`: example configuration
 - `src/python/configs/wau_de0_nano_compiled_expr.json`: example output of `compile-expr`
 - `src/python/configs/wau_de0_nano_compiled_pseudoc.json`: example output of `compile-pseudoc`
