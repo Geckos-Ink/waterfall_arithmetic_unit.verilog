@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 import sys
 
+from .arch_search import ArchSearchError, format_report_text, run_arch_search
 from .basic_compiler import BasicCompilerError, merge_expression_into_config, merge_pseudoc_into_config
 from .compiler import compile_project
 from .config import ConfigError, load_config
@@ -247,6 +248,39 @@ def _build_parser() -> argparse.ArgumentParser:
         help="also require compatibility with the current compile-cw kernel template",
     )
     lint.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
+    arch = sub.add_parser(
+        "arch-search",
+        help=(
+            "rank synthesis-time WAU architecture candidates (grid shape, op "
+            "distribution, memory split, DRAM reliance) for a workload config"
+        ),
+    )
+    arch.add_argument("--config", required=True, type=Path, help="Base WAU JSON config (the workload)")
+    arch.add_argument(
+        "--out-report",
+        required=True,
+        type=Path,
+        help="Output path for the machine-readable JSON report",
+    )
+    arch.add_argument(
+        "--out-summary",
+        type=Path,
+        default=None,
+        help="Optional output path for the human-readable text summary",
+    )
+    arch.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="Number of top-ranked candidates to print (default: 10)",
+    )
+    arch.add_argument(
+        "--max-candidates",
+        type=int,
+        default=None,
+        help="Optional cap on the number of evaluated candidates",
+    )
 
     sub.add_parser("list-devices", help="list built-in real device presets")
     sub.add_parser("list-operations", help="list built-in operation templates")
@@ -514,6 +548,33 @@ def _run_cw_lint(*, program: str, compile_template: bool, as_json: bool) -> int:
     return 0
 
 
+def _run_arch_search(
+    *,
+    config_path: Path,
+    out_report: Path,
+    out_summary: Path | None,
+    top: int,
+    max_candidates: int | None,
+) -> int:
+    import json
+
+    report = run_arch_search(config_path, max_candidates=max_candidates)
+
+    out_report.parent.mkdir(parents=True, exist_ok=True)
+    out_report.write_text(json.dumps(report.to_json(), indent=2) + "\n")
+
+    summary = format_report_text(report, top=top)
+    if out_summary is not None:
+        out_summary.parent.mkdir(parents=True, exist_ok=True)
+        out_summary.write_text(summary + "\n")
+
+    print(summary)
+    print(f"Wrote arch-search report: {out_report}")
+    if out_summary is not None:
+        print(f"Wrote arch-search summary: {out_summary}")
+    return 0
+
+
 def _run_list_devices() -> int:
     for name in sorted(DEVICE_PRESETS):
         preset = DEVICE_PRESETS[name]
@@ -609,12 +670,23 @@ def main(argv: list[str] | None = None) -> int:
                 compile_template=args.compile_template,
                 as_json=args.json,
             )
+        if args.command == "arch-search":
+            return _run_arch_search(
+                config_path=args.config,
+                out_report=args.out_report,
+                out_summary=args.out_summary,
+                top=args.top,
+                max_candidates=args.max_candidates,
+            )
         if args.command == "list-devices":
             return _run_list_devices()
         if args.command == "list-operations":
             return _run_list_operations()
     except CWLangError as exc:
         print(f"CW language error: {exc}", file=sys.stderr)
+        return 2
+    except ArchSearchError as exc:
+        print(f"Arch-search error: {exc}", file=sys.stderr)
         return 2
     except ConfigError as exc:
         print(f"Config error: {exc}", file=sys.stderr)

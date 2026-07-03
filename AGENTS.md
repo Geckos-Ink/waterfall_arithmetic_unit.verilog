@@ -35,6 +35,8 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
    - optional regression guardrail check: `REGRESSION_CHECK=1 ./scripts/run_cw_example_benchmark.sh`
 10. For program-level stress and scheduler regression, run randomized stress (also wired into CI):
     - `PYTHONPATH=src/python python3 scripts/run_randomized_stress.py --start-seed 2000 --count 25 --report .build/stress/randomized.json`
+11. For synthesis-time architecture exploration of a workload config, run the ranked architecture search:
+    - `PYTHONPATH=src/python python3 -m waugen arch-search --config <config.json> --out-report .build/arch_search/report.json`
 
 ## Ownership Boundaries
 - `config.py`: schema and validation only (includes `compiler.station_cache`, `compiler.core_capabilities`, `scheduler.locality_bias`, and `coordinator.max_in_flight` schema).
@@ -45,6 +47,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
   autotune candidates for best/stage-winner/worst replay modes.
 - `cw_reference.py`: software reference model for CW flows (one pass over `flow.stages` linear order, mirroring the coordinator state machine); consumed by the benchmark scoreboard and tests.
 - `cw_lang.py`: the real `.cw` front-end (lexer → AST → recursive-descent parser → host-side tree-walking interpreter). Independent of `cw_compiler.py`'s regex/template RTL-lowering path. Owns **compile-time class magic methods** (operator overloading + type-conversion hooks `__to_int__`/`__to_float__`/`__convert__`); `Interpreter.convert()` is the toolchain hook for dynamic type-format conversion. Driven by the `cw-eval` CLI subcommand and the syntax side of `cw-lint`. Must not be wired into RTL lowering or the benchmark gate.
+- `arch_search.py`: synthesis-time architecture-candidate enumeration and ranking (`arch-search` CLI). Reuses the real `compile_project`/`build_schedule` pipeline for performance metrics; owns the versioned estimate models (`wau_resource_model_v1`, `dram_model_v1`, `arch_search_rank_v1`) and reads device capacity metadata (`logic_cells`/`bram_kbits`/`dsp_blocks`) from `device_library.py`. Must not change scheduling/emission behavior — it only builds and evaluates candidate config payloads in memory.
 - `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.
 - `verilog_emit.py`: WAU-specific RTL text rendering only; no scheduling decisions should live here. Also owns the per-router/per-station observability counter wiring, the `wau_host_mmio` register file emission, and the multi-issue `wau_coordinator` emission (N-slot in-flight table sized by `coordinator.max_in_flight` / `WAU_COORD_MAX_IN_FLIGHT`). Generic generated-project assembly is delegated to `thirds/veribuilder`.
 - `thirds/veribuilder/`: externalizable Python library for dynamic Verilog project construction, feature-gated file manifests, lightweight template rendering, and deterministic file emission. Keep it independent from WAU config/compiler/scheduler types so it can be published as a standalone repository.
@@ -98,7 +101,9 @@ When adding a new arithmetic operation:
 4. Regenerate and run `iverilog`.
 
 When adding a new device preset:
-1. Add it in `device_library.py` with realistic part metadata.
+1. Add it in `device_library.py` with realistic part metadata, including the
+   synthesis capacity fields (`logic_cells`, `bram_kbits`, `dsp_blocks`) used
+   by `arch_search.py` feasibility checks.
 2. Ensure width/depth defaults are sane.
 3. Validate at least one config using that preset.
 

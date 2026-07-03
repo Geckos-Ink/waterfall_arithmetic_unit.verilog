@@ -922,10 +922,19 @@ def load_config(path: Path) -> ProjectConfig:
     except json.JSONDecodeError as exc:
         raise ConfigError(f"Invalid JSON in {path}: {exc}") from exc
 
+    return load_config_obj(payload, default_name=path.stem)
+
+
+def load_config_obj(payload: Any, *, default_name: str = "wau_project") -> ProjectConfig:
+    """Validate and load a config from an already-parsed JSON payload.
+
+    Same semantics as `load_config`, for callers that synthesize config
+    variants in memory (e.g. architecture search) without a file round-trip.
+    """
     if not isinstance(payload, dict):
         raise ConfigError("Root JSON object expected")
 
-    project_name = str(payload.get("project", path.stem)).strip() or path.stem
+    project_name = str(payload.get("project", default_name)).strip() or default_name
     output_module_name = str(payload.get("output_module_name", "wau_top")).strip() or "wau_top"
     abstraction_language, abstraction_version = _load_abstraction(payload.get("abstraction"))
 

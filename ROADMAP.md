@@ -13,6 +13,43 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-07-03)
+Implemented this cycle:
+- Near-Term Target 5 first slice (architecture-search report): new
+  `waugen arch-search` CLI + `waugen.arch_search` module producing a ranked,
+  machine-readable synthesis-candidate report for a workload config across
+  the four required axes: core disposition (all grid factor-pair reshapes at
+  the base core count), operation distribution (uniform vs heavy-op
+  specialization onto a column/half-grid via `compiler.core_capabilities`),
+  on-chip memory split (`local_heavy`/`balanced`/`shared_heavy` local/global
+  RAM depth + station-cache sizing), and external-DRAM reliance
+  (`dram_offload` split with estimated DRAM traffic).
+  - Performance numbers are real: every candidate is compiled and scheduled
+    through `compile_project -> build_schedule` (placement pins stripped so
+    architectures re-derive placement and compare apples-to-apples);
+    makespan, `dependency_edges_v1` transfer hops, and fallback ratio come
+    from the actual scheduler.
+  - Area/BRAM/DSP figures use the versioned `wau_resource_model_v1`
+    estimator (per-core ALU op-mix costs, station cache, two router planes,
+    multi-issue coordinator, MMIO glue) checked against new datasheet-level
+    capacity metadata (`logic_cells`/`bram_kbits`/`dsp_blocks`) added to the
+    device presets; DRAM traffic uses `dram_model_v1`; ranking is
+    `arch_search_rank_v1` (feasible, makespan, hops, DRAM bytes, peak
+    utilization, LUTs). Reports are deterministic byte-for-byte.
+  - On the tuned CW workload (`wau_example_pogram_compiled.json`) the search
+    reports a 3x4 grid with heavy ops specialized onto one column matching
+    the 42-cycle makespan at fewer dependency hops (130) and ~26% lower
+    estimated LUTs than the uniform baseline shape.
+  - `config.load_config_obj` now loads validated configs from in-memory
+    payloads (same semantics as `load_config`) so the search avoids file
+    round-trips; `tests/python/test_arch_search.py` covers determinism,
+    ranking-key ordering, placement stripping/entry clamping, capability
+    restriction shape, memory-split estimate relations, and the CLI path.
+  - Follow-ups: calibrate the resource model against real synthesis results
+    per device preset, feed board-measured scores back into the ranking, and
+    widen the disposition axis beyond same-core-count reshapes (scaled grids
+    bounded by device capacity).
+
 ## Progress Update (2026-07-01)
 Implemented this cycle:
 - DevX/library split slice: introduced `thirds/veribuilder` as a standalone-ready
@@ -352,7 +389,7 @@ Acceptance:
 2. Add capability-aware CW candidate generation so known-invalid topology combinations fail earlier and less often during autotune. (supported)
 3. Add a CW software reference/value scoreboard so benchmark execution checks cover correctness, not timing shape alone. (supported)
 4. Stand up a first closed-loop FPGA benchmark path that can re-run workloads and remap programs on real hardware without full restart between each tuning attempt.
-5. Stand up a first architecture-search report that ranks at least core disposition, operation distribution, on-chip memory split, and external-DRAM usage for synthesis candidates.
+5. Stand up a first architecture-search report that ranks at least core disposition, operation distribution, on-chip memory split, and external-DRAM usage for synthesis candidates. (first slice supported 2026-07-03 via `waugen arch-search`: deterministic ranked report over all four axes with real compile/schedule metrics plus versioned resource/DRAM estimate models; synthesis-tool calibration and board-measured scoring still open)
 
 ## Guiding Priorities
 1. Keep generator, compiler, scheduler, and emitted RTL behavior consistent.
@@ -439,11 +476,11 @@ Possible work:
   unverified in CI (no PySide6 in the headless environment).
 - Quantitative area/timing analysis scripts per device preset.
 - Automatic design-space exploration for FPGA synthesis candidates:
-  - core disposition / grid reshaping,
-  - operation specialization balance,
+  - core disposition / grid reshaping, (first slice supported: `arch-search` factor-pair reshapes)
+  - operation specialization balance, (first slice supported: `arch-search` heavy-op column/half-grid capability variants)
   - predictive/adaptive logic budget,
-  - BRAM/LUTRAM/shared-memory partitioning,
-  - external DRAM reliance,
+  - BRAM/LUTRAM/shared-memory partitioning, (first slice supported: `arch-search` memory splits over local/global RAM depth + station-cache sizing)
+  - external DRAM reliance, (first slice supported: `arch-search` `dram_offload` split with `dram_model_v1` traffic estimate)
   - highway path bandwidth/buffering tradeoffs.
 
 Success indicators:

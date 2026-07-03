@@ -19,6 +19,13 @@ class DevicePreset:
     opcode_width: int
     local_ram_depth: int
     global_ram_depth: int
+    # Synthesis capacity metadata (datasheet-level), consumed by the
+    # architecture-search resource estimator. `logic_cells` are vendor logic
+    # elements/cells, `bram_kbits` is total embedded block RAM, `dsp_blocks`
+    # counts hard multiplier/DSP primitives (18x18-equivalent for Intel).
+    logic_cells: int
+    bram_kbits: int
+    dsp_blocks: int
 
 
 DEVICE_PRESETS: dict[str, DevicePreset] = {
@@ -34,6 +41,9 @@ DEVICE_PRESETS: dict[str, DevicePreset] = {
         opcode_width=8,
         local_ram_depth=128,
         global_ram_depth=2048,
+        logic_cells=22320,
+        bram_kbits=594,
+        dsp_blocks=66,
     ),
     "intel_agilex7_fm": DevicePreset(
         name="intel_agilex7_fm",
@@ -47,6 +57,9 @@ DEVICE_PRESETS: dict[str, DevicePreset] = {
         opcode_width=8,
         local_ram_depth=512,
         global_ram_depth=16384,
+        logic_cells=1437240,
+        bram_kbits=142200,
+        dsp_blocks=4510,
     ),
     "xilinx_artix7_100t": DevicePreset(
         name="xilinx_artix7_100t",
@@ -60,6 +73,9 @@ DEVICE_PRESETS: dict[str, DevicePreset] = {
         opcode_width=8,
         local_ram_depth=256,
         global_ram_depth=4096,
+        logic_cells=101440,
+        bram_kbits=4860,
+        dsp_blocks=240,
     ),
 }
 

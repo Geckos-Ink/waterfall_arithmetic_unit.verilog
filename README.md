@@ -132,6 +132,25 @@ The accepted host-side `.cw` grammar, pragma contract, and the narrower
 `compile-cw` RTL-template requirements are documented in
 [`docs/cw-language.md`](docs/cw-language.md).
 
+Rank synthesis-time architecture candidates for a workload config (core
+disposition/grid shape, heavy-op specialization via core capabilities,
+on-chip memory split, and external-DRAM reliance):
+
+```bash
+PYTHONPATH=src/python python3 -m waugen arch-search \
+  --config src/python/configs/wau_example_pogram_compiled.json \
+  --out-report .build/arch_search/report.json \
+  --out-summary .build/arch_search/summary.txt \
+  --top 10
+```
+
+Every candidate runs through the real `compile_project -> build_schedule`
+pipeline, so makespan/transfer-hop/fallback numbers are the generator's own;
+area/BRAM/DSP figures come from the versioned `wau_resource_model_v1`
+estimator checked against the device preset's datasheet capacity, and DRAM
+traffic from `dram_model_v1`. Ranking is `arch_search_rank_v1`: feasible
+first, then lower makespan, transfer hops, DRAM bytes, peak utilization.
+
 ## Testing
 Run all RTL test cases with `iverilog` (generation + compile + simulation):
 
@@ -509,7 +528,7 @@ section 4 of the benchmark txt for the honest worst-case story.
 ## Next Steps
 See `ROADMAP.md` for the full plan. Recommended follow-ups now that observability/MMIO/CI/cache-policy basics are in place:
 1. closed-loop on-FPGA benchmarking that pushes new schedules through the MMIO bus without reflashing the bitstream,
-2. architecture-search reports that rank core disposition, op specialization, BRAM/LUTRAM mix, and external-DRAM use for synthesis candidates,
+2. deepen the `waugen arch-search` reports (first simulation-side slice landed: ranked grid-shape/op-specialization/memory-split/DRAM candidates) with synthesis-tool-calibrated area/fmax numbers and board-measured scores,
 3. CW software reference parity across the wider operation set (currently calibrated against add/mul/max paths used by the example kernel).
 
 ---
