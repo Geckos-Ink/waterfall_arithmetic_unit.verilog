@@ -1,0 +1,178 @@
+==============================================================================
+WAU on real silicon - DE0-Nano example-program CW stress benchmark
+==============================================================================
+
+Reference runs captured 2026-07-06 on a Terasic DE0-Nano using the classic
+2D WAU path and the repository's tracked `docs/example-program.cw` kernel.
+This report records two things:
+
+1. the largest example-program-class image that actually executed correctly on
+   the board in this session, and
+2. the larger grid attempts that were compiled and measured to establish the
+   real hardware ceiling on EP4CE22.
+
+Re-run with:
+
+    cd demo/de0-nano/basic-example
+    .\scripts\build_cw_stress.ps1 -GridX 2 -GridY 2 -QuartusRoot C:\intelFPGA_lite\23.1std
+    .\scripts\program.ps1 -QuartusRoot C:\intelFPGA_lite\23.1std
+    .\scripts\server.ps1 -QuartusRoot C:\intelFPGA_lite\23.1std
+    .\scripts\run_cw_stress.ps1 -Config .\build\cw_stress_2x2_merged.json -RandomIters 1024 -RandomRange 1023 -Seed 1592594996
+
+Note on toolchains:
+  The local Quartus Standard 25.1 installation at
+  C:\altera_standard\25.1std could not compile on 2026-07-06 because its
+  evaluation had expired. All synthesis, programming, and live measurements in
+  this report therefore used Quartus Lite 23.1 at
+  C:\intelFPGA_lite\23.1std.
+
+------------------------------------------------------------------------------
+1. Hardware
+------------------------------------------------------------------------------
+Board                 : Terasic DE0-Nano
+Device                : Intel Cyclone IV E EP4CE22F17C6
+Tools used for build  : Quartus Prime Lite 23.1std.0 Build 991
+Programming           : USB-Blaster (volatile JTAG, RAM-only load)
+Live control path     : quartus_stp TCL server on TCP 2540
+System clock          : CLOCK_50 (50 MHz on-board oscillator, PIN_R8)
+
+------------------------------------------------------------------------------
+2. CW workload under test
+------------------------------------------------------------------------------
+Source kernel         : docs/example-program.cw
+Board flow id         : 90
+Board program id      : 90
+Validated board grid  : 2 x 2 (4 cores)
+Lowered node count    : 17
+Lowered op mix        : 12 add, 2 mul, 3 max
+Preferred dtype       : float32
+
+Compile knobs used:
+  lane_parallelism           = 2
+  max_in_flight              = 2
+  program_replicas           = 2
+  program_max_parallel_flows = 1
+  program_priority           = 4
+  program_load_balance       = least_busy
+  placement_policy           = balance
+  lowering_profile           = throughput_optimized
+
+This is not the tiny `basic_arithmetic.cw` smoke path. It is the repository's
+reference Conv2D+bias+residual+ReLU-style kernel lowered onto the board's
+available `add` / `mul` / `max` subset and then checked live against
+`waugen.cw_reference`.
+
+------------------------------------------------------------------------------
+3. Architecture exploration on the real board target
+------------------------------------------------------------------------------
+All variants below were built from the same `docs/example-program.cw` source
+and the same board wrapper. Only the WAU grid size changed.
+
+  grid   compile status   area / timing summary                      live status
+  -----  ---------------  ----------------------------------------   -------------------------
+  4x4    failed fit       61 564 / 22 320 LE (276 %), 96 / 132 DSP  no bitstream
+  2x5    failed fit       39 747 / 22 320 LE (178 %), 60 / 132 DSP  no bitstream
+  2x4    fit succeeded    22 166 / 22 320 LE (99 %), 48 / 132 DSP   0 / 8 golden pass
+  2x2    fit succeeded    10 372 / 22 320 LE (46 %), 24 / 132 DSP   1032 / 1032 pass
+
+2x4 timing summary:
+  Slow 1200 mV 0 C setup slack   : -167.709 ns
+  Fast 1200 mV 0 C setup slack   : -101.518 ns
+
+2x2 timing summary:
+  Slow 1200 mV 85 C setup slack  : -32.413 ns
+  Slow 1200 mV 0 C setup slack   : -27.203 ns
+  Fast 1200 mV 0 C setup slack   : -10.195 ns
+
+Honest reading:
+  The board can be programmed with a much larger 2x4 image, but that image is
+  not usable at 50 MHz for this workload: every golden case timed out, and the
+  observability counters were already corrupted by timing failure. In this
+  session, 2x2 is the largest `example-program.cw` image that both fit and
+  executed correctly end-to-end on the DE0-Nano.
+
+------------------------------------------------------------------------------
+4. Live board benchmark (validated 2x2 image)
+------------------------------------------------------------------------------
+Timestamp               : 2026-07-06T14:32:23Z
+Config                  : demo/de0-nano/basic-example/build/cw_stress_2x2_merged.json
+Golden cases            : 8
+Random cases            : 1024
+Random input range      : [-1023, 1023]
+Random seed             : 1592594996
+
+Per-run summary:
+
+  total cases    scoreboard pass    throughput       p50       p95
+  ------------   ----------------   -------------    --------  --------
+      1032         1032 / 1032      88.3 ops/s       15.00 ms  16.00 ms
+
+Observed output examples from the live board:
+  case  1: a=10    b=4     -> 481
+  case  5: a=31    b=31    -> 151963
+  case 10: a=255   b=-880  -> 1768870977
+  case 16: a=-636  b=577   -> 557658384
+
+Every case matched the host-side CW software reference exactly
+(`scoreboard_pass_ratio = 1.0`).
+
+------------------------------------------------------------------------------
+5. Observability counters (2x2 live run delta)
+------------------------------------------------------------------------------
+obs_total_hop_count              : 72 240
+obs_total_stall_count            :      0
+obs_total_forward_count          : 37 152
+obs_total_local_delivered_count  : 35 088
+obs_total_cache_hit_count        :     37
+obs_total_cache_lookup_count     : 17 544
+Station-cache hit rate           : 0.0021
+
+Per-trigger average over 1032 live executions:
+  hops per case                  : 70.0
+  forwards per case              : 36.0
+  local deliveries per case      : 34.0
+
+Interpretation:
+  This heavier CW flow really does exercise the data plane. The control path is
+  still dominated by JTAG round-trip time (~15 ms p50 wall-clock), but each
+  trigger causes materially more mesh traffic than the smaller arithmetic/Iris
+  board flows.
+
+------------------------------------------------------------------------------
+6. Failure capture for the largest fitting image (2x4)
+------------------------------------------------------------------------------
+Timestamp               : 2026-07-06T14:33:53Z
+Config                  : demo/de0-nano/basic-example/build/cw_stress_2x4_merged.json
+Golden cases            : 8
+Scoreboard pass         : 0 / 8
+Failure mode            : all 8 cases timed out after 2.0 s
+Observed throughput     : 0.9 ops/s (timeout-limited harness)
+
+2x4 observability delta during failure:
+  hops                  : 18
+  stalls                : 2737986742
+  forwards              : 11
+  local deliveries      : 7
+
+The absurd stall count is itself evidence that the 2x4 image is not operating
+coherently at the board clock. Treat the 2x4 counters as failure telemetry,
+not as meaningful performance numbers.
+
+------------------------------------------------------------------------------
+7. Machine-readable sidecars
+------------------------------------------------------------------------------
+Primary passing report :
+  benchmarks/de0_nano_cw_stress_benchmark_latest.json
+
+Golden-only passing report :
+  benchmarks/de0_nano_cw_stress_benchmark_golden.json
+
+Largest-fitting failure capture :
+  benchmarks/de0_nano_cw_stress_2x4_timeout.json
+
+Original raw captures :
+  demo/de0-nano/basic-example/build/cw_stress_live_2x2_1024_20260706.json
+  demo/de0-nano/basic-example/build/cw_stress_live_2x2_golden_20260706.json
+  demo/de0-nano/basic-example/build/cw_stress_live_2x4_golden_20260706.json
+
+==============================================================================

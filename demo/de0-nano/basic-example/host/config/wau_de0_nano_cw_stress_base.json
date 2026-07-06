@@ -1,0 +1,61 @@
+{
+  "project": "wau_de0_nano_cw_stress",
+  "output_module_name": "wau_top",
+  "abstraction": {
+    "language": "wau_flow_ir",
+    "version": 1
+  },
+  "device": {
+    "preset": "intel_de0_nano",
+    "grid": { "x": 4, "y": 3 },
+    "coordinator_mode": "direct",
+    "enable_runtime_auto_adapt": true,
+    "data_width": 32,
+    "flow_id_width": 12,
+    "opcode_width": 8,
+    "data_types": ["float32"],
+    "local_ram_depth": 32,
+    "global_ram_depth": 128
+  },
+  "operations": {
+    "library": ["add", "mul", "max"],
+    "overrides": {
+      "mul": { "latency": 3, "pipelined": true }
+    }
+  },
+  "compiler": {
+    "routing": "serpentine",
+    "allow_adaptive_reroute": true,
+    "allow_cycle_recurrence": true,
+    "fallback_radius": 2
+  },
+  "scheduler": {
+    "strategy": "dependency_aware",
+    "program_policy": "weighted_fair",
+    "emit_timeline": true,
+    "locality_bias": 1.0
+  },
+  "flows": [
+    {
+      "id": 1,
+      "name": "placeholder_seed_flow",
+      "entry": { "x": 0, "y": 0 },
+      "stages": [
+        { "op": "add", "immediate_b": 0, "dtype": "float32", "core": { "x": 0, "y": 0 } }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": 1,
+      "name": "placeholder_seed_program",
+      "flows": [1],
+      "priority": 1,
+      "replicas": 1,
+      "max_parallel_flows": 1,
+      "load_balance": "round_robin",
+      "allow_async": false,
+      "allow_out_of_order": false
+    }
+  ]
+}

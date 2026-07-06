@@ -37,6 +37,11 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
     - `PYTHONPATH=src/python python3 scripts/run_randomized_stress.py --start-seed 2000 --count 25 --report .build/stress/randomized.json`
 11. For synthesis-time architecture exploration of a workload config, run the ranked architecture search:
     - `PYTHONPATH=src/python python3 -m waugen arch-search --config <config.json> --out-report .build/arch_search/report.json`
+12. For the DE0-NANO live-board `docs/example-program.cw` stress path, use the board wrapper workflow:
+    - `demo/de0-nano/basic-example/scripts/build_cw_stress.ps1 -GridX 2 -GridY 2 -QuartusRoot <quartus_root>`
+    - `demo/de0-nano/basic-example/scripts/program.ps1 -QuartusRoot <quartus_root>`
+    - `demo/de0-nano/basic-example/scripts/server.ps1 -QuartusRoot <quartus_root>`
+    - `demo/de0-nano/basic-example/scripts/run_cw_stress.ps1 -Config demo/de0-nano/basic-example/build/cw_stress_2x2_merged.json -RandomIters 1024 -RandomRange 1023`
 
 ## Ownership Boundaries
 - `config.py`: schema and validation only (includes `compiler.station_cache`, `compiler.core_capabilities`, `scheduler.locality_bias`, and `coordinator.max_in_flight` schema).
@@ -46,6 +51,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - `benchmark_replay.py`: deterministic parsing and selection of saved CW
   autotune candidates for best/stage-winner/worst replay modes.
 - `cw_reference.py`: software reference model for CW flows (one pass over `flow.stages` linear order, mirroring the coordinator state machine); consumed by the benchmark scoreboard and tests.
+- `demo/de0-nano/basic-example/host/programs/run_cw_stress_benchmark.py`: live DE0-NANO scoreboard/observability harness for `docs/example-program.cw`-class flows compiled into the board wrapper.
 - `cw_lang.py`: the real `.cw` front-end (lexer → AST → recursive-descent parser → host-side tree-walking interpreter). Independent of `cw_compiler.py`'s regex/template RTL-lowering path. Owns **compile-time class magic methods** (operator overloading + type-conversion hooks `__to_int__`/`__to_float__`/`__convert__`); `Interpreter.convert()` is the toolchain hook for dynamic type-format conversion. Driven by the `cw-eval` CLI subcommand and the syntax side of `cw-lint`. Must not be wired into RTL lowering or the benchmark gate.
 - `arch_search.py`: synthesis-time architecture-candidate enumeration and ranking (`arch-search` CLI). Reuses the real `compile_project`/`build_schedule` pipeline for performance metrics; owns 2D/3D grid-shape enumeration, the versioned estimate models (`wau_resource_model_v1`, `dram_model_v1`, `arch_search_rank_v1`), and reads device capacity metadata (`logic_cells`/`bram_kbits`/`dsp_blocks`) from `device_library.py`. Must not change scheduling/emission behavior — it only builds and evaluates candidate config payloads in memory.
 - `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by 2D/3D Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.
@@ -92,6 +98,13 @@ the value scoreboard):
   `dependency_edges_v1=104` hops across 105 true data-dependency edges
 - 3-run stability: `median=68.00`, `p95=68.00`, `3/3` passing
 - 8/8 scoreboard cases match the software reference (`scoreboard_pass_ratio=1.0`)
+
+Current DE0-NANO real-board ceiling for `docs/example-program.cw` (measured
+2026-07-06 on EP4CE22):
+- validated live board image: `2x2`, `1032/1032` pass against `waugen.cw_reference`
+- larger fitting image: `2x4`, `22,166 / 22,320` logic elements (99%) but `0/8` golden-case pass on hardware
+- non-fitting images: `4x4` (`61,564 / 22,320` logic elements, 276%) and `2x5` (`39,747 / 22,320` logic elements, 178%)
+- treat anything above `2x2` for this CW workload as experimental until a slower board clock or timing-cut router/station path lands
 
 ## Extension Rules
 When adding a new arithmetic operation:

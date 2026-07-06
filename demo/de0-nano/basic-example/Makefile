@@ -7,16 +7,23 @@ QUARTUS_ROOT ?= C:/altera_standard/25.1std
 DEMO_ROOT    := $(CURDIR)
 REPO_ROOT    := $(realpath $(DEMO_ROOT)/../../..)
 PYTHON       ?= python
+CW_GRID_X    ?= 2
+CW_GRID_Y    ?= 2
+CW_STRESS_ITERS ?= 1024
+CW_STRESS_RANGE ?= 1023
+CW_STRESS_SEED  ?= 1592594996
 
-.PHONY: help generate build program server run run-iris clean
+.PHONY: help generate build build-cw-stress program server run run-iris run-cw-stress clean
 
 help:
 	@echo "make generate   - regenerate WAU RTL into quartus/wau_rtl/"
 	@echo "make build      - generate + quartus_sh full compile"
+	@echo "make build-cw-stress - compile docs/example-program.cw for the board wrapper"
 	@echo "make program    - quartus_pgm download .sof to USB-Blaster"
 	@echo "make server     - run TCL vJTAG MMIO server (port 2540)"
 	@echo "make run        - python benchmark against running server"
 	@echo "make run-iris   - python Iris benchmark against running server"
+	@echo "make run-cw-stress - python CW stress benchmark against running server"
 	@echo "make clean      - remove build/ and Quartus output_files/"
 
 generate:
@@ -40,6 +47,10 @@ build: generate
 	printf 'load_package flow\nproject_open -force -revision wau_de0_nano_basic wau_de0_nano_basic\nexecute_flow -compile\nproject_close\n' > build/flow.tcl
 	cd quartus && $(QUARTUS_ROOT)/quartus/bin64/quartus_sh.exe -t ../build/flow.tcl
 
+build-cw-stress:
+	powershell.exe -ExecutionPolicy Bypass -File scripts/build_cw_stress.ps1 \
+	    -GridX $(CW_GRID_X) -GridY $(CW_GRID_Y) -QuartusRoot "$(QUARTUS_ROOT)"
+
 program:
 	@SOF=quartus/wau_de0_nano_basic.sof; \
 	if [ ! -f "$$SOF" ]; then SOF=quartus/output_files/wau_de0_nano_basic.sof; fi; \
@@ -55,6 +66,14 @@ run:
 run-iris:
 	PYTHONPATH=host $(PYTHON) host/programs/run_iris_stats_benchmark.py \
 	    --report build/iris_benchmark_$$(date +%Y%m%d_%H%M%S).json
+
+run-cw-stress:
+	$(PYTHON) host/programs/run_cw_stress_benchmark.py \
+	    --config build/cw_stress_$(CW_GRID_X)x$(CW_GRID_Y)_merged.json \
+	    --random-iters $(CW_STRESS_ITERS) \
+	    --random-range $(CW_STRESS_RANGE) \
+	    --seed $(CW_STRESS_SEED) \
+	    --report build/cw_stress_benchmark_$$(date +%Y%m%d_%H%M%S).json
 
 clean:
 	rm -rf build/ quartus/wau_rtl quartus/db quartus/incremental_db quartus/output_files quartus/*.qws

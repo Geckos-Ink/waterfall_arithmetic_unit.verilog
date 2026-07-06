@@ -1,0 +1,117 @@
+{
+  "timestamp": "2026-07-06T14:33:53Z",
+  "host": "127.0.0.1",
+  "port": 2540,
+  "config": "demo\\de0-nano\\basic-example\\build\\cw_stress_2x4_merged.json",
+  "flow_id": 90,
+  "seed": 12648430,
+  "random_iters": 0,
+  "random_range": 255,
+  "total_cases": 8,
+  "pass_count": 0,
+  "pass_ratio": 0.0,
+  "pass_by_kind": {},
+  "total_by_kind": {
+    "golden": 8
+  },
+  "throughput_ops_per_s": 0.8751777704898905,
+  "latency_s": {
+    "min": 0.0,
+    "p50": 0.0,
+    "mean": 0.0,
+    "p95": 0.0,
+    "max": 0.0
+  },
+  "obs_delta": {
+    "hops": 18,
+    "stalls": 2737986742,
+    "forwards": 11,
+    "local_delivered": 7,
+    "cache_hits": 0,
+    "cache_lookups": 4,
+    "hit_rate": 0.0
+  },
+  "sample_outputs": [],
+  "failures": [
+    {
+      "case": 1,
+      "kind": "golden",
+      "a": 10,
+      "b": 4,
+      "expected": 481,
+      "got_flow": null,
+      "got_value": null,
+      "timeout": true
+    },
+    {
+      "case": 2,
+      "kind": "golden",
+      "a": -7,
+      "b": 5,
+      "expected": 421,
+      "got_flow": null,
+      "got_value": null,
+      "timeout": true
+    },
+    {
+      "case": 3,
+      "kind": "golden",
+      "a": 21,
+      "b": -3,
+      "expected": 0,
+      "got_flow": null,
+      "got_value": null,
+      "timeout": true
+    },
+    {
+      "case": 4,
+      "kind": "golden",
+      "a": 0,
+      "b": 0,
+      "expected": 1,
+      "got_flow": null,
+      "got_value": null,
+      "timeout": true
+    },
+    {
+      "case": 5,
+      "kind": "golden",
+      "a": 31,
+      "b": 31,
+      "expected": 151963,
+      "got_flow": null,
+      "got_value": null,
+      "timeout": true
+    },
+    {
+      "case": 6,
+      "kind": "golden",
+      "a": -15,
+      "b": -9,
+      "expected": 0,
+      "got_flow": null,
+      "got_value": null,
+      "timeout": true
+    },
+    {
+      "case": 7,
+      "kind": "golden",
+      "a": 127,
+      "b": -11,
+      "expected": 0,
+      "got_flow": null,
+      "got_value": null,
+      "timeout": true
+    },
+    {
+      "case": 8,
+      "kind": "golden",
+      "a": -64,
+      "b": 17,
+      "expected": 2092,
+      "got_flow": null,
+      "got_value": null,
+      "timeout": true
+    }
+  ]
+}

@@ -52,6 +52,18 @@ Implemented this cycle:
   (`5,700` hops, `0` stalls, `2,700` forwards, `3,000` local deliveries per
   run). The tracked report lives in
   `benchmarks/de0_nano_iris_stats_benchmark.txt`.
+- Added a second tracked DE0-NANO board benchmark for the repository's
+  `docs/example-program.cw` kernel, using the classic 2D WAU and a new
+  board-specific `build_cw_stress.ps1` / `run_cw_stress.ps1` workflow that
+  compiles the heavier CW flow into the board wrapper, validates every result
+  against `waugen.cw_reference`, and records the real hardware ceiling. On
+  2026-07-06 the largest working image was `2x2`, which fit at
+  `10,372 / 22,320` logic elements and passed `1032/1032` live cases
+  (`8` golden + `1024` seeded random) at `88.3` ops/s with `72,240` mesh hops.
+  Larger grids established the current board limit for this workload:
+  `2x4` fit at `22,166 / 22,320` logic elements (99%) but timed out all
+  `8/8` golden cases on hardware, while `4x4` and `2x5` failed fit outright.
+  The tracked report lives in `benchmarks/de0_nano_cw_stress_benchmark.txt`.
 - TimeQuest still does not close `CLOCK_50` for that 23.1 bitstream
   (setup slack `-29.585 ns` slow 0 C, `-11.578 ns` fast 0 C), so the current
   board result is empirical room-temperature validation rather than signoff.

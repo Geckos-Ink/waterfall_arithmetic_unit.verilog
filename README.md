@@ -4,7 +4,7 @@ The **Waterfall Arithmetic Unit (WAU)** is a configurable arithmetic compute fab
 
 This repository is the **toolchain that builds one**. You describe your kernel in a high-level form — an arithmetic expression, a constrained pseudo-C snippet, or a `.cw` program — and the Python generator emits the full Verilog (cores, mesh, coordinator, host MMIO), a compiled schedule, and a software reference model used as a correctness oracle. No hand-written RTL, no separate compiler stack.
 
-It is **silicon-verified**: the same flow has been taken end-to-end onto a Terasic DE0-Nano (Intel Cyclone IV E), where 795/795 random and corner-case operand pairs plus 150/150 real Iris samples round-tripped through the live mesh and matched the software reference (see [DE0-Nano demo](#de0-nano-real-silicon-implementation)).
+It is **silicon-verified**: the same flow has been taken end-to-end onto a Terasic DE0-Nano (Intel Cyclone IV E), where 795/795 random and corner-case operand pairs, 150/150 real Iris samples, and 1032/1032 `docs/example-program.cw` stress cases round-tripped through the live mesh and matched the software reference (see [DE0-Nano demo](#de0-nano-real-silicon-implementation)).
 
 Typical uses: experimenting with small FPGA-side math accelerators, teaching dataflow / NoC concepts on real silicon, or as a reusable reference for the "high-level kernel → generated RTL → working bitstream" path.
 
@@ -323,6 +323,9 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `benchmarks/example_pogram_benchmark_history.json`: benchmark history for trend checks
 - `benchmarks/de0_nano_basic_benchmark.txt`: silicon-verified reference run on the DE0-Nano (resource fit, per-corner Fmax, 795/795 scoreboard pass, live observability counters)
 - `benchmarks/de0_nano_iris_stats_benchmark.txt`: real-data DE0-Nano benchmark for the 2D WAU using 150 Iris samples, live board measurements, and tracked JSON sidecars
+- `benchmarks/de0_nano_cw_stress_benchmark.txt`: live DE0-Nano benchmark for `docs/example-program.cw`, including the passing 2x2 image and the measured larger-grid failure ceiling
+- `benchmarks/de0_nano_cw_stress_benchmark_latest.json`: machine-readable passing 2x2 stress run (`1032/1032`)
+- `benchmarks/de0_nano_cw_stress_2x4_timeout.json`: machine-readable failure capture for the largest fitting (`2x4`) image
 - `demo/de0-nano/basic-example/`: end-to-end physical deployment — Quartus 25.1 project + reusable vJTAG MMIO bridge RTL + reusable Python/TCL host stack + automation scripts; produces the artifact above
 
 ## Generated Artifacts
@@ -437,7 +440,7 @@ non-MMIO integrations.
 This is a robust **basis**, not final silicon architecture:
 - Control-plane dispatch and data-plane results now traverse explicit neighbor-linked highway meshes with valid/ready backpressure.
 - `grid.z > 1` emits layered 3D core indexing and vertical `up/down` mesh links; this path is currently verified with `iverilog` (`tb_wau_highway_mesh_3d`) and has not yet been calibrated on the DE0-NANO board flow.
-- A 2026-07-06 Quartus 23.1std compile of the regenerated 2D DE0-NANO demo fits, was programmed onto the board, and completed a real-data Iris benchmark with 150/150 passing samples; however, TimeQuest still does not close the 50 MHz board clock (`CLOCK_50` setup slack -29.585 ns at slow 0 C and -11.578 ns at fast 0 C). Treat the board result as empirical room-temperature validation, and treat registered/elastic mesh timing cuts or a slower board-clock profile as the next hardware-closing slice.
+- A 2026-07-06 Quartus 23.1std compile of the regenerated 2D DE0-NANO demo fits, was programmed onto the board, and completed both a real-data Iris benchmark (`150/150` per run) and a heavier `docs/example-program.cw` stress benchmark (`1032/1032` at `2x2`). The same session also established the current heavier-workload ceiling on EP4CE22: `2x4` fits at `99%` logic but times out all `8/8` golden cases on hardware, while `4x4` and `2x5` fail fit. TimeQuest still does not close the 50 MHz board clock on either tracked 23.1 image, so treat the board results as empirical room-temperature validation and treat registered/elastic mesh timing cuts or a slower board-clock profile as the next hardware-closing slice.
 - Runtime adaptation is implemented as primary/fallback/candidate core selection per node, constrained by per-core capability metadata.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
 - Current pseudo-C frontend targets accumulator-style pipelines (`acc = a; acc = acc <op> ...`) to stay compatible with the present coordinator execution model.
@@ -518,6 +521,48 @@ precise host-side reference. The useful point is that the live device stayed
 bit-exact across all 300 checked samples and the observability counters still
 showed real mesh traffic (`5 700` hops, `0` stalls, `2 700` forwards,
 `3 000` local deliveries per 150-row run).
+
+### Complex CW workload - live board run (2026-07-06)
+The same board wrapper was then pushed with the repository's tracked
+[`docs/example-program.cw`](docs/example-program.cw) kernel rather than the
+small `basic_arithmetic.cw` demo. The board build path is now tracked in
+[`demo/de0-nano/basic-example/scripts/build_cw_stress.ps1`](demo/de0-nano/basic-example/scripts/build_cw_stress.ps1),
+and the live scoreboard harness is
+[`demo/de0-nano/basic-example/host/programs/run_cw_stress_benchmark.py`](demo/de0-nano/basic-example/host/programs/run_cw_stress_benchmark.py).
+The full captured report lives in
+[`benchmarks/de0_nano_cw_stress_benchmark.txt`](benchmarks/de0_nano_cw_stress_benchmark.txt).
+
+The passing board image used the tuned CW knobs already proven in `iverilog`
+(`lane_parallelism=2`, `max_in_flight=2`, `program_replicas=2`,
+`program_max_parallel_flows=1`, `placement=balance`,
+`lowering_profile=throughput_optimized`) and lowered into a 17-node
+`add`/`mul`/`max` flow on the classic 2D grid.
+
+| Grid | Outcome | Notes |
+|------|:-------:|-------|
+| `4x4` | no fit | `61,564 / 22,320` logic elements (`276%`), `96 / 132` multipliers |
+| `2x5` | no fit | `39,747 / 22,320` logic elements (`178%`), `60 / 132` multipliers |
+| `2x4` | fit, fails live | `22,166 / 22,320` logic elements (`99%`); `0/8` golden cases passed, all timed out |
+| `2x2` | fit, passes live | `10,372 / 22,320` logic elements (`46%`); `1032/1032` pass (`8` golden + `1024` seeded random) |
+
+The validated `2x2` live run used random inputs in `[-1023, 1023]` with seed
+`1592594996` and produced:
+
+| Cases | Pass | Throughput | p50 / p95 |
+|------:|:----:|-----------:|----------:|
+| `1032` | **1032/1032** | `88.3 op/s` | `15 / 16 ms` |
+
+Observability counters stayed coherent on the passing image:
+`72,240` hops, `0` stalls, `37,152` forwards, `35,088` local deliveries,
+`37 / 17,544` station-cache hits. Averaged across all 1032 triggers, the
+heavier CW flow drove about `70` hops, `36` forwards, and `34` local
+deliveries per case.
+
+The failing `2x4` image is useful precisely because it bounds the board:
+although it still fits, TimeQuest slack falls to `-167.709 ns` at the slow
+0 C setup corner and `-101.518 ns` at the fast 0 C setup corner, and the live
+board run times out every golden case. For this workload on EP4CE22, `2x2`
+is therefore the largest empirically validated image today.
 
 ### Resource & timing
 Post-fit on EP4CE22F17C6 (Quartus Standard 25.1, 2×2 grid, int32, 4 ops):

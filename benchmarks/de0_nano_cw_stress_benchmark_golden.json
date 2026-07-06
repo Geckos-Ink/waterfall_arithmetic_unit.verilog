@@ -1,0 +1,111 @@
+{
+  "timestamp": "2026-07-06T14:31:46Z",
+  "host": "127.0.0.1",
+  "port": 2540,
+  "config": "demo\\de0-nano\\basic-example\\build\\cw_stress_2x2_merged.json",
+  "flow_id": 90,
+  "seed": 12648430,
+  "random_iters": 0,
+  "random_range": 255,
+  "total_cases": 8,
+  "pass_count": 8,
+  "pass_ratio": 1.0,
+  "pass_by_kind": {
+    "golden": 8
+  },
+  "total_by_kind": {
+    "golden": 8
+  },
+  "throughput_ops_per_s": 85.1063830470232,
+  "latency_s": {
+    "min": 0.0,
+    "p50": 0.015499999979510903,
+    "mean": 0.011749999990570359,
+    "p95": 0.015999999945051968,
+    "max": 0.01600000006146729
+  },
+  "obs_delta": {
+    "hops": 560,
+    "stalls": 0,
+    "forwards": 288,
+    "local_delivered": 272,
+    "cache_hits": 9,
+    "cache_lookups": 136,
+    "hit_rate": 0.0661764705882353
+  },
+  "sample_outputs": [
+    {
+      "case": 1,
+      "kind": "golden",
+      "a": 10,
+      "b": 4,
+      "expected": 481,
+      "got_flow": 90,
+      "got_value": 481
+    },
+    {
+      "case": 2,
+      "kind": "golden",
+      "a": -7,
+      "b": 5,
+      "expected": 421,
+      "got_flow": 90,
+      "got_value": 421
+    },
+    {
+      "case": 3,
+      "kind": "golden",
+      "a": 21,
+      "b": -3,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 4,
+      "kind": "golden",
+      "a": 0,
+      "b": 0,
+      "expected": 1,
+      "got_flow": 90,
+      "got_value": 1
+    },
+    {
+      "case": 5,
+      "kind": "golden",
+      "a": 31,
+      "b": 31,
+      "expected": 151963,
+      "got_flow": 90,
+      "got_value": 151963
+    },
+    {
+      "case": 6,
+      "kind": "golden",
+      "a": -15,
+      "b": -9,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 7,
+      "kind": "golden",
+      "a": 127,
+      "b": -11,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 8,
+      "kind": "golden",
+      "a": -64,
+      "b": 17,
+      "expected": 2092,
+      "got_flow": 90,
+      "got_value": 2092
+    }
+  ],
+  "failures": []
+}
