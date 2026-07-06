@@ -6,7 +6,7 @@
 Enumerates deterministic candidate architectures for a given workload config
 across four axes:
 
-- core disposition: every grid shape (x, y) with x*y equal to the base
+- core disposition: every grid shape (x, y, z) with x*y*z equal to the base
   config's core count;
 - operation distribution: uniform capability vs specializing heavy operations
   (latency > 1 or non-pipelined) onto a column or onto half of the grid,
@@ -81,11 +81,13 @@ class CandidateKnobs:
     local_ram_depth: int
     global_ram_depth: int
     station_cache_entries: int
+    grid_z: int = 1
 
     @property
     def candidate_id(self) -> str:
         return (
-            f"g{self.grid_x}x{self.grid_y}_{self.op_distribution}_{self.memory_split}"
+            f"g{self.grid_x}x{self.grid_y}x{self.grid_z}_"
+            f"{self.op_distribution}_{self.memory_split}"
         )
 
 
@@ -108,6 +110,7 @@ class CandidateResult:
             "knobs": {
                 "grid_x": self.knobs.grid_x,
                 "grid_y": self.knobs.grid_y,
+                "grid_z": self.knobs.grid_z,
                 "op_distribution": self.knobs.op_distribution,
                 "memory_split": self.knobs.memory_split,
                 "local_ram_depth": self.knobs.local_ram_depth,
@@ -128,6 +131,7 @@ class ArchSearchReport:
     device_part: str
     base_grid_x: int
     base_grid_y: int
+    base_grid_z: int
     workload: dict[str, Any]
     candidates: list[CandidateResult]
 
@@ -142,8 +146,8 @@ class ArchSearchReport:
             "project": self.project_name,
             "device_preset": self.device_preset,
             "device_part": self.device_part,
-            "base_grid": {"x": self.base_grid_x, "y": self.base_grid_y},
-            "core_count": self.base_grid_x * self.base_grid_y,
+            "base_grid": {"x": self.base_grid_x, "y": self.base_grid_y, "z": self.base_grid_z},
+            "core_count": self.base_grid_x * self.base_grid_y * self.base_grid_z,
             "placement": "re-derived per candidate (base placement pins stripped)",
             "candidate_count": len(self.candidates),
             "feasible_count": feasible,
@@ -151,14 +155,17 @@ class ArchSearchReport:
         }
 
 
-def _grid_shapes(core_count: int) -> list[tuple[int, int]]:
-    """All (x, y) factor pairs preserving the base core count, widest-x last."""
-    shapes = [
-        (x, core_count // x)
-        for x in range(1, core_count + 1)
-        if core_count % x == 0
-    ]
-    shapes.sort(key=lambda s: (abs(s[0] - s[1]), s[0]))
+def _grid_shapes(core_count: int) -> list[tuple[int, int, int]]:
+    """All (x, y, z) factor triples preserving the base core count."""
+    shapes: list[tuple[int, int, int]] = []
+    for z in range(1, core_count + 1):
+        if core_count % z != 0:
+            continue
+        layer_cells = core_count // z
+        for x in range(1, layer_cells + 1):
+            if layer_cells % x == 0:
+                shapes.append((x, layer_cells // x, z))
+    shapes.sort(key=lambda s: (max(s) - min(s), abs(s[0] - s[1]), s[2], s[0], s[1]))
     return shapes
 
 
@@ -175,7 +182,7 @@ def _heavy_op_names(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
     return heavy, light
 
 
-def _strip_placements(payload: dict[str, Any], *, grid_x: int, grid_y: int) -> None:
+def _strip_placements(payload: dict[str, Any], *, grid_x: int, grid_y: int, grid_z: int) -> None:
     """Remove placement pins so every candidate re-derives placement, and
     clamp flow entry/exit coordinates into the candidate grid."""
     for flow in payload.get("flows", []):
@@ -184,6 +191,7 @@ def _strip_placements(payload: dict[str, Any], *, grid_x: int, grid_y: int) -> N
             if isinstance(coord, dict):
                 coord["x"] = max(0, min(int(coord.get("x", 0)), grid_x - 1))
                 coord["y"] = max(0, min(int(coord.get("y", 0)), grid_y - 1))
+                coord["z"] = max(0, min(int(coord.get("z", 0)), grid_z - 1))
         for stage in flow.get("stages", []) or []:
             if isinstance(stage, dict):
                 stage.pop("core", None)
@@ -215,10 +223,13 @@ def _capability_entries(
             return x >= heavy_width
 
     entries: list[dict[str, Any]] = []
-    for y in range(knobs.grid_y):
-        for x in range(knobs.grid_x):
-            if restricted(x, y):
-                entries.append({"core": {"x": x, "y": y}, "operations": list(light_ops)})
+    for z in range(knobs.grid_z):
+        for y in range(knobs.grid_y):
+            for x in range(knobs.grid_x):
+                if restricted(x, y):
+                    entries.append(
+                        {"core": {"x": x, "y": y, "z": z}, "operations": list(light_ops)}
+                    )
     return entries
 
 
@@ -236,6 +247,7 @@ def build_candidate_payload(
     device.setdefault("grid", {})
     device["grid"]["x"] = knobs.grid_x
     device["grid"]["y"] = knobs.grid_y
+    device["grid"]["z"] = knobs.grid_z
     device["local_ram_depth"] = knobs.local_ram_depth
     device["global_ram_depth"] = knobs.global_ram_depth
 
@@ -249,7 +261,7 @@ def build_candidate_payload(
     station_cache = compiler.setdefault("station_cache", {})
     station_cache["entries"] = knobs.station_cache_entries
 
-    _strip_placements(payload, grid_x=knobs.grid_x, grid_y=knobs.grid_y)
+    _strip_placements(payload, grid_x=knobs.grid_x, grid_y=knobs.grid_y, grid_z=knobs.grid_z)
     return payload
 
 
@@ -297,32 +309,35 @@ def _estimate_resources(
     config: Any, knobs: CandidateKnobs, preset: DevicePreset
 ) -> dict[str, Any]:
     width = config.device.data_width
-    grid_n = knobs.grid_x * knobs.grid_y
+    grid_n = knobs.grid_x * knobs.grid_y * knobs.grid_z
     dsp_per_mul = math.ceil(width / 18) ** 2
 
-    op_caps: dict[tuple[int, int], set[str]] = {}
+    op_caps: dict[tuple[int, int, int], set[str]] = {}
     for capability in config.compiler.core_capabilities:
         if capability.operations:
-            op_caps[(capability.core.x, capability.core.y)] = set(capability.operations)
+            op_caps[(capability.core.x, capability.core.y, capability.core.z)] = set(
+                capability.operations
+            )
 
     total_luts = 0.0
     total_dsp = 0
     cache_entries = config.compiler.station_cache.entries
 
-    for y in range(knobs.grid_y):
-        for x in range(knobs.grid_x):
-            allowed = op_caps.get((x, y))
-            core_luts = 150.0 + cache_entries * 6.0  # station control + cache mgmt
-            core_uses_dsp = False
-            for op in config.operations:
-                if allowed is not None and op.name not in allowed:
-                    continue
-                luts, uses_dsp = _op_lut_cost(op.verilog_expr, width)
-                core_luts += luts
-                core_uses_dsp = core_uses_dsp or uses_dsp
-            total_luts += core_luts
-            if core_uses_dsp:
-                total_dsp += dsp_per_mul
+    for z in range(knobs.grid_z):
+        for y in range(knobs.grid_y):
+            for x in range(knobs.grid_x):
+                allowed = op_caps.get((x, y, z))
+                core_luts = 150.0 + cache_entries * 6.0  # station control + cache mgmt
+                core_uses_dsp = False
+                for op in config.operations:
+                    if allowed is not None and op.name not in allowed:
+                        continue
+                    luts, uses_dsp = _op_lut_cost(op.verilog_expr, width)
+                    core_luts += luts
+                    core_uses_dsp = core_uses_dsp or uses_dsp
+                total_luts += core_luts
+                if core_uses_dsp:
+                    total_dsp += dsp_per_mul
 
     # Two router planes (control + data) per node.
     total_luts += grid_n * 2 * (100.0 + 2.0 * width)
@@ -361,7 +376,10 @@ def _estimate_dram(
     working_set_bytes = int(math.ceil(instruction_count * word_bytes))
     workload_traffic_bytes = int(math.ceil(instruction_count * 3 * word_bytes))
     onchip_bytes = int(
-        (knobs.grid_x * knobs.grid_y * knobs.local_ram_depth + knobs.global_ram_depth)
+        (
+            knobs.grid_x * knobs.grid_y * knobs.grid_z * knobs.local_ram_depth
+            + knobs.global_ram_depth
+        )
         * word_bytes
     )
 
@@ -439,14 +457,16 @@ def run_arch_search(
     base_local = base_config.device.local_ram_depth
     base_global = base_config.device.global_ram_depth
     base_cache_entries = base_config.compiler.station_cache.entries
-    core_count = base_config.device.grid_x * base_config.device.grid_y
+    core_count = (
+        base_config.device.grid_x * base_config.device.grid_y * base_config.device.grid_z
+    )
 
     op_distributions = (
         OP_DISTRIBUTIONS if heavy_ops and light_ops else ("uniform",)
     )
 
     candidates: list[CandidateResult] = []
-    for grid_x, grid_y in _grid_shapes(core_count):
+    for grid_x, grid_y, grid_z in _grid_shapes(core_count):
         for op_distribution in op_distributions:
             for memory_split in MEMORY_SPLITS:
                 local_depth, global_depth, cache_entries = _memory_split_knobs(
@@ -458,6 +478,7 @@ def run_arch_search(
                 knobs = CandidateKnobs(
                     grid_x=grid_x,
                     grid_y=grid_y,
+                    grid_z=grid_z,
                     op_distribution=op_distribution,
                     memory_split=memory_split,
                     local_ram_depth=local_depth,
@@ -496,6 +517,7 @@ def run_arch_search(
         device_part=preset.part,
         base_grid_x=base_config.device.grid_x,
         base_grid_y=base_config.device.grid_y,
+        base_grid_z=base_config.device.grid_z,
         workload=workload,
         candidates=candidates,
     )
@@ -548,7 +570,8 @@ def format_report_text(report: ArchSearchReport, *, top: int = 10) -> str:
     lines = [
         f"arch-search report ({SCHEMA_VERSION}, ranking {RANKING_VERSION})",
         f"project: {report.project_name}  device: {report.device_preset} ({report.device_part})",
-        f"base grid: {report.base_grid_x}x{report.base_grid_y}  candidates: {len(report.candidates)}"
+        f"base grid: {report.base_grid_x}x{report.base_grid_y}x{report.base_grid_z}  "
+        f"candidates: {len(report.candidates)}"
         f" (feasible: {sum(1 for c in report.candidates if c.feasible)})",
         "",
         f"{'rank':>4}  {'candidate':<38} {'makespan':>8} {'hops':>5} "

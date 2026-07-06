@@ -65,7 +65,7 @@ class ArchSearchReportTests(unittest.TestCase):
             )
 
     def test_baseline_shape_present_and_feasible(self) -> None:
-        cand = _candidate_by_id(self.report, "g4x3_uniform_balanced")
+        cand = _candidate_by_id(self.report, "g4x3x1_uniform_balanced")
         self.assertTrue(cand.feasible)
         self.assertGreater(cand.metrics["makespan_cycles"], 0)
         self.assertEqual(
@@ -75,14 +75,17 @@ class ArchSearchReportTests(unittest.TestCase):
         self.assertGreater(cand.resources["bram_kbits"], 0)
 
     def test_grid_shapes_preserve_core_count(self) -> None:
-        core_count = self.report.base_grid_x * self.report.base_grid_y
+        core_count = self.report.base_grid_x * self.report.base_grid_y * self.report.base_grid_z
         for cand in self.report.candidates:
-            self.assertEqual(cand.knobs.grid_x * cand.knobs.grid_y, core_count)
+            self.assertEqual(
+                cand.knobs.grid_x * cand.knobs.grid_y * cand.knobs.grid_z,
+                core_count,
+            )
 
     def test_memory_split_estimate_relations(self) -> None:
-        balanced = _candidate_by_id(self.report, "g4x3_uniform_balanced")
-        local_heavy = _candidate_by_id(self.report, "g4x3_uniform_local_heavy")
-        dram_offload = _candidate_by_id(self.report, "g4x3_uniform_dram_offload")
+        balanced = _candidate_by_id(self.report, "g4x3x1_uniform_balanced")
+        local_heavy = _candidate_by_id(self.report, "g4x3x1_uniform_local_heavy")
+        dram_offload = _candidate_by_id(self.report, "g4x3x1_uniform_dram_offload")
 
         self.assertGreater(
             local_heavy.resources["bram_kbits"], balanced.resources["bram_kbits"]
@@ -96,8 +99,8 @@ class ArchSearchReportTests(unittest.TestCase):
         self.assertTrue(dram_offload.dram["dram_required"])
 
     def test_specialization_reduces_estimated_area(self) -> None:
-        uniform = _candidate_by_id(self.report, "g4x3_uniform_balanced")
-        column = _candidate_by_id(self.report, "g4x3_heavy_column_balanced")
+        uniform = _candidate_by_id(self.report, "g4x3x1_uniform_balanced")
+        column = _candidate_by_id(self.report, "g4x3x1_heavy_column_balanced")
         self.assertLess(column.resources["luts"], uniform.resources["luts"])
         self.assertLess(
             column.resources["dsp_blocks"], uniform.resources["dsp_blocks"]
@@ -129,6 +132,7 @@ class CandidatePayloadTests(unittest.TestCase):
         defaults = dict(
             grid_x=4,
             grid_y=3,
+            grid_z=1,
             op_distribution="uniform",
             memory_split="balanced",
             local_ram_depth=128,
@@ -162,10 +166,10 @@ class CandidatePayloadTests(unittest.TestCase):
         )
         entries = payload["compiler"]["core_capabilities"]
         # Restricted rows exist for every core off column 0, none on column 0.
-        restricted_cores = {(e["core"]["x"], e["core"]["y"]) for e in entries}
+        restricted_cores = {(e["core"]["x"], e["core"]["y"], e["core"].get("z", 0)) for e in entries}
         self.assertEqual(
             restricted_cores,
-            {(x, y) for y in range(3) for x in range(4) if x != 0},
+            {(x, y, 0) for y in range(3) for x in range(4) if x != 0},
         )
         for entry in entries:
             self.assertEqual(sorted(entry["operations"]), sorted(DEMO_LIGHT))

@@ -13,13 +13,45 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-07-06)
+Implemented this cycle:
+- First 3D waterfall-generator slice: `device.grid.z` is now a validated
+  optional dimension (default `1`), and all `Coord` fields accept optional
+  `z` (default `0`). Compiler placement, capability constraints, CW/basic
+  lowering entry points, scheduler core indexing, schedule JSON, program JSON,
+  and `dependency_edges_v1` transfer-hop metrics now use
+  `z * grid_x * grid_y + y * grid_x + x` indexing and 3D Manhattan distance.
+- Generated RTL now emits `WAU_GRID_Z`, creates layered top-level core
+  instances, and extends `wau_highway_router`/`wau_highway_mesh` with vertical
+  `up/down` valid/ready links between layers. Existing 2D configs stay
+  byte-compatible in behavior with `grid.z=1`.
+- Architecture search now preserves total core count across `(x,y,z)` factor
+  triples and carries `grid_z` through candidate IDs, resource/DRAM estimates,
+  placement stripping, and capability specialization.
+- Added `src/python/configs/wau_3d_demo.json`, Python coverage in
+  `tests/python/test_3d_grid.py`, and RTL vertical-routing coverage in
+  `tests/rtl/tb_wau_highway_mesh_3d.v` wired into
+  `scripts/run_iverilog_tests.sh`. The 3D path is currently simulator-verified
+  with Icarus Verilog; DE0-NANO board calibration for layered designs remains
+  future work.
+- Ran the existing DE0-NANO 2D board flow with Quartus 23.1std at
+  `C:\intelFPGA_lite\23.1std` after regenerating the demo RTL. The fitter
+  succeeded for the 2x2 board design (9,537 / 22,320 logic elements, 24 / 132
+  9-bit multipliers, `.sof` produced), but TimeQuest did not close at the
+  50 MHz board clock (`CLOCK_50` Fmax 23.06 MHz, worst setup slack -23.360 ns)
+  and reported a mesh combinational-loop warning through
+  `wau_highway_router.v`. The bitstream was not programmed; next hardware slice
+  should add registered/elastic mesh cuts or a board-clock constraint/profile
+  before real-data DE0-NANO benchmarking.
+
 ## Progress Update (2026-07-03)
 Implemented this cycle:
 - Near-Term Target 5 first slice (architecture-search report): new
   `waugen arch-search` CLI + `waugen.arch_search` module producing a ranked,
   machine-readable synthesis-candidate report for a workload config across
-  the four required axes: core disposition (all grid factor-pair reshapes at
-  the base core count), operation distribution (uniform vs heavy-op
+  the four required axes: core disposition (initially all 2D grid factor-pair
+  reshapes at the base core count; extended to 3D factor triples on
+  2026-07-06), operation distribution (uniform vs heavy-op
   specialization onto a column/half-grid via `compiler.core_capabilities`),
   on-chip memory split (`local_heavy`/`balanced`/`shared_heavy` local/global
   RAM depth + station-cache sizing), and external-DRAM reliance
@@ -476,7 +508,7 @@ Possible work:
   unverified in CI (no PySide6 in the headless environment).
 - Quantitative area/timing analysis scripts per device preset.
 - Automatic design-space exploration for FPGA synthesis candidates:
-  - core disposition / grid reshaping, (first slice supported: `arch-search` factor-pair reshapes)
+  - core disposition / grid reshaping, (first slice supported: `arch-search` 2D/3D factor reshapes)
   - operation specialization balance, (first slice supported: `arch-search` heavy-op column/half-grid capability variants)
   - predictive/adaptive logic budget,
   - BRAM/LUTRAM/shared-memory partitioning, (first slice supported: `arch-search` memory splits over local/global RAM depth + station-cache sizing)
@@ -511,4 +543,11 @@ Possible work:
 4. Phase 5 and 6 as optimization/productivity tracks.
 
 ## Reference todos
-- Supporting 3D layering is important not only for chips those effectively supports three dimensions of circuits, but may be very useful also on classic 2D circuits for creating very fast lane for major combinations of paths, even if with a more confusing and condensed synthetized circuit.
+- Supporting 3D layering is important not only for chips that effectively
+  support three dimensions of circuits, but may be useful on classic 2D
+  circuits for creating fast lanes for major path combinations, even if the
+  synthesized circuit is more condensed and harder to inspect. First slice is
+  implemented: `grid.z`, 3D placement/indexing/schedule metrics, generated
+  vertical mesh links, and `iverilog` tests. Remaining work: synthesize and
+  calibrate layered candidates on real FPGA boards, then feed measured timing
+  and resource data back into `arch-search`.

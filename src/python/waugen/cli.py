@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "--entry",
         default="0,0",
-        help="Flow entry coordinate as x,y (default: 0,0)",
+        help="Flow entry coordinate as x,y or x,y,z (default: 0,0)",
     )
     c.add_argument(
         "--max-in-flight",
@@ -91,7 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pc.add_argument(
         "--entry",
         default="0,0",
-        help="Flow entry coordinate as x,y (default: 0,0)",
+        help="Flow entry coordinate as x,y or x,y,z (default: 0,0)",
     )
     pc.add_argument(
         "--max-in-flight",
@@ -129,7 +129,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cw.add_argument(
         "--entry",
         default="0,0",
-        help="Flow entry coordinate as x,y (default: 0,0)",
+        help="Flow entry coordinate as x,y or x,y,z (default: 0,0)",
     )
     cw.add_argument(
         "--max-in-flight",
@@ -300,7 +300,7 @@ def _run_generate(config_path: Path, out_dir: Path, summary: bool) -> int:
         print(
             "Device: "
             f"{config.device.vendor} {config.device.family} ({config.device.part}), "
-            f"grid={config.device.grid_x}x{config.device.grid_y}"
+            f"grid={config.device.grid_x}x{config.device.grid_y}x{config.device.grid_z}"
         )
         print(f"Flows: {len(config.flows)}")
         print(f"Operations: {len(config.operations)}")
@@ -323,16 +323,17 @@ def _run_validate(config_path: Path) -> int:
     return 0
 
 
-def _parse_entry(entry: str) -> tuple[int, int]:
+def _parse_entry(entry: str) -> tuple[int, int, int]:
     try:
         parts = [chunk.strip() for chunk in entry.split(",")]
-        if len(parts) != 2:
+        if len(parts) not in {2, 3}:
             raise ValueError
         x = int(parts[0])
         y = int(parts[1])
+        z = int(parts[2]) if len(parts) == 3 else 0
     except Exception as exc:  # noqa: BLE001
-        raise BasicCompilerError("entry must be in format x,y with integer values") from exc
-    return x, y
+        raise BasicCompilerError("entry must be in format x,y or x,y,z with integer values") from exc
+    return x, y, z
 
 
 def _run_compile_expr(
@@ -346,7 +347,7 @@ def _run_compile_expr(
     out_config: Path,
     replace_existing: bool,
 ) -> int:
-    entry_x, entry_y = _parse_entry(entry)
+    entry_x, entry_y, entry_z = _parse_entry(entry)
     resolved_name = name or f"expr_flow_{flow_id}"
 
     flow = merge_expression_into_config(
@@ -357,6 +358,7 @@ def _run_compile_expr(
         name=resolved_name,
         entry_x=entry_x,
         entry_y=entry_y,
+        entry_z=entry_z,
         replace_existing=replace_existing,
         max_in_flight=max_in_flight,
     )
@@ -378,7 +380,7 @@ def _run_compile_pseudoc(
     out_config: Path,
     replace_existing: bool,
 ) -> int:
-    entry_x, entry_y = _parse_entry(entry)
+    entry_x, entry_y, entry_z = _parse_entry(entry)
     resolved_name = name or f"pseudoc_flow_{flow_id}"
 
     flow = merge_pseudoc_into_config(
@@ -389,6 +391,7 @@ def _run_compile_pseudoc(
         name=resolved_name,
         entry_x=entry_x,
         entry_y=entry_y,
+        entry_z=entry_z,
         replace_existing=replace_existing,
         max_in_flight=max_in_flight,
     )
@@ -420,7 +423,7 @@ def _run_compile_cw(
     program_max_parallel_flows: int | None,
     program_load_balance: str | None,
 ) -> int:
-    entry_x, entry_y = _parse_entry(entry)
+    entry_x, entry_y, entry_z = _parse_entry(entry)
     resolved_name = name or f"cw_flow_{flow_id}"
 
     flow, upserted_program = merge_cw_into_config(
@@ -431,6 +434,7 @@ def _run_compile_cw(
         name=resolved_name,
         entry_x=entry_x,
         entry_y=entry_y,
+        entry_z=entry_z,
         replace_existing=replace_existing,
         max_in_flight=max_in_flight,
         dtype=dtype,

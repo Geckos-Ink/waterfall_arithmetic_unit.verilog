@@ -105,7 +105,7 @@ if (-not (Test-Path $quartus_sh)) {
 $FlowTcl = Join-Path $DemoRoot "build\flow.tcl"
 @"
 load_package flow
-project_open wau_de0_nano_basic -revision wau_de0_nano_basic
+project_open -force -revision wau_de0_nano_basic wau_de0_nano_basic
 execute_flow -compile
 project_close
 "@ | Set-Content -Encoding ASCII $FlowTcl

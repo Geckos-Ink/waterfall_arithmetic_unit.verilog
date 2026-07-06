@@ -1,0 +1,81 @@
+{
+  "project": "wau_3d_demo",
+  "output_module_name": "wau_top",
+  "abstraction": {
+    "language": "wau_flow_ir",
+    "version": 1
+  },
+  "device": {
+    "preset": "intel_de0_nano",
+    "name": "intel_de0_nano",
+    "grid": {
+      "x": 2,
+      "y": 1,
+      "z": 2
+    },
+    "data_width": 32,
+    "data_types": [
+      "int32"
+    ],
+    "flow_id_width": 12,
+    "opcode_width": 8,
+    "local_ram_depth": 128,
+    "global_ram_depth": 2048
+  },
+  "operations": {
+    "library": [
+      "add",
+      "mul"
+    ]
+  },
+  "compiler": {
+    "routing": "waterfall",
+    "allow_adaptive_reroute": false,
+    "fallback_radius": 1,
+    "station_cache": {
+      "entries": 4,
+      "replacement_policy": "fifo"
+    }
+  },
+  "flows": [
+    {
+      "id": 3,
+      "name": "vertical_chain",
+      "entry": {
+        "x": 0,
+        "y": 0,
+        "z": 1
+      },
+      "nodes": [
+        {
+          "id": "upper_add",
+          "op": "add",
+          "placement": {
+            "core": {
+              "x": 0,
+              "y": 0,
+              "z": 1
+            },
+            "fixed": true
+          }
+        },
+        {
+          "id": "lower_mul",
+          "op": "mul",
+          "deps": [
+            "upper_add"
+          ],
+          "immediate_b": 3,
+          "placement": {
+            "core": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "fixed": true
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -56,6 +56,12 @@ run_test tb_wau_highway_mesh \
   "$OUT_DIR/wau_highway_mesh.v" \
   "tests/rtl/tb_wau_highway_mesh.v"
 
+run_test tb_wau_highway_mesh_3d \
+  "$OUT_DIR/wau_neighbor_forward.v" \
+  "$OUT_DIR/wau_highway_router.v" \
+  "$OUT_DIR/wau_highway_mesh.v" \
+  "tests/rtl/tb_wau_highway_mesh_3d.v"
+
 run_test tb_wau_host_mmio \
   "$OUT_DIR/wau_host_mmio.v" \
   "tests/rtl/tb_wau_host_mmio.v"

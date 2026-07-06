@@ -25,17 +25,19 @@ _DTYPE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 class Coord:
     x: int
     y: int
+    z: int = 0
 
     @staticmethod
     def from_obj(value: Any, *, field_name: str) -> "Coord":
         if not isinstance(value, dict):
-            raise ConfigError(f"{field_name} must be an object with x/y")
+            raise ConfigError(f"{field_name} must be an object with x/y and optional z")
         try:
             x = int(value["x"])
             y = int(value["y"])
+            z = int(value.get("z", 0))
         except Exception as exc:  # noqa: BLE001
-            raise ConfigError(f"{field_name} must include integer x and y") from exc
-        return Coord(x=x, y=y)
+            raise ConfigError(f"{field_name} must include integer x/y and optional z") from exc
+        return Coord(x=x, y=y, z=z)
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,7 @@ class DeviceSpec:
     part: str
     grid_x: int
     grid_y: int
+    grid_z: int
     data_width: int
     supported_data_types: tuple[str, ...]
     flow_id_width: int
@@ -69,6 +72,7 @@ class DeviceSpec:
 
         grid_x = int(grid.get("x", preset.default_grid_x))
         grid_y = int(grid.get("y", preset.default_grid_y))
+        grid_z = int(grid.get("z", 1))
 
         coordinator_mode = str(value.get("coordinator_mode", "direct"))
         if coordinator_mode not in {"direct", "full_edges", "highway_only"}:
@@ -95,6 +99,7 @@ class DeviceSpec:
             part=str(value.get("part", preset.part)),
             grid_x=validate_range(grid_x, minimum=1, name="device.grid.x"),
             grid_y=validate_range(grid_y, minimum=1, name="device.grid.y"),
+            grid_z=validate_range(grid_z, minimum=1, name="device.grid.z"),
             data_width=data_width,
             supported_data_types=supported_data_types,
             flow_id_width=validate_range(
@@ -121,8 +126,10 @@ class DeviceSpec:
             enable_runtime_auto_adapt=bool(value.get("enable_runtime_auto_adapt", True)),
         )
 
-        if spec.grid_x * spec.grid_y > 255:
-            raise ConfigError("grid_x * grid_y must be <= 255 for this generator basis")
+        if spec.grid_x * spec.grid_y * spec.grid_z > 255:
+            raise ConfigError(
+                "grid_x * grid_y * grid_z must be <= 255 for this generator basis"
+            )
         return spec
 
 
@@ -968,16 +975,21 @@ def load_config_obj(payload: Any, *, default_name: str = "wau_project") -> Proje
                     f"Flow {flow.flow_id} node {node.node_id} references unsupported dtype '{node.dtype}'"
                 )
 
-    seen_capability_cores: set[tuple[int, int]] = set()
+    seen_capability_cores: set[tuple[int, int, int]] = set()
     for idx, capability in enumerate(compiler.core_capabilities):
-        if not (0 <= capability.core.x < device.grid_x and 0 <= capability.core.y < device.grid_y):
+        if not (
+            0 <= capability.core.x < device.grid_x
+            and 0 <= capability.core.y < device.grid_y
+            and 0 <= capability.core.z < device.grid_z
+        ):
             raise ConfigError(
                 "compiler.core_capabilities[{idx}].core out of grid bounds".format(idx=idx)
             )
-        core_key = (capability.core.x, capability.core.y)
+        core_key = (capability.core.x, capability.core.y, capability.core.z)
         if core_key in seen_capability_cores:
             raise ConfigError(
-                f"compiler.core_capabilities has duplicate core entry at ({capability.core.x}, {capability.core.y})"
+                "compiler.core_capabilities has duplicate core entry at "
+                f"({capability.core.x}, {capability.core.y}, {capability.core.z})"
             )
         seen_capability_cores.add(core_key)
 

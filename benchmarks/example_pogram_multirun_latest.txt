@@ -1,5 +1,5 @@
 WAU CW Multi-Run Summary (latest)
-run_utc: 2026-06-14T11:11:37Z
+run_utc: 2026-07-06T01:48:58Z
 multi_runs_requested: 3
 multi_runs_passed: 3
 multi_runs_failed: 0
@@ -8,11 +8,11 @@ exec_latency_cycles_p95: 68.00
 estimated_transfer_hops_metric: dependency_edges_v1
 
 Top Samples (lowest exec latency avg, then makespan, then total_ms)
-1. run=run_2 exec_latency_avg=68.00 makespan=42 total_ms=1987 fallback_ratio=0.3043 hops_total=104
-2. run=run_3 exec_latency_avg=68.00 makespan=42 total_ms=2081 fallback_ratio=0.3043 hops_total=104
-3. run=run_1 exec_latency_avg=68.00 makespan=42 total_ms=2125 fallback_ratio=0.3043 hops_total=104
+1. run=run_2 exec_latency_avg=68.00 makespan=42 total_ms=4648 fallback_ratio=0.3043 hops_total=104
+2. run=run_1 exec_latency_avg=68.00 makespan=42 total_ms=4743 fallback_ratio=0.3043 hops_total=104
+3. run=run_3 exec_latency_avg=68.00 makespan=42 total_ms=4761 fallback_ratio=0.3043 hops_total=104
 
 All Samples
-run=run_1 status=pass exec_latency_avg=68.00 makespan=42 total_ms=2125 fallback_ratio=0.3043 hops_total=104 bench=.build/cw_multi/run_1.txt
-run=run_2 status=pass exec_latency_avg=68.00 makespan=42 total_ms=1987 fallback_ratio=0.3043 hops_total=104 bench=.build/cw_multi/run_2.txt
-run=run_3 status=pass exec_latency_avg=68.00 makespan=42 total_ms=2081 fallback_ratio=0.3043 hops_total=104 bench=.build/cw_multi/run_3.txt
+run=run_1 status=pass exec_latency_avg=68.00 makespan=42 total_ms=4743 fallback_ratio=0.3043 hops_total=104 bench=.build/cw_multi/run_1.txt
+run=run_2 status=pass exec_latency_avg=68.00 makespan=42 total_ms=4648 fallback_ratio=0.3043 hops_total=104 bench=.build/cw_multi/run_2.txt
+run=run_3 status=pass exec_latency_avg=68.00 makespan=42 total_ms=4761 fallback_ratio=0.3043 hops_total=104 bench=.build/cw_multi/run_3.txt

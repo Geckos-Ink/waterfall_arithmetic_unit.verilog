@@ -1,6 +1,6 @@
 # Waterfall Arithmetic Unit - Verilog implementation
 
-The **Waterfall Arithmetic Unit (WAU)** is a configurable arithmetic compute fabric for FPGAs: a 2D grid of small ALU cores wired together by a packet-switched mesh, designed to stream pipelines of math operations (add, multiply, max, FMA, ...) from a host program. Think of it as a tiny, generator-driven dataflow accelerator you can drop onto a real board.
+The **Waterfall Arithmetic Unit (WAU)** is a configurable arithmetic compute fabric for FPGAs: a 2D or layered-3D grid of small ALU cores wired together by a packet-switched mesh, designed to stream pipelines of math operations (add, multiply, max, FMA, ...) from a host program. Think of it as a tiny, generator-driven dataflow accelerator you can drop onto a real board.
 
 This repository is the **toolchain that builds one**. You describe your kernel in a high-level form — an arithmetic expression, a constrained pseudo-C snippet, or a `.cw` program — and the Python generator emits the full Verilog (cores, mesh, coordinator, host MMIO), a compiled schedule, and a software reference model used as a correctness oracle. No hand-written RTL, no separate compiler stack.
 
@@ -13,7 +13,7 @@ Typical uses: experimenting with small FPGA-side math accelerators, teaching dat
 This repository now contains a working foundation for:
 - device-aware WAU configuration (real FPGA presets included),
 - flow compilation (flow stages -> core assignments with fallback cores),
-- DAG/node-based flow compilation with explicit 2D placement directives,
+- DAG/node-based flow compilation with explicit 2D/3D placement directives,
 - per-core capability constraints (operations and data types), with capability-aware CW lowering that prunes incompatible candidate cores before validation,
 - multi-program scheduling with async dependency-aware execution and recurrence support,
 - offline scheduling (cycle timeline + encoded schedule words),
@@ -132,7 +132,7 @@ The accepted host-side `.cw` grammar, pragma contract, and the narrower
 `compile-cw` RTL-template requirements are documented in
 [`docs/cw-language.md`](docs/cw-language.md).
 
-Rank synthesis-time architecture candidates for a workload config (core
+Rank synthesis-time architecture candidates for a workload config (2D/3D core
 disposition/grid shape, heavy-op specialization via core capabilities,
 on-chip memory split, and external-DRAM reliance):
 
@@ -162,6 +162,7 @@ This runs:
 - `tests/rtl/tb_wau_operation_alu.v` (ALU opcode behavior),
 - `tests/rtl/tb_wau_top_demo.v` (end-to-end flow execution via coordinator/highway/core grid),
 - `tests/rtl/tb_wau_highway_mesh.v` (neighbor forwarding, backpressure, and `router_hop_count` advancement),
+- `tests/rtl/tb_wau_highway_mesh_3d.v` (vertical `up/down` routing across `grid.z` layers),
 - `tests/rtl/tb_wau_host_mmio.v` (MMIO register map: writes, reads, output_pending sticky semantics, observability counter readback).
 
 Run the python unit-test suite (compiler/scheduler/CW frontends/program stress matrix/CW reference scoreboard):
@@ -305,6 +306,7 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `src/python/configs/wau_de0_nano_compiled_pseudoc.json`: example output of `compile-pseudoc`
 - `src/python/configs/wau_example_pogram_compiled.json`: example output of `compile-cw`
 - `src/python/configs/wau_2d_multiprogram_demo.json`: advanced DAG + multi-program example
+- `src/python/configs/wau_3d_demo.json`: minimal layered-3D example using `grid.z` and vertical core placement
 - `src/verilog/generated/`: generated output artifacts
 - `tests/rtl/`: SystemVerilog/Verilog testbenches (ALU, top demo, highway mesh + hop counters, MMIO register file)
 - `tests/python/`: Python unit tests for compiler helpers, CW reference scoreboard, and program-level priority/replicas/policy stress matrix
@@ -327,13 +329,13 @@ A `generate` run emits:
 - `wau_defs.vh`: project/device/operation constants (now also `WAU_STATION_CACHE_ENTRIES` and `WAU_STATION_CACHE_POLICY_{FIFO,LRU}`)
 - `wau_operation_alu.v`: arithmetic opcode execution unit
 - `wau_neighbor_forward.v`: directional valid/ready packet forwarding link
-- `wau_highway_router.v`: per-core XY router with local/neighbor arbitration, plus 32-bit `hop_count`/`stall_count`/`local_delivered_count`/`forward_count` observability counters
-- `wau_highway_mesh.v`: generated 2D router mesh interconnect, exposing per-router counter buses
+- `wau_highway_router.v`: per-core XYZ router with local/neighbor arbitration, plus 32-bit `hop_count`/`stall_count`/`local_delivered_count`/`forward_count` observability counters
+- `wau_highway_mesh.v`: generated router mesh interconnect with north/south/east/west plus optional up/down layer links, exposing per-router counter buses
 - `wau_core_station.v`: per-core station (dispatch, latency control, configurable FIFO/LRU multi-entry input/result cache, `cache_hit_count`/`cache_lookup_count`)
 - `wau_core.v`: core wrapper
 - `wau_coordinator.v`: flow orchestrator with runtime adaptive fallback selection and packetized dispatch/result channels
 - `wau_host_mmio.v`: 32-bit memory-mapped host control/status register file with observability counter readback
-- `<output_module_name>.v` (demo: `wau_top.v`): top-level 2D core grid, exporting `obs_total_hop_count`/`stall_count`/`forward_count`/`local_delivered_count`/`cache_hit_count`/`cache_lookup_count`
+- `<output_module_name>.v` (demo: `wau_top.v`): top-level 2D or layered-3D core grid, exporting `obs_total_hop_count`/`stall_count`/`forward_count`/`local_delivered_count`/`cache_hit_count`/`cache_lookup_count`
 - `wau_de0_nano_top.v` (for DE0-NANO preset): board wrapper that instantiates `wau_host_mmio` for external Avalon-MM-style hosts and emulates writes from KEY[1]/SW[3:0] for stand-alone demos
 - `wau_program.json`: compiled flow program
 - `wau_schedule.json`: human-readable schedule timeline
@@ -344,7 +346,7 @@ Main JSON fields:
 - `project`, `output_module_name`
 - `device`
   - `preset` (e.g. `intel_de0_nano`, `intel_agilex7_fm`, `xilinx_artix7_100t`)
-  - `grid.x`, `grid.y`
+  - `grid.x`, `grid.y`, optional `grid.z` (default `1`; `z > 1` emits layered 3D core indexing and vertical mesh links)
   - widths/depths (`data_width`, `flow_id_width`, `opcode_width`, `local_ram_depth`, `global_ram_depth`)
   - `data_types` (e.g. `["int32", "float16", "float32"]`)
   - `coordinator_mode`, `enable_runtime_auto_adapt`
@@ -365,7 +367,7 @@ Main JSON fields:
 - `coordinator`
   - `max_in_flight` (int `[1,16]`, default `4`): hardware capacity of the generated `wau_coordinator` — the number of **distinct** flows it can keep executing concurrently across the core mesh (one accumulator context per slot). Independent flows injected back-to-back overlap on different cores instead of running strictly one-at-a-time. `1` reproduces the legacy serial coordinator. Emitted as `WAU_COORD_MAX_IN_FLIGHT`. Per-flow results are unchanged; a single in-flight flow keeps identical timing.
 - `flows`
-  - `id`, `name`, `entry`, optional `exit`
+  - `id`, `name`, `entry`, optional `exit`; coordinates are `x,y` with optional `z` (default `0`)
   - per-stage: `op`, optional `core`, `fallback_core`, `immediate_b`, `allow_adaptive`, `dtype`
   - per-node (DAG): `id`, `op`, `deps`, `placement` (`core`/`fallback_core`/`candidate_cores`/`fixed`/`directive`), `dtype`, `recurrent`, `max_iterations`
 - `programs`
@@ -433,6 +435,8 @@ non-MMIO integrations.
 ## Current Hardware Scope
 This is a robust **basis**, not final silicon architecture:
 - Control-plane dispatch and data-plane results now traverse explicit neighbor-linked highway meshes with valid/ready backpressure.
+- `grid.z > 1` emits layered 3D core indexing and vertical `up/down` mesh links; this path is currently verified with `iverilog` (`tb_wau_highway_mesh_3d`) and has not yet been calibrated on the DE0-NANO board flow.
+- A 2026-07-06 Quartus 23.1std compile of the regenerated 2D DE0-NANO demo fits and produces a `.sof`, but TimeQuest does not close the 50 MHz board clock (`CLOCK_50` Fmax 23.06 MHz, worst setup slack -23.360 ns) and reports a mesh combinational-loop warning. Treat the existing silicon benchmark below as the prior reference; do not use the current regenerated bitstream for real-data benchmarking until the mesh has registered/elastic timing cuts.
 - Runtime adaptation is implemented as primary/fallback/candidate core selection per node, constrained by per-core capability metadata.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
 - Current pseudo-C frontend targets accumulator-style pipelines (`acc = a; acc = acc <op> ...`) to stay compatible with the present coordinator execution model.
@@ -528,7 +532,7 @@ section 4 of the benchmark txt for the honest worst-case story.
 ## Next Steps
 See `ROADMAP.md` for the full plan. Recommended follow-ups now that observability/MMIO/CI/cache-policy basics are in place:
 1. closed-loop on-FPGA benchmarking that pushes new schedules through the MMIO bus without reflashing the bitstream,
-2. deepen the `waugen arch-search` reports (first simulation-side slice landed: ranked grid-shape/op-specialization/memory-split/DRAM candidates) with synthesis-tool-calibrated area/fmax numbers and board-measured scores,
+2. deepen the `waugen arch-search` reports (first simulation-side slice landed: ranked 2D/3D grid-shape/op-specialization/memory-split/DRAM candidates) with synthesis-tool-calibrated area/fmax numbers and board-measured scores,
 3. CW software reference parity across the wider operation set (currently calibrated against add/mul/max paths used by the example kernel).
 
 ---

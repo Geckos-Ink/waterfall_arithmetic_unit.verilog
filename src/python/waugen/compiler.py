@@ -67,16 +67,25 @@ class CompiledProject:
         return max((len(flow.stages) for flow in self.flows), default=0)
 
 
-def _all_coords(grid_x: int, grid_y: int, *, routing: str) -> list[Coord]:
+def _coord_key(coord: Coord) -> tuple[int, int, int]:
+    return (coord.x, coord.y, coord.z)
+
+
+def _coord_distance(a: Coord, b: Coord) -> int:
+    return abs(a.x - b.x) + abs(a.y - b.y) + abs(a.z - b.z)
+
+
+def _all_coords(grid_x: int, grid_y: int, grid_z: int, *, routing: str) -> list[Coord]:
     ordered: list[Coord] = []
     serpentine = routing == "serpentine"
-    for y in range(grid_y):
-        if serpentine and (y % 2 == 1):
-            xs = range(grid_x - 1, -1, -1)
-        else:
-            xs = range(grid_x)
-        for x in xs:
-            ordered.append(Coord(x=x, y=y))
+    for z in range(grid_z):
+        for y in range(grid_y):
+            if serpentine and ((z * grid_y + y) % 2 == 1):
+                xs = range(grid_x - 1, -1, -1)
+            else:
+                xs = range(grid_x)
+            for x in xs:
+                ordered.append(Coord(x=x, y=y, z=z))
     return ordered
 
 
@@ -84,37 +93,44 @@ def _nearest_order_index(coords: list[Coord], target: Coord) -> int:
     best_idx = 0
     best_distance = 1_000_000
     for idx, coord in enumerate(coords):
-        d = abs(coord.x - target.x) + abs(coord.y - target.y)
+        d = _coord_distance(coord, target)
         if d < best_distance:
             best_distance = d
             best_idx = idx
     return best_idx
 
 
-def _is_coord_inside(coord: Coord, *, grid_x: int, grid_y: int) -> bool:
-    return 0 <= coord.x < grid_x and 0 <= coord.y < grid_y
+def _is_coord_inside(coord: Coord, *, grid_x: int, grid_y: int, grid_z: int) -> bool:
+    return (
+        0 <= coord.x < grid_x
+        and 0 <= coord.y < grid_y
+        and 0 <= coord.z < grid_z
+    )
 
 
-def _coords_in_radius(center: Coord, radius: int, *, grid_x: int, grid_y: int) -> Iterable[Coord]:
+def _coords_in_radius(
+    center: Coord, radius: int, *, grid_x: int, grid_y: int, grid_z: int
+) -> Iterable[Coord]:
     if radius <= 0:
         return []
     found: list[Coord] = []
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            if abs(dx) + abs(dy) > radius:
-                continue
-            cand = Coord(center.x + dx, center.y + dy)
-            if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y):
-                found.append(cand)
-    found.sort(key=lambda c: (abs(c.x - center.x) + abs(c.y - center.y), c.y, c.x))
+    for dz in range(-radius, radius + 1):
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                if abs(dx) + abs(dy) + abs(dz) > radius:
+                    continue
+                cand = Coord(center.x + dx, center.y + dy, center.z + dz)
+                if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z):
+                    found.append(cand)
+    found.sort(key=lambda c: (_coord_distance(c, center), c.z, c.y, c.x))
     return found
 
 
 def _unique_coords(coords: Iterable[Coord]) -> tuple[Coord, ...]:
-    seen: set[tuple[int, int]] = set()
+    seen: set[tuple[int, int, int]] = set()
     ordered: list[Coord] = []
     for coord in coords:
-        key = (coord.x, coord.y)
+        key = _coord_key(coord)
         if key in seen:
             continue
         seen.add(key)
@@ -287,14 +303,15 @@ def _resolve_primary_core(
     core_load: dict[Coord, int],
     grid_x: int,
     grid_y: int,
+    grid_z: int,
     flow_id: int,
     op_name: str,
     dtype: str | None,
-    op_caps: dict[tuple[int, int], set[str]],
-    dtype_caps: dict[tuple[int, int], set[str]],
+    op_caps: dict[tuple[int, int, int], set[str]],
+    dtype_caps: dict[tuple[int, int, int], set[str]],
 ) -> Coord:
     def supports(coord: Coord) -> bool:
-        key = (coord.x, coord.y)
+        key = _coord_key(coord)
         allowed_ops = op_caps.get(key)
         if allowed_ops is not None and op_name not in allowed_ops:
             return False
@@ -304,13 +321,16 @@ def _resolve_primary_core(
         return True
 
     if node.placement.core is not None:
-        if not _is_coord_inside(node.placement.core, grid_x=grid_x, grid_y=grid_y):
+        if not _is_coord_inside(
+            node.placement.core, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z
+        ):
             raise ValueError(
                 f"flow {flow_id} node {node.node_id} core {node.placement.core} out of grid bounds"
             )
         if not supports(node.placement.core):
             raise ValueError(
-                f"flow {flow_id} node {node.node_id} core ({node.placement.core.x},{node.placement.core.y}) "
+                f"flow {flow_id} node {node.node_id} core "
+                f"({node.placement.core.x},{node.placement.core.y},{node.placement.core.z}) "
                 f"does not support op '{op_name}' dtype '{dtype or 'default'}'"
             )
         return node.placement.core
@@ -319,7 +339,8 @@ def _resolve_primary_core(
         valid_candidates = [
             cand
             for cand in node.placement.candidate_cores
-            if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y) and supports(cand)
+            if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z)
+            and supports(cand)
         ]
         if not valid_candidates:
             raise ValueError(
@@ -330,8 +351,9 @@ def _resolve_primary_core(
             primary = min(
                 valid_candidates,
                 key=lambda cand: (
-                    abs(cand.x - order[order_start].x) + abs(cand.y - order[order_start].y),
+                    _coord_distance(cand, order[order_start]),
                     core_load.get(cand, 0),
+                    cand.z,
                     cand.y,
                     cand.x,
                 ),
@@ -339,7 +361,7 @@ def _resolve_primary_core(
         else:
             primary = min(
                 valid_candidates,
-                key=lambda cand: (core_load.get(cand, 0), cand.y, cand.x),
+                key=lambda cand: (core_load.get(cand, 0), cand.z, cand.y, cand.x),
             )
         return primary
 
@@ -364,15 +386,16 @@ def _resolve_candidates(
     core_load: dict[Coord, int],
     grid_x: int,
     grid_y: int,
+    grid_z: int,
     fallback_radius: int,
     allow_adaptive_reroute: bool,
     op_name: str,
     dtype: str | None,
-    op_caps: dict[tuple[int, int], set[str]],
-    dtype_caps: dict[tuple[int, int], set[str]],
+    op_caps: dict[tuple[int, int, int], set[str]],
+    dtype_caps: dict[tuple[int, int, int], set[str]],
 ) -> tuple[tuple[Coord, ...], Coord | None]:
     def supports(coord: Coord) -> bool:
-        key = (coord.x, coord.y)
+        key = _coord_key(coord)
         allowed_ops = op_caps.get(key)
         if allowed_ops is not None and op_name not in allowed_ops:
             return False
@@ -386,32 +409,41 @@ def _resolve_candidates(
 
     base_candidates: list[Coord] = [primary]
     for cand in node.placement.candidate_cores:
-        if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y) and supports(cand):
+        if _is_coord_inside(cand, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z) and supports(cand):
             base_candidates.append(cand)
 
     if node.placement.fallback_core is not None:
-        if not _is_coord_inside(node.placement.fallback_core, grid_x=grid_x, grid_y=grid_y):
+        if not _is_coord_inside(
+            node.placement.fallback_core, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z
+        ):
             raise ValueError(
                 f"node {node.node_id} fallback_core {node.placement.fallback_core} out of bounds"
             )
         if not supports(node.placement.fallback_core):
             raise ValueError(
-                f"node {node.node_id} fallback_core ({node.placement.fallback_core.x},{node.placement.fallback_core.y}) "
+                f"node {node.node_id} fallback_core "
+                f"({node.placement.fallback_core.x},{node.placement.fallback_core.y},{node.placement.fallback_core.z}) "
                 f"does not support op '{op_name}' dtype '{dtype or 'default'}'"
             )
         base_candidates.append(node.placement.fallback_core)
 
     if node.placement.directive == "prefer_balance" and len(base_candidates) == 1:
-        around = list(_coords_in_radius(primary, max(1, fallback_radius), grid_x=grid_x, grid_y=grid_y))
+        around = list(
+            _coords_in_radius(
+                primary, max(1, fallback_radius), grid_x=grid_x, grid_y=grid_y, grid_z=grid_z
+            )
+        )
         around = [cand for cand in around if supports(cand)]
-        around.sort(key=lambda c: (core_load.get(c, 0), abs(c.x - primary.x) + abs(c.y - primary.y), c.y, c.x))
+        around.sort(key=lambda c: (core_load.get(c, 0), _coord_distance(c, primary), c.z, c.y, c.x))
         for cand in around[:3]:
             base_candidates.append(cand)
 
     if allow_adaptive_reroute and node.allow_adaptive and len(base_candidates) == 1:
         best: Coord | None = None
         best_load = 1_000_000
-        for cand in _coords_in_radius(primary, fallback_radius, grid_x=grid_x, grid_y=grid_y):
+        for cand in _coords_in_radius(
+            primary, fallback_radius, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z
+        ):
             if cand == primary:
                 continue
             if not supports(cand):
@@ -431,14 +463,15 @@ def _resolve_candidates(
 def compile_project(config: ProjectConfig) -> CompiledProject:
     grid_x = config.device.grid_x
     grid_y = config.device.grid_y
+    grid_z = config.device.grid_z
 
     op_table = {op.name: op for op in config.operations}
-    order = _all_coords(grid_x, grid_y, routing=config.compiler.routing)
+    order = _all_coords(grid_x, grid_y, grid_z, routing=config.compiler.routing)
     core_load: dict[Coord, int] = {coord: 0 for coord in order}
-    op_caps: dict[tuple[int, int], set[str]] = {}
-    dtype_caps: dict[tuple[int, int], set[str]] = {}
+    op_caps: dict[tuple[int, int, int], set[str]] = {}
+    dtype_caps: dict[tuple[int, int, int], set[str]] = {}
     for capability in config.compiler.core_capabilities:
-        key = (capability.core.x, capability.core.y)
+        key = _coord_key(capability.core)
         if capability.operations:
             op_caps[key] = set(capability.operations)
         if capability.data_types:
@@ -448,9 +481,11 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
     sorted_flows = sorted(config.flows, key=lambda flow: flow.flow_id)
 
     for flow_slot, flow in enumerate(sorted_flows):
-        if not _is_coord_inside(flow.entry, grid_x=grid_x, grid_y=grid_y):
+        if not _is_coord_inside(flow.entry, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z):
             raise ValueError(f"flow {flow.flow_id} entry {flow.entry} out of bounds")
-        if flow.exit and not _is_coord_inside(flow.exit, grid_x=grid_x, grid_y=grid_y):
+        if flow.exit and not _is_coord_inside(
+            flow.exit, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z
+        ):
             raise ValueError(f"flow {flow.flow_id} exit {flow.exit} out of bounds")
 
         raw_nodes = flow.nodes if flow.nodes else _flow_nodes_from_stages(flow)
@@ -484,6 +519,7 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
                 core_load=core_load,
                 grid_x=grid_x,
                 grid_y=grid_y,
+                grid_z=grid_z,
                 flow_id=flow.flow_id,
                 op_name=node.op,
                 dtype=node.dtype,
@@ -497,6 +533,7 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
                 core_load=core_load,
                 grid_x=grid_x,
                 grid_y=grid_y,
+                grid_z=grid_z,
                 fallback_radius=config.compiler.fallback_radius,
                 allow_adaptive_reroute=config.compiler.allow_adaptive_reroute,
                 op_name=node.op,

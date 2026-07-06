@@ -40,16 +40,16 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 
 ## Ownership Boundaries
 - `config.py`: schema and validation only (includes `compiler.station_cache`, `compiler.core_capabilities`, `scheduler.locality_bias`, and `coordinator.max_in_flight` schema).
-- `compiler.py`: mapping flows/nodes onto 2D cores and adaptive placement strategy.
+- `compiler.py`: mapping flows/nodes onto 2D or layered-3D cores and adaptive placement strategy.
 - `basic_compiler.py`: expression/pseudo-C lowering rules for basic WAU compilation.
 - `cw_compiler.py`: `.cw` kernel-structured program lowering into DAG flow/program configs; reads `compiler.core_capabilities` for capability-aware candidate pruning.
 - `benchmark_replay.py`: deterministic parsing and selection of saved CW
   autotune candidates for best/stage-winner/worst replay modes.
 - `cw_reference.py`: software reference model for CW flows (one pass over `flow.stages` linear order, mirroring the coordinator state machine); consumed by the benchmark scoreboard and tests.
 - `cw_lang.py`: the real `.cw` front-end (lexer → AST → recursive-descent parser → host-side tree-walking interpreter). Independent of `cw_compiler.py`'s regex/template RTL-lowering path. Owns **compile-time class magic methods** (operator overloading + type-conversion hooks `__to_int__`/`__to_float__`/`__convert__`); `Interpreter.convert()` is the toolchain hook for dynamic type-format conversion. Driven by the `cw-eval` CLI subcommand and the syntax side of `cw-lint`. Must not be wired into RTL lowering or the benchmark gate.
-- `arch_search.py`: synthesis-time architecture-candidate enumeration and ranking (`arch-search` CLI). Reuses the real `compile_project`/`build_schedule` pipeline for performance metrics; owns the versioned estimate models (`wau_resource_model_v1`, `dram_model_v1`, `arch_search_rank_v1`) and reads device capacity metadata (`logic_cells`/`bram_kbits`/`dsp_blocks`) from `device_library.py`. Must not change scheduling/emission behavior — it only builds and evaluates candidate config payloads in memory.
-- `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.
-- `verilog_emit.py`: WAU-specific RTL text rendering only; no scheduling decisions should live here. Also owns the per-router/per-station observability counter wiring, the `wau_host_mmio` register file emission, and the multi-issue `wau_coordinator` emission (N-slot in-flight table sized by `coordinator.max_in_flight` / `WAU_COORD_MAX_IN_FLIGHT`). Generic generated-project assembly is delegated to `thirds/veribuilder`.
+- `arch_search.py`: synthesis-time architecture-candidate enumeration and ranking (`arch-search` CLI). Reuses the real `compile_project`/`build_schedule` pipeline for performance metrics; owns 2D/3D grid-shape enumeration, the versioned estimate models (`wau_resource_model_v1`, `dram_model_v1`, `arch_search_rank_v1`), and reads device capacity metadata (`logic_cells`/`bram_kbits`/`dsp_blocks`) from `device_library.py`. Must not change scheduling/emission behavior — it only builds and evaluates candidate config payloads in memory.
+- `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by 2D/3D Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.
+- `verilog_emit.py`: WAU-specific RTL text rendering only; no scheduling decisions should live here. Also owns 2D/layered-3D mesh emission (north/south/east/west plus up/down links), the per-router/per-station observability counter wiring, the `wau_host_mmio` register file emission, and the multi-issue `wau_coordinator` emission (N-slot in-flight table sized by `coordinator.max_in_flight` / `WAU_COORD_MAX_IN_FLIGHT`). Generic generated-project assembly is delegated to `thirds/veribuilder`.
 - `thirds/veribuilder/`: externalizable Python library for dynamic Verilog project construction, feature-gated file manifests, lightweight template rendering, and deterministic file emission. Keep it independent from WAU config/compiler/scheduler types so it can be published as a standalone repository.
 - Generated files under `src/verilog/generated/` are build outputs and may be overwritten.
 - `.github/workflows/ci.yml`: CI matrix (python tests, randomized stress, iverilog tests, CW benchmark) — keep aligned with the local Core Workflow steps.
@@ -58,7 +58,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - Operation names and opcodes must be unique.
 - Flow IDs must be unique.
 - Stage operations must exist in the operation table.
-- Core indices must stay within `grid_x * grid_y`.
+- Core indices must stay within `grid_x * grid_y * grid_z`; omitted `grid.z` defaults to `1`, and omitted coordinate `z` defaults to `0`.
 - Compiler core capability constraints must reference existing operations/data types.
 - `compiler.station_cache.entries` must stay within `[1, 32]`; `replacement_policy` must be `fifo` or `lru`. The matching `WAU_STATION_CACHE_*` defs in `wau_defs.vh` must agree with the emitted `wau_core_station.v`.
 - `scheduler.locality_bias` must be `>= 0`. It is a pure core-selection tiebreaker (after earliest-free-cycle), so `locality_bias=0.0` must not change makespan/latency; explicit `0.0` and an omitted knob must produce the same schedule byte-for-byte (guarded by `tests/python/test_scheduler_locality.py`). It is a Python-side scheduling knob only and emits no RTL/`wau_defs.vh` changes.
@@ -66,7 +66,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
   `PYTHONHASHSEED` values. Explicit `program_replica`/runtime-node tiebreakers
   canonicalize ties that older revisions left to set iteration order.
 - `coordinator.max_in_flight` must be in `[1,16]` and must match the emitted `WAU_COORD_MAX_IN_FLIGHT` macro and the `wau_coordinator` `MAX_IN_FLIGHT` localparam. The coordinator must preserve per-flow semantics: a single in-flight flow stays cycle-identical to the legacy serial design (`tb_wau_top_demo` timing, CW exec per-case latencies, and the scoreboard must not regress), unknown flow ids stay accepted-but-dropped, and `tb_wau_coordinator_multiissue` must keep proving ≥2 cores busy concurrently for independent flows. Result matching relies on at most one in-flight slot per flow id (`host_in_ready` enforces this) since the dispatch/result packet format carries no tag.
-- Verilog macros in `wau_defs.vh` must match emitted modules.
+- Verilog macros in `wau_defs.vh` (`WAU_GRID_X/Y/Z`, `WAU_CORE_COUNT`, cache/coordinator macros) must match emitted modules.
 - `wau_top` must keep exporting the `obs_total_*` observability bus; `wau_host_mmio` must keep its existing register map (CTRL/STATUS/FLOW_ID/IN_A/IN_B/TRIGGER/OUT_FLOW/OUT_VAL/HOPS/STALLS/FORWARDS/DELIVRD/CACHE_H/CACHE_L) stable so host software targeting it doesn't silently break.
 - The CW software reference (`waugen.cw_reference.evaluate_flow`) must produce the same `host_out_value` as the generated RTL for the deterministic benchmark cases; the generated CW exec testbench `$fatal`s on mismatch.
 - License headers in `src/**/*.py`, `src/**/*.v`, and `src/**/*.vh` are managed by `scripts/sync_license_headers.py`; run it after each implementation and before review.
@@ -112,7 +112,8 @@ When changing flow compilation/scheduling behavior:
 2. Keep `wau_program.json` and `wau_schedule.json/.hex` consistent.
 3. Mention behavioral deltas in README.
 4. Validate at least one advanced DAG/program config (`wau_2d_multiprogram_demo.json`).
-5. Re-run `tests/python/test_program_stress.py` (96-cell priority × replicas × policy matrix) and `scripts/run_randomized_stress.py`.
+5. If changing core indexing, placement, or routing dimensions, validate `src/python/configs/wau_3d_demo.json` and run `tests/rtl/tb_wau_highway_mesh_3d.v` through `iverilog`.
+6. Re-run `tests/python/test_program_stress.py` (96-cell priority × replicas × policy matrix) and `scripts/run_randomized_stress.py`.
 
 When changing CW lowering or kernel semantics:
 1. Update `cw_compiler.py` (and `cw_reference.py` if the coordinator-side reduction
@@ -139,7 +140,7 @@ Before finalizing changes:
 - `generate` succeeds.
 - `./scripts/run_cw_example_benchmark.sh` succeeds and refreshes benchmark reference log; `scoreboard_pass_ratio` is `1.0`.
 - `tests/python` unit tests pass (including `test_cw_reference`, `test_program_stress`).
-- `scripts/run_iverilog_tests.sh` passes (including `tb_wau_host_mmio` and the hop-counter assertion in `tb_wau_highway_mesh`).
+- `scripts/run_iverilog_tests.sh` passes (including `tb_wau_host_mmio`, the hop-counter assertion in `tb_wau_highway_mesh`, and vertical routing in `tb_wau_highway_mesh_3d`).
 - `scripts/run_randomized_stress.py` passes (`--count 25` is the default smoke pass).
 - README/AGENTS/ROADMAP updated if workflow, architecture, or future implementation direction changed.
 - The `.github/workflows/ci.yml` matrix still mirrors the local Core Workflow; if you add a new step locally, mirror it in CI.

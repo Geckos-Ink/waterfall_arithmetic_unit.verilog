@@ -10,6 +10,7 @@ module wau_top #(
     parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH,
     parameter GRID_X = `WAU_GRID_X,
     parameter GRID_Y = `WAU_GRID_Y,
+    parameter GRID_Z = `WAU_GRID_Z,
     parameter CORE_COUNT = `WAU_CORE_COUNT
 ) (
     input wire clk,
@@ -225,6 +226,7 @@ module wau_top #(
     wau_highway_mesh #(
         .GRID_X(GRID_X),
         .GRID_Y(GRID_Y),
+        .GRID_Z(GRID_Z),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH)
@@ -248,6 +250,7 @@ module wau_top #(
     wau_highway_mesh #(
         .GRID_X(GRID_X),
         .GRID_Y(GRID_Y),
+        .GRID_Z(GRID_Z),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH)
@@ -268,16 +271,21 @@ module wau_top #(
         .router_forward_count(data_router_forward_count)
     );
 
+    localparam integer LAYER_CORE_COUNT = GRID_X * GRID_Y;
+
+    genvar gz;
     genvar gy;
     genvar gx;
     generate
+        for (gz = 0; gz < GRID_Z; gz = gz + 1) begin : gen_z
         for (gy = 0; gy < GRID_Y; gy = gy + 1) begin : gen_y
             for (gx = 0; gx < GRID_X; gx = gx + 1) begin : gen_x
-                localparam integer CORE_INDEX = (gy * GRID_X) + gx;
+                localparam integer CORE_INDEX = (gz * LAYER_CORE_COUNT) + (gy * GRID_X) + gx;
 
                 wau_core #(
                     .CORE_X(gx),
                     .CORE_Y(gy),
+                    .CORE_Z(gz),
                     .DATA_WIDTH(DATA_WIDTH),
                     .FLOW_ID_WIDTH(FLOW_ID_WIDTH),
                     .OPCODE_WIDTH(OPCODE_WIDTH)
@@ -304,6 +312,7 @@ module wau_top #(
                     .cache_lookup_count(core_cache_lookup_count[(CORE_INDEX*32) +: 32])
                 );
             end
+        end
         end
     endgenerate
 

@@ -360,23 +360,29 @@ def parse_cw_program(program: str) -> tuple[CWKernelSpec, CWWorkloadShape]:
     return spec, shape
 
 
-def _coord(x: int, y: int) -> dict[str, int]:
-    return {"x": x, "y": y}
+def _coord(x: int, y: int, z: int = 0) -> dict[str, int]:
+    coord = {"x": x, "y": y}
+    if z != 0:
+        coord["z"] = z
+    return coord
 
 
-def _core_from_index(index: int, *, grid_x: int, grid_y: int) -> dict[str, int]:
-    core_count = max(1, grid_x * grid_y)
+def _core_from_index(index: int, *, grid_x: int, grid_y: int, grid_z: int = 1) -> dict[str, int]:
+    core_count = max(1, grid_x * grid_y * grid_z)
     norm = index % core_count
-    return {"x": norm % grid_x, "y": norm // grid_x}
+    layer_size = max(1, grid_x * grid_y)
+    z = norm // layer_size
+    rem = norm % layer_size
+    return _coord(rem % grid_x, rem // grid_x, z)
 
 
 @dataclass(frozen=True)
 class _CoreCapabilityFilter:
-    op_caps: dict[tuple[int, int], frozenset[str]]
-    dtype_caps: dict[tuple[int, int], frozenset[str]]
+    op_caps: dict[tuple[int, int, int], frozenset[str]]
+    dtype_caps: dict[tuple[int, int, int], frozenset[str]]
 
-    def supports(self, x: int, y: int, *, op: str, dtype: str | None) -> bool:
-        key = (x, y)
+    def supports(self, x: int, y: int, z: int = 0, *, op: str, dtype: str | None) -> bool:
+        key = (x, y, z)
         allowed_ops = self.op_caps.get(key)
         if allowed_ops is not None and op not in allowed_ops:
             return False
@@ -401,8 +407,8 @@ def _capability_filter_from_payload(payload: dict[str, Any]) -> _CoreCapabilityF
     if not isinstance(raw_caps, list) or not raw_caps:
         return _EMPTY_CAPABILITY_FILTER
 
-    op_caps: dict[tuple[int, int], frozenset[str]] = {}
-    dtype_caps: dict[tuple[int, int], frozenset[str]] = {}
+    op_caps: dict[tuple[int, int, int], frozenset[str]] = {}
+    dtype_caps: dict[tuple[int, int, int], frozenset[str]] = {}
     for entry in raw_caps:
         if not isinstance(entry, dict):
             continue
@@ -412,9 +418,10 @@ def _capability_filter_from_payload(payload: dict[str, Any]) -> _CoreCapabilityF
         try:
             cx = int(core["x"])
             cy = int(core["y"])
+            cz = int(core.get("z", 0))
         except (KeyError, TypeError, ValueError):
             continue
-        key = (cx, cy)
+        key = (cx, cy, cz)
         ops = entry.get("operations")
         if isinstance(ops, list) and ops:
             op_caps[key] = frozenset(str(op) for op in ops)
@@ -430,6 +437,7 @@ def _candidate_cores(
     base_index: int,
     grid_x: int,
     grid_y: int,
+    grid_z: int = 1,
     count: int,
     capabilities: _CoreCapabilityFilter = _EMPTY_CAPABILITY_FILTER,
     op: str | None = None,
@@ -437,15 +445,15 @@ def _candidate_cores(
 ) -> list[dict[str, int]]:
     capability_filter_active = not capabilities.is_empty and op is not None
     target_count = max(1, count)
-    core_count = max(1, grid_x * grid_y)
+    core_count = max(1, grid_x * grid_y * grid_z)
 
     # Natural sequence: identical to the pre-capability behaviour, gives the autotuner
     # a stable baseline when restrictions do not bite.
     natural: list[dict[str, int]] = []
-    seen: set[tuple[int, int]] = set()
+    seen: set[tuple[int, int, int]] = set()
     for i in range(target_count):
-        cand = _core_from_index(base_index + i, grid_x=grid_x, grid_y=grid_y)
-        key = (cand["x"], cand["y"])
+        cand = _core_from_index(base_index + i, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z)
+        key = (cand["x"], cand["y"], cand.get("z", 0))
         if key in seen:
             continue
         seen.add(key)
@@ -455,11 +463,11 @@ def _candidate_cores(
         return natural
 
     compatible: list[dict[str, int]] = []
-    compatible_keys: set[tuple[int, int]] = set()
+    compatible_keys: set[tuple[int, int, int]] = set()
     incompatible_seen = False
     for cand in natural:
-        if capabilities.supports(cand["x"], cand["y"], op=op, dtype=dtype):
-            key = (cand["x"], cand["y"])
+        if capabilities.supports(cand["x"], cand["y"], cand.get("z", 0), op=op, dtype=dtype):
+            key = (cand["x"], cand["y"], cand.get("z", 0))
             compatible.append(cand)
             compatible_keys.add(key)
         else:
@@ -472,11 +480,11 @@ def _candidate_cores(
         # Every natural candidate is incompatible. Scan the rest of the grid for a
         # capable core so downstream stages have a stable, deterministic primary.
         for i in range(target_count, core_count):
-            cand = _core_from_index(base_index + i, grid_x=grid_x, grid_y=grid_y)
-            key = (cand["x"], cand["y"])
+            cand = _core_from_index(base_index + i, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z)
+            key = (cand["x"], cand["y"], cand.get("z", 0))
             if key in compatible_keys:
                 continue
-            if not capabilities.supports(cand["x"], cand["y"], op=op, dtype=dtype):
+            if not capabilities.supports(cand["x"], cand["y"], cand.get("z", 0), op=op, dtype=dtype):
                 continue
             compatible.append(cand)
             compatible_keys.add(key)
@@ -485,7 +493,7 @@ def _candidate_cores(
     if not compatible:
         # Capability filter eliminated every candidate: emit a single safe fallback
         # so downstream validation will surface the precise "no compatible core" error.
-        fallback = _core_from_index(base_index, grid_x=grid_x, grid_y=grid_y)
+        fallback = _core_from_index(base_index, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z)
         compatible.append(fallback)
 
     return compatible
@@ -517,6 +525,8 @@ def build_flow_from_cw_program(
     dtype: str,
     grid_x: int,
     grid_y: int,
+    entry_z: int = 0,
+    grid_z: int = 1,
     lane_parallelism: int | None = None,
     placement_policy: str | None = None,
     lowering_profile: str | None = None,
@@ -534,10 +544,10 @@ def build_flow_from_cw_program(
         raise CWCompilerError("flow_id must be non-negative")
     if max_in_flight < 1:
         raise CWCompilerError("max_in_flight must be >= 1")
-    if grid_x < 1 or grid_y < 1:
+    if grid_x < 1 or grid_y < 1 or grid_z < 1:
         raise CWCompilerError("grid dimensions must be >= 1")
 
-    available_cores = max(1, grid_x * grid_y)
+    available_cores = max(1, grid_x * grid_y * grid_z)
     lanes = (
         lane_parallelism
         if lane_parallelism is not None
@@ -598,7 +608,7 @@ def build_flow_from_cw_program(
         transfer_candidate_count = 3 if resolved_lowering_profile == "throughput_optimized" else 2
         lane_stride = 2 if resolved_lowering_profile == "throughput_optimized" else 1
 
-    entry_index = entry_y * grid_x + entry_x
+    entry_index = (entry_z * grid_x * grid_y) + (entry_y * grid_x) + entry_x
     counter_anchor = entry_index + 4 + max(1, lanes * max(1, lane_stride // 1))
 
     nodes: list[dict[str, Any]] = []
@@ -608,6 +618,7 @@ def build_flow_from_cw_program(
             base_index=base_index,
             grid_x=grid_x,
             grid_y=grid_y,
+            grid_z=grid_z,
             count=min(max(count_hint, transfer_candidate_count), available_cores),
             capabilities=capabilities,
             op=op,
@@ -674,6 +685,7 @@ def build_flow_from_cw_program(
             base_index=lane_seed,
             grid_x=grid_x,
             grid_y=grid_y,
+            grid_z=grid_z,
             count=min(max(2, lane_candidate_count), available_cores),
             capabilities=capabilities,
             op=op,
@@ -771,17 +783,18 @@ def build_flow_from_cw_program(
     # tile_counter is intentionally fixed/manual; report a non-blocking diagnostic
     # if its anchor core cannot host the add+dtype combination so capability conflicts
     # surface up the stack rather than later inside the compiler.
-    counter_core = _core_from_index(counter_anchor, grid_x=grid_x, grid_y=grid_y)
+    counter_core = _core_from_index(counter_anchor, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z)
     if not capabilities.supports(
-        counter_core["x"], counter_core["y"], op="add", dtype=dtype
+        counter_core["x"], counter_core["y"], counter_core.get("z", 0), op="add", dtype=dtype
     ):
         replacement = next(
             (
-                _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y)
+                _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z)
                 for i in range(1, available_cores)
                 if capabilities.supports(
-                    _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y)["x"],
-                    _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y)["y"],
+                    _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z)["x"],
+                    _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z)["y"],
+                    _core_from_index(counter_anchor + i, grid_x=grid_x, grid_y=grid_y, grid_z=grid_z).get("z", 0),
                     op="add",
                     dtype=dtype,
                 )
@@ -826,7 +839,7 @@ def build_flow_from_cw_program(
     return {
         "id": flow_id,
         "name": name,
-        "entry": _coord(entry_x, entry_y),
+        "entry": _coord(entry_x, entry_y, entry_z),
         "max_in_flight": max_in_flight,
         "nodes": nodes,
         "cw_hints": {
@@ -857,7 +870,10 @@ def build_flow_from_cw_program(
             "lowering_profile_compiled": resolved_lowering_profile,
             "capability_filter_active": not capabilities.is_empty,
             "capability_restricted_cores": sorted(
-                {f"{x},{y}" for (x, y) in (set(capabilities.op_caps) | set(capabilities.dtype_caps))}
+                {
+                    f"{x},{y},{z}" if z != 0 else f"{x},{y}"
+                    for (x, y, z) in (set(capabilities.op_caps) | set(capabilities.dtype_caps))
+                }
             ),
         },
     }
@@ -997,6 +1013,7 @@ def _upsert_program(
 class _BaseDeviceProfile:
     grid_x: int
     grid_y: int
+    grid_z: int
     supported_data_types: tuple[str, ...]
 
 
@@ -1016,8 +1033,9 @@ def _load_base_device_profile(payload: dict[str, Any]) -> _BaseDeviceProfile:
 
     grid_x = int(raw_grid.get("x", preset.default_grid_x))
     grid_y = int(raw_grid.get("y", preset.default_grid_y))
-    if grid_x < 1 or grid_y < 1:
-        raise CWCompilerError("device.grid.x and device.grid.y must be >= 1")
+    grid_z = int(raw_grid.get("z", 1))
+    if grid_x < 1 or grid_y < 1 or grid_z < 1:
+        raise CWCompilerError("device.grid.x, device.grid.y, and device.grid.z must be >= 1")
 
     data_width = int(raw_device.get("data_width", preset.data_width))
     raw_data_types = raw_device.get("data_types")
@@ -1039,6 +1057,7 @@ def _load_base_device_profile(payload: dict[str, Any]) -> _BaseDeviceProfile:
     return _BaseDeviceProfile(
         grid_x=grid_x,
         grid_y=grid_y,
+        grid_z=grid_z,
         supported_data_types=supported_data_types,
     )
 
@@ -1053,6 +1072,7 @@ def merge_cw_into_config(
     entry_x: int,
     entry_y: int,
     replace_existing: bool,
+    entry_z: int = 0,
     max_in_flight: int | None = None,
     dtype: str | None = None,
     lane_parallelism: int | None = None,
@@ -1113,10 +1133,12 @@ def merge_cw_into_config(
         name=name,
         entry_x=entry_x,
         entry_y=entry_y,
+        entry_z=entry_z,
         max_in_flight=resolved_max_in_flight,
         dtype=resolved_dtype,
         grid_x=base_device.grid_x,
         grid_y=base_device.grid_y,
+        grid_z=base_device.grid_z,
         lane_parallelism=lane_parallelism,
         placement_policy=placement_policy,
         lowering_profile=lowering_profile,

@@ -28,6 +28,7 @@ module tb_wau_highway_mesh;
     wau_highway_mesh #(
         .GRID_X(3),
         .GRID_Y(1),
+        .GRID_Z(1),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(PAYLOAD_WIDTH)

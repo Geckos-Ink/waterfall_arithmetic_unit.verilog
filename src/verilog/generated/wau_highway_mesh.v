@@ -7,6 +7,7 @@
 module wau_highway_mesh #(
     parameter GRID_X = `WAU_GRID_X,
     parameter GRID_Y = `WAU_GRID_Y,
+    parameter GRID_Z = `WAU_GRID_Z,
     parameter CORE_COUNT = `WAU_CORE_COUNT,
     parameter CORE_ID_WIDTH = 8,
     parameter PAYLOAD_WIDTH = 64
@@ -65,22 +66,48 @@ module wau_highway_mesh #(
     wire [CORE_COUNT*CORE_ID_WIDTH-1:0] west_out_dst;
     wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] west_out_payload;
 
+    wire [CORE_COUNT-1:0] up_in_valid;
+    wire [CORE_COUNT-1:0] up_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] up_in_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] up_in_payload;
+    wire [CORE_COUNT-1:0] up_out_valid;
+    wire [CORE_COUNT-1:0] up_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] up_out_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] up_out_payload;
+
+    wire [CORE_COUNT-1:0] down_in_valid;
+    wire [CORE_COUNT-1:0] down_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] down_in_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] down_in_payload;
+    wire [CORE_COUNT-1:0] down_out_valid;
+    wire [CORE_COUNT-1:0] down_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] down_out_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] down_out_payload;
+
+    localparam integer LAYER_CORE_COUNT = GRID_X * GRID_Y;
+
+    genvar gz;
     genvar gy;
     genvar gx;
     generate
+        for (gz = 0; gz < GRID_Z; gz = gz + 1) begin : gen_z
         for (gy = 0; gy < GRID_Y; gy = gy + 1) begin : gen_y
             for (gx = 0; gx < GRID_X; gx = gx + 1) begin : gen_x
-                localparam integer CORE_INDEX = (gy * GRID_X) + gx;
+                localparam integer CORE_INDEX = (gz * LAYER_CORE_COUNT) + (gy * GRID_X) + gx;
                 localparam integer NORTH_INDEX = CORE_INDEX - GRID_X;
                 localparam integer SOUTH_INDEX = CORE_INDEX + GRID_X;
                 localparam integer EAST_INDEX = CORE_INDEX + 1;
                 localparam integer WEST_INDEX = CORE_INDEX - 1;
+                localparam integer UP_INDEX = CORE_INDEX - LAYER_CORE_COUNT;
+                localparam integer DOWN_INDEX = CORE_INDEX + LAYER_CORE_COUNT;
 
                 wau_highway_router #(
                     .CORE_INDEX(CORE_INDEX),
                     .CORE_X(gx),
                     .CORE_Y(gy),
+                    .CORE_Z(gz),
                     .GRID_X(GRID_X),
+                    .GRID_Y(GRID_Y),
                     .CORE_ID_WIDTH(CORE_ID_WIDTH),
                     .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
                 ) router_u (
@@ -129,7 +156,23 @@ module wau_highway_mesh #(
                     .west_out_valid(west_out_valid[CORE_INDEX]),
                     .west_out_ready(west_out_ready[CORE_INDEX]),
                     .west_out_dst(west_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .west_out_payload(west_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    .west_out_payload(west_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .up_in_valid(up_in_valid[CORE_INDEX]),
+                    .up_in_ready(up_in_ready[CORE_INDEX]),
+                    .up_in_dst(up_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .up_in_payload(up_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .up_out_valid(up_out_valid[CORE_INDEX]),
+                    .up_out_ready(up_out_ready[CORE_INDEX]),
+                    .up_out_dst(up_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .up_out_payload(up_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .down_in_valid(down_in_valid[CORE_INDEX]),
+                    .down_in_ready(down_in_ready[CORE_INDEX]),
+                    .down_in_dst(down_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .down_in_payload(down_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .down_out_valid(down_out_valid[CORE_INDEX]),
+                    .down_out_ready(down_out_ready[CORE_INDEX]),
+                    .down_out_dst(down_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .down_out_payload(down_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
                 );
 
                 if (gy == 0) begin : north_edge
@@ -215,7 +258,50 @@ module wau_highway_mesh #(
                         .out_payload(west_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
                     );
                 end
+
+                if (gz == 0) begin : up_edge
+                    assign up_in_valid[CORE_INDEX] = 1'b0;
+                    assign up_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+                    assign up_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
+                    assign up_out_ready[CORE_INDEX] = 1'b1;
+                end else begin : up_link
+                    wau_neighbor_forward #(
+                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+                    ) from_up_u (
+                        .in_valid(down_out_valid[UP_INDEX]),
+                        .in_ready(down_out_ready[UP_INDEX]),
+                        .in_dst(down_out_dst[(UP_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .in_payload(down_out_payload[(UP_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                        .out_valid(up_in_valid[CORE_INDEX]),
+                        .out_ready(up_in_ready[CORE_INDEX]),
+                        .out_dst(up_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .out_payload(up_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    );
+                end
+
+                if (gz == GRID_Z - 1) begin : down_edge
+                    assign down_in_valid[CORE_INDEX] = 1'b0;
+                    assign down_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+                    assign down_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
+                    assign down_out_ready[CORE_INDEX] = 1'b1;
+                end else begin : down_link
+                    wau_neighbor_forward #(
+                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+                    ) from_down_u (
+                        .in_valid(up_out_valid[DOWN_INDEX]),
+                        .in_ready(up_out_ready[DOWN_INDEX]),
+                        .in_dst(up_out_dst[(DOWN_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .in_payload(up_out_payload[(DOWN_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                        .out_valid(down_in_valid[CORE_INDEX]),
+                        .out_ready(down_in_ready[CORE_INDEX]),
+                        .out_dst(down_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .out_payload(down_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    );
+                end
             end
+        end
         end
     endgenerate
 endmodule

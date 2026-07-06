@@ -11,7 +11,8 @@
     "part": "EP4CE22F17C6N",
     "grid": {
       "x": 3,
-      "y": 2
+      "y": 2,
+      "z": 1
     },
     "coordinator_mode": "direct",
     "supported_data_types": [
@@ -28,7 +29,8 @@
       {
         "core": {
           "x": 0,
-          "y": 0
+          "y": 0,
+          "z": 0
         },
         "operations": [
           "add",
@@ -41,7 +43,8 @@
       {
         "core": {
           "x": 1,
-          "y": 0
+          "y": 0,
+          "z": 0
         },
         "operations": [
           "mul",
@@ -54,7 +57,8 @@
       {
         "core": {
           "x": 2,
-          "y": 0
+          "y": 0,
+          "z": 0
         },
         "operations": [
           "sub",
@@ -68,7 +72,8 @@
       {
         "core": {
           "x": 2,
-          "y": 1
+          "y": 1,
+          "z": 0
         },
         "operations": [
           "max"
@@ -99,11 +104,13 @@
           "primary_core": {
             "x": 0,
             "y": 0,
+            "z": 0,
             "index": 0
           },
           "fallback_core": {
             "x": 0,
             "y": 1,
+            "z": 0,
             "index": 3
           },
           "immediate_b": null,
@@ -118,11 +125,13 @@
           "primary_core": {
             "x": 1,
             "y": 0,
+            "z": 0,
             "index": 1
           },
           "fallback_core": {
             "x": 1,
             "y": 1,
+            "z": 0,
             "index": 4
           },
           "immediate_b": 3,
@@ -137,6 +146,7 @@
           "primary_core": {
             "x": 2,
             "y": 0,
+            "z": 0,
             "index": 2
           },
           "fallback_core": null,
@@ -157,23 +167,27 @@
           "primary_core": {
             "x": 0,
             "y": 0,
+            "z": 0,
             "index": 0
           },
           "candidate_cores": [
             {
               "x": 0,
               "y": 0,
+              "z": 0,
               "index": 0
             },
             {
               "x": 0,
               "y": 1,
+              "z": 0,
               "index": 3
             }
           ],
           "fallback_core": {
             "x": 0,
             "y": 1,
+            "z": 0,
             "index": 3
           },
           "allow_adaptive": true,
@@ -199,23 +213,27 @@
           "primary_core": {
             "x": 1,
             "y": 0,
+            "z": 0,
             "index": 1
           },
           "candidate_cores": [
             {
               "x": 1,
               "y": 0,
+              "z": 0,
               "index": 1
             },
             {
               "x": 1,
               "y": 1,
+              "z": 0,
               "index": 4
             }
           ],
           "fallback_core": {
             "x": 1,
             "y": 1,
+            "z": 0,
             "index": 4
           },
           "allow_adaptive": true,
@@ -241,12 +259,14 @@
           "primary_core": {
             "x": 2,
             "y": 0,
+            "z": 0,
             "index": 2
           },
           "candidate_cores": [
             {
               "x": 2,
               "y": 0,
+              "z": 0,
               "index": 2
             }
           ],
@@ -278,11 +298,13 @@
           "primary_core": {
             "x": 2,
             "y": 1,
+            "z": 0,
             "index": 5
           },
           "fallback_core": {
             "x": 2,
             "y": 0,
+            "z": 0,
             "index": 2
           },
           "immediate_b": null,
@@ -297,11 +319,13 @@
           "primary_core": {
             "x": 2,
             "y": 0,
+            "z": 0,
             "index": 2
           },
           "fallback_core": {
             "x": 1,
             "y": 0,
+            "z": 0,
             "index": 1
           },
           "immediate_b": null,
@@ -321,23 +345,27 @@
           "primary_core": {
             "x": 2,
             "y": 1,
+            "z": 0,
             "index": 5
           },
           "candidate_cores": [
             {
               "x": 2,
               "y": 1,
+              "z": 0,
               "index": 5
             },
             {
               "x": 2,
               "y": 0,
+              "z": 0,
               "index": 2
             }
           ],
           "fallback_core": {
             "x": 2,
             "y": 0,
+            "z": 0,
             "index": 2
           },
           "allow_adaptive": true,
@@ -363,23 +391,27 @@
           "primary_core": {
             "x": 2,
             "y": 0,
+            "z": 0,
             "index": 2
           },
           "candidate_cores": [
             {
               "x": 2,
               "y": 0,
+              "z": 0,
               "index": 2
             },
             {
               "x": 1,
               "y": 0,
+              "z": 0,
               "index": 1
             }
           ],
           "fallback_core": {
             "x": 1,
             "y": 0,
+            "z": 0,
             "index": 1
           },
           "allow_adaptive": true,

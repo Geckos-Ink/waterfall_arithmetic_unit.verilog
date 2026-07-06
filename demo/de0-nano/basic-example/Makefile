@@ -36,7 +36,7 @@ generate:
 
 build: generate
 	mkdir -p build
-	printf 'load_package flow\nproject_open wau_de0_nano_basic -revision wau_de0_nano_basic\nexecute_flow -compile\nproject_close\n' > build/flow.tcl
+	printf 'load_package flow\nproject_open -force -revision wau_de0_nano_basic wau_de0_nano_basic\nexecute_flow -compile\nproject_close\n' > build/flow.tcl
 	cd quartus && $(QUARTUS_ROOT)/quartus/bin64/quartus_sh.exe -t ../build/flow.tcl
 
 program:

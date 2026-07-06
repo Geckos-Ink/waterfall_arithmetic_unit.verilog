@@ -1,5 +1,5 @@
 {
-  "best_sidecar": "benchmarks/example_pogram_benchmark_best.json",
+  "best_sidecar": "benchmarks\\example_pogram_benchmark_best.json",
   "format_version": 1,
   "runs": [
     {
@@ -163,6 +163,15 @@
       "run_profile": "dependency_metric_refresh",
       "run_utc": "2026-06-14T11:11:06Z",
       "total_ms": 2234
+    },
+    {
+      "benchmark_ranking_score": 68046807.0,
+      "benchmark_text": "benchmarks\\example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 68.0,
+      "makespan_cycles": 42,
+      "run_profile": "dependency_metric_refresh",
+      "run_utc": "2026-07-06T01:46:59Z",
+      "total_ms": 4807
     }
   ]
 }

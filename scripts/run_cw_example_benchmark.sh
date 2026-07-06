@@ -204,7 +204,7 @@ run_tune_candidate() {
     CW_LOWERING_PROFILE="$lowering_profile" \
     OUT_DIR="$run_out_dir" \
     BUILD_DIR="$run_build_dir" \
-    "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$run_bench"; then
+    "${BASH:-bash}" "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$run_bench"; then
     local lat_avg
     local lat_p95
     local makespan
@@ -657,7 +657,7 @@ if [[ "$TUNE_MODE" != "1" && "$MULTI_RUNS" -gt 1 ]]; then
       RUN_PROFILE="multi_run_sample" \
       OUT_DIR="$run_out_dir" \
       BUILD_DIR="$run_build_dir" \
-      "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$run_bench"; then
+      "${BASH:-bash}" "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$run_bench"; then
       lat_avg="$(bench_field "$run_bench" "exec_latency_cycles_avg")"
       makespan="$(bench_field "$run_bench" "makespan_cycles")"
       total_ms="$(bench_field "$run_bench" "total_ms")"
@@ -1315,7 +1315,7 @@ PY
       SCHEDULER_PROGRAM_POLICY="$best_scheduler_policy" \
       OUT_DIR="$OUT_DIR" \
       BUILD_DIR="$BUILD_DIR" \
-      "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$TUNE_ROOT/best_refresh.txt" >/dev/null
+      "${BASH:-bash}" "$0" "$CW_FILE" "$BASE_CONFIG" "$OUT_CONFIG" "$TUNE_ROOT/best_refresh.txt" >/dev/null
   fi
 
   echo "[cw-bench] done (tune mode)"

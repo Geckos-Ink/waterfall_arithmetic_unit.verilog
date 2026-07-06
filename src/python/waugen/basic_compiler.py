@@ -106,6 +106,7 @@ def _build_flow_from_compiled_stages(
     name: str,
     entry_x: int,
     entry_y: int,
+    entry_z: int = 0,
     max_in_flight: int = 1,
 ) -> dict[str, Any]:
     if flow_id < 0:
@@ -122,7 +123,7 @@ def _build_flow_from_compiled_stages(
     return {
         "id": flow_id,
         "name": name,
-        "entry": {"x": entry_x, "y": entry_y},
+        "entry": {"x": entry_x, "y": entry_y, "z": entry_z},
         "max_in_flight": max_in_flight,
         "stages": raw_stages,
     }
@@ -135,6 +136,7 @@ def build_flow_from_expression(
     name: str,
     entry_x: int,
     entry_y: int,
+    entry_z: int = 0,
     max_in_flight: int = 1,
 ) -> dict[str, Any]:
     compiled_stages = compile_expression_to_stages(expr)
@@ -144,6 +146,7 @@ def build_flow_from_expression(
         name=name,
         entry_x=entry_x,
         entry_y=entry_y,
+        entry_z=entry_z,
         max_in_flight=max_in_flight,
     )
 
@@ -279,6 +282,7 @@ def build_flow_from_pseudoc(
     name: str,
     entry_x: int,
     entry_y: int,
+    entry_z: int = 0,
     max_in_flight: int = 1,
 ) -> dict[str, Any]:
     compiled_stages = compile_pseudoc_to_stages(program)
@@ -288,6 +292,7 @@ def build_flow_from_pseudoc(
         name=name,
         entry_x=entry_x,
         entry_y=entry_y,
+        entry_z=entry_z,
         max_in_flight=max_in_flight,
     )
 
@@ -404,6 +409,7 @@ def merge_expression_into_config(
     entry_x: int,
     entry_y: int,
     replace_existing: bool,
+    entry_z: int = 0,
     max_in_flight: int = 1,
 ) -> dict[str, Any]:
     flow = build_flow_from_expression(
@@ -412,6 +418,7 @@ def merge_expression_into_config(
         name=name,
         entry_x=entry_x,
         entry_y=entry_y,
+        entry_z=entry_z,
         max_in_flight=max_in_flight,
     )
 
@@ -433,6 +440,7 @@ def merge_pseudoc_into_config(
     entry_x: int,
     entry_y: int,
     replace_existing: bool,
+    entry_z: int = 0,
     max_in_flight: int = 1,
 ) -> dict[str, Any]:
     flow = build_flow_from_pseudoc(
@@ -441,6 +449,7 @@ def merge_pseudoc_into_config(
         name=name,
         entry_x=entry_x,
         entry_y=entry_y,
+        entry_z=entry_z,
         max_in_flight=max_in_flight,
     )
     return _merge_flow_into_config(

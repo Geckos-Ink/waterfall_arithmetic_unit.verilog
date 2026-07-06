@@ -173,7 +173,9 @@ class RandomizedMultiFlowStressTests(unittest.TestCase):
                 self.assertEqual(schedule_a.makespan_cycles, expected_makespan)
 
                 valid_program_ids = {program.program_id for program in config.programs}
-                core_count = config.device.grid_x * config.device.grid_y
+                core_count = (
+                    config.device.grid_x * config.device.grid_y * config.device.grid_z
+                )
 
                 for ins in schedule_a.instructions:
                     self.assertGreater(ins.cycle_end, ins.cycle_start)

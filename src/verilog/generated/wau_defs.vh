@@ -9,6 +9,7 @@
 `define WAU_ABSTRACTION_VERSION 1
 `define WAU_GRID_X 3
 `define WAU_GRID_Y 2
+`define WAU_GRID_Z 1
 `define WAU_CORE_COUNT 6
 `define WAU_DATA_WIDTH 32
 `define WAU_FLOW_ID_WIDTH 12

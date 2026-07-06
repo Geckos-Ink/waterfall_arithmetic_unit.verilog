@@ -20,6 +20,7 @@ class ScheduleInstruction:
     core_index: int
     core_x: int
     core_y: int
+    core_z: int
     latency: int
     used_fallback: bool
     immediate_b: int | None
@@ -59,7 +60,7 @@ class SchedulePlan:
                     "op": ins.op_name,
                     "opcode": ins.opcode,
                     "core_index": ins.core_index,
-                    "core": {"x": ins.core_x, "y": ins.core_y},
+                    "core": {"x": ins.core_x, "y": ins.core_y, "z": ins.core_z},
                     "latency": ins.latency,
                     "used_fallback": ins.used_fallback,
                     "immediate_b": ins.immediate_b,
@@ -94,7 +95,11 @@ def _dependency_transfer_metrics(
             if dep is None:
                 unresolved_edges += 1
                 continue
-            total_hops += abs(ins.core_x - dep.core_x) + abs(ins.core_y - dep.core_y)
+            total_hops += (
+                abs(ins.core_x - dep.core_x)
+                + abs(ins.core_y - dep.core_y)
+                + abs(ins.core_z - dep.core_z)
+            )
             edge_count += 1
 
     average_hops = (total_hops / edge_count) if edge_count else 0.0
@@ -107,8 +112,15 @@ def _dependency_transfer_metrics(
     }
 
 
-def core_index(x: int, y: int, grid_x: int) -> int:
-    return (y * grid_x) + x
+def core_index(x: int, y: int, grid_x: int, z: int = 0, grid_y: int = 1) -> int:
+    return (z * grid_x * grid_y) + (y * grid_x) + x
+
+
+def core_coords(index: int, *, grid_x: int, grid_y: int) -> tuple[int, int, int]:
+    layer_size = max(1, grid_x * grid_y)
+    z = index // layer_size
+    rem = index % layer_size
+    return rem % grid_x, rem // grid_x, z
 
 
 @dataclass
@@ -170,6 +182,7 @@ def _resolve_dep_iteration(current: CompiledNode, dep: CompiledNode, iteration: 
 
 def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNode], dict[str, list[str]], dict[str, int], dict[int, _ProgramMeta]]:
     grid_x = project.config.device.grid_x
+    grid_y = project.config.device.grid_y
 
     flow_by_id: dict[int, CompiledFlow] = {flow.flow_id: flow for flow in project.flows}
     runtime_nodes: dict[str, _RuntimeNode] = {}
@@ -204,12 +217,27 @@ def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNo
                     key_of[(node.node_id, iteration)] = key
 
                     candidate_core_indices = tuple(
-                        core_index(coord.x, coord.y, grid_x) for coord in node.candidate_cores
+                        core_index(coord.x, coord.y, grid_x, coord.z, grid_y)
+                        for coord in node.candidate_cores
                     )
                     if not candidate_core_indices:
-                        candidate_core_indices = (core_index(node.primary_core.x, node.primary_core.y, grid_x),)
+                        candidate_core_indices = (
+                            core_index(
+                                node.primary_core.x,
+                                node.primary_core.y,
+                                grid_x,
+                                node.primary_core.z,
+                                grid_y,
+                            ),
+                        )
 
-                    primary_idx = core_index(node.primary_core.x, node.primary_core.y, grid_x)
+                    primary_idx = core_index(
+                        node.primary_core.x,
+                        node.primary_core.y,
+                        grid_x,
+                        node.primary_core.z,
+                        grid_y,
+                    )
                     if primary_idx not in candidate_core_indices:
                         candidate_core_indices = (primary_idx,) + candidate_core_indices
 
@@ -322,6 +350,7 @@ def _locality_cost(
     *,
     dep_core_indices: tuple[int, ...],
     grid_x: int,
+    grid_y: int,
     locality_bias: float,
 ) -> int:
     """Routing cost proxy: summed Manhattan hops from the candidate core to the
@@ -331,13 +360,11 @@ def _locality_cost(
     locality weighting is disabled or the node has no placed dependencies."""
     if locality_bias <= 0.0 or not dep_core_indices:
         return 0
-    cx = candidate % grid_x
-    cy = candidate // grid_x
+    cx, cy, cz = core_coords(candidate, grid_x=grid_x, grid_y=grid_y)
     total = 0
     for dep in dep_core_indices:
-        dx = dep % grid_x
-        dy = dep // grid_x
-        total += abs(cx - dx) + abs(cy - dy)
+        dx, dy, dz = core_coords(dep, grid_x=grid_x, grid_y=grid_y)
+        total += abs(cx - dx) + abs(cy - dy) + abs(cz - dz)
     return int(round(total * locality_bias))
 
 
@@ -351,6 +378,7 @@ def _select_core(
     round_robin_state: dict[str, int],
     dep_core_indices: tuple[int, ...],
     grid_x: int,
+    grid_y: int,
     locality_bias: float,
 ) -> tuple[int, int, bool]:
     candidates = list(node.candidate_core_indices)
@@ -367,6 +395,7 @@ def _select_core(
             c,
             dep_core_indices=dep_core_indices,
             grid_x=grid_x,
+            grid_y=grid_y,
             locality_bias=locality_bias,
         )
 
@@ -412,6 +441,7 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
     policy = project.config.scheduler.program_policy
     locality_bias = project.config.scheduler.locality_bias
     grid_x = project.config.device.grid_x
+    grid_y = project.config.device.grid_y
 
     runtime_nodes, dependents, indegree, program_meta = _build_runtime_nodes(project)
 
@@ -513,6 +543,7 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
             round_robin_state=round_robin_state,
             dep_core_indices=dep_core_indices,
             grid_x=grid_x,
+            grid_y=grid_y,
             locality_bias=locality_bias,
         )
         placed_core[selected_key] = chosen_core
@@ -525,8 +556,7 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
 
         dep_end_cycle[selected_key] = end
 
-        core_y = chosen_core // grid_x
-        core_x = chosen_core % grid_x
+        core_x, core_y, core_z = core_coords(chosen_core, grid_x=grid_x, grid_y=grid_y)
 
         instructions.append(
             ScheduleInstruction(
@@ -540,6 +570,7 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
                 core_index=chosen_core,
                 core_x=core_x,
                 core_y=core_y,
+                core_z=core_z,
                 latency=node.latency,
                 used_fallback=used_fallback,
                 immediate_b=node.immediate_b,

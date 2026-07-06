@@ -42,7 +42,8 @@ def _render_defs(project: CompiledProject) -> str:
     lines.append(f"`define WAU_ABSTRACTION_VERSION {cfg.abstraction_version}")
     lines.append(f"`define WAU_GRID_X {cfg.device.grid_x}")
     lines.append(f"`define WAU_GRID_Y {cfg.device.grid_y}")
-    lines.append(f"`define WAU_CORE_COUNT {cfg.device.grid_x * cfg.device.grid_y}")
+    lines.append(f"`define WAU_GRID_Z {cfg.device.grid_z}")
+    lines.append(f"`define WAU_CORE_COUNT {cfg.device.grid_x * cfg.device.grid_y * cfg.device.grid_z}")
     lines.append(f"`define WAU_DATA_WIDTH {cfg.device.data_width}")
     lines.append(f"`define WAU_FLOW_ID_WIDTH {cfg.device.flow_id_width}")
     lines.append(f"`define WAU_OPCODE_WIDTH {cfg.device.opcode_width}")
@@ -407,6 +408,7 @@ def _render_core() -> str:
 module wau_core #(
     parameter CORE_X = 0,
     parameter CORE_Y = 0,
+    parameter CORE_Z = 0,
     parameter DATA_WIDTH = `WAU_DATA_WIDTH,
     parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
     parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH
@@ -499,7 +501,9 @@ module wau_highway_router #(
     parameter CORE_INDEX = 0,
     parameter CORE_X = 0,
     parameter CORE_Y = 0,
+    parameter CORE_Z = 0,
     parameter GRID_X = `WAU_GRID_X,
+    parameter GRID_Y = `WAU_GRID_Y,
     parameter CORE_ID_WIDTH = 8,
     parameter PAYLOAD_WIDTH = 64
 ) (
@@ -512,83 +516,96 @@ module wau_highway_router #(
     output reg [31:0] forward_count,
 
     input wire local_in_valid,
-    output reg local_in_ready,
+    output wire local_in_ready,
     input wire [CORE_ID_WIDTH-1:0] local_in_dst,
     input wire [PAYLOAD_WIDTH-1:0] local_in_payload,
 
-    output reg local_out_valid,
+    output wire local_out_valid,
     input wire local_out_ready,
-    output reg [CORE_ID_WIDTH-1:0] local_out_dst,
-    output reg [PAYLOAD_WIDTH-1:0] local_out_payload,
+    output wire [CORE_ID_WIDTH-1:0] local_out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] local_out_payload,
 
     input wire north_in_valid,
-    output reg north_in_ready,
+    output wire north_in_ready,
     input wire [CORE_ID_WIDTH-1:0] north_in_dst,
     input wire [PAYLOAD_WIDTH-1:0] north_in_payload,
 
-    output reg north_out_valid,
+    output wire north_out_valid,
     input wire north_out_ready,
-    output reg [CORE_ID_WIDTH-1:0] north_out_dst,
-    output reg [PAYLOAD_WIDTH-1:0] north_out_payload,
+    output wire [CORE_ID_WIDTH-1:0] north_out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] north_out_payload,
 
     input wire south_in_valid,
-    output reg south_in_ready,
+    output wire south_in_ready,
     input wire [CORE_ID_WIDTH-1:0] south_in_dst,
     input wire [PAYLOAD_WIDTH-1:0] south_in_payload,
 
-    output reg south_out_valid,
+    output wire south_out_valid,
     input wire south_out_ready,
-    output reg [CORE_ID_WIDTH-1:0] south_out_dst,
-    output reg [PAYLOAD_WIDTH-1:0] south_out_payload,
+    output wire [CORE_ID_WIDTH-1:0] south_out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] south_out_payload,
 
     input wire east_in_valid,
-    output reg east_in_ready,
+    output wire east_in_ready,
     input wire [CORE_ID_WIDTH-1:0] east_in_dst,
     input wire [PAYLOAD_WIDTH-1:0] east_in_payload,
 
-    output reg east_out_valid,
+    output wire east_out_valid,
     input wire east_out_ready,
-    output reg [CORE_ID_WIDTH-1:0] east_out_dst,
-    output reg [PAYLOAD_WIDTH-1:0] east_out_payload,
+    output wire [CORE_ID_WIDTH-1:0] east_out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] east_out_payload,
 
     input wire west_in_valid,
-    output reg west_in_ready,
+    output wire west_in_ready,
     input wire [CORE_ID_WIDTH-1:0] west_in_dst,
     input wire [PAYLOAD_WIDTH-1:0] west_in_payload,
 
-    output reg west_out_valid,
+    output wire west_out_valid,
     input wire west_out_ready,
-    output reg [CORE_ID_WIDTH-1:0] west_out_dst,
-    output reg [PAYLOAD_WIDTH-1:0] west_out_payload
+    output wire [CORE_ID_WIDTH-1:0] west_out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] west_out_payload,
+
+    input wire up_in_valid,
+    output wire up_in_ready,
+    input wire [CORE_ID_WIDTH-1:0] up_in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] up_in_payload,
+
+    output wire up_out_valid,
+    input wire up_out_ready,
+    output wire [CORE_ID_WIDTH-1:0] up_out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] up_out_payload,
+
+    input wire down_in_valid,
+    output wire down_in_ready,
+    input wire [CORE_ID_WIDTH-1:0] down_in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] down_in_payload,
+
+    output wire down_out_valid,
+    input wire down_out_ready,
+    output wire [CORE_ID_WIDTH-1:0] down_out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] down_out_payload
 );
     localparam DIR_LOCAL = 3'd0;
     localparam DIR_NORTH = 3'd1;
     localparam DIR_SOUTH = 3'd2;
     localparam DIR_EAST = 3'd3;
     localparam DIR_WEST = 3'd4;
-
-    integer sel_local;
-    integer sel_north;
-    integer sel_south;
-    integer sel_east;
-    integer sel_west;
-
-    wire [2:0] local_dir;
-    wire [2:0] north_dir;
-    wire [2:0] south_dir;
-    wire [2:0] east_dir;
-    wire [2:0] west_dir;
+    localparam DIR_UP = 3'd5;
+    localparam DIR_DOWN = 3'd6;
+    localparam PORT_COUNT = 7;
 
     function [2:0] route_dir;
         input [CORE_ID_WIDTH-1:0] dst_core;
         integer dst_x;
         integer dst_y;
+        integer dst_z;
         begin
             if (dst_core == CORE_INDEX[CORE_ID_WIDTH-1:0]) begin
                 route_dir = DIR_LOCAL;
             end else begin
                 dst_x = dst_core % GRID_X;
-                dst_y = dst_core / GRID_X;
+                dst_y = (dst_core / GRID_X) % GRID_Y;
+                dst_z = dst_core / (GRID_X * GRID_Y);
 
                 if (dst_x > CORE_X) begin
                     route_dir = DIR_EAST;
@@ -596,329 +613,147 @@ module wau_highway_router #(
                     route_dir = DIR_WEST;
                 end else if (dst_y > CORE_Y) begin
                     route_dir = DIR_SOUTH;
-                end else begin
+                end else if (dst_y < CORE_Y) begin
                     route_dir = DIR_NORTH;
+                end else if (dst_z > CORE_Z) begin
+                    route_dir = DIR_DOWN;
+                end else begin
+                    route_dir = DIR_UP;
                 end
             end
         end
     endfunction
 
-    assign local_dir = route_dir(local_in_dst);
-    assign north_dir = route_dir(north_in_dst);
-    assign south_dir = route_dir(south_in_dst);
-    assign east_dir = route_dir(east_in_dst);
-    assign west_dir = route_dir(west_in_dst);
+    wire in_valid [0:PORT_COUNT-1];
+    wire [CORE_ID_WIDTH-1:0] in_dst [0:PORT_COUNT-1];
+    wire [PAYLOAD_WIDTH-1:0] in_payload [0:PORT_COUNT-1];
+    wire out_ready [0:PORT_COUNT-1];
+
+    reg in_ready_r [0:PORT_COUNT-1];
+    reg out_valid_r [0:PORT_COUNT-1];
+    reg [CORE_ID_WIDTH-1:0] out_dst_r [0:PORT_COUNT-1];
+    reg [PAYLOAD_WIDTH-1:0] out_payload_r [0:PORT_COUNT-1];
+
+    assign in_valid[DIR_LOCAL] = local_in_valid;
+    assign in_valid[DIR_NORTH] = north_in_valid;
+    assign in_valid[DIR_SOUTH] = south_in_valid;
+    assign in_valid[DIR_EAST] = east_in_valid;
+    assign in_valid[DIR_WEST] = west_in_valid;
+    assign in_valid[DIR_UP] = up_in_valid;
+    assign in_valid[DIR_DOWN] = down_in_valid;
+
+    assign in_dst[DIR_LOCAL] = local_in_dst;
+    assign in_dst[DIR_NORTH] = north_in_dst;
+    assign in_dst[DIR_SOUTH] = south_in_dst;
+    assign in_dst[DIR_EAST] = east_in_dst;
+    assign in_dst[DIR_WEST] = west_in_dst;
+    assign in_dst[DIR_UP] = up_in_dst;
+    assign in_dst[DIR_DOWN] = down_in_dst;
+
+    assign in_payload[DIR_LOCAL] = local_in_payload;
+    assign in_payload[DIR_NORTH] = north_in_payload;
+    assign in_payload[DIR_SOUTH] = south_in_payload;
+    assign in_payload[DIR_EAST] = east_in_payload;
+    assign in_payload[DIR_WEST] = west_in_payload;
+    assign in_payload[DIR_UP] = up_in_payload;
+    assign in_payload[DIR_DOWN] = down_in_payload;
+
+    assign out_ready[DIR_LOCAL] = local_out_ready;
+    assign out_ready[DIR_NORTH] = north_out_ready;
+    assign out_ready[DIR_SOUTH] = south_out_ready;
+    assign out_ready[DIR_EAST] = east_out_ready;
+    assign out_ready[DIR_WEST] = west_out_ready;
+    assign out_ready[DIR_UP] = up_out_ready;
+    assign out_ready[DIR_DOWN] = down_out_ready;
+
+    assign local_in_ready = in_ready_r[DIR_LOCAL];
+    assign north_in_ready = in_ready_r[DIR_NORTH];
+    assign south_in_ready = in_ready_r[DIR_SOUTH];
+    assign east_in_ready = in_ready_r[DIR_EAST];
+    assign west_in_ready = in_ready_r[DIR_WEST];
+    assign up_in_ready = in_ready_r[DIR_UP];
+    assign down_in_ready = in_ready_r[DIR_DOWN];
+
+    assign local_out_valid = out_valid_r[DIR_LOCAL];
+    assign north_out_valid = out_valid_r[DIR_NORTH];
+    assign south_out_valid = out_valid_r[DIR_SOUTH];
+    assign east_out_valid = out_valid_r[DIR_EAST];
+    assign west_out_valid = out_valid_r[DIR_WEST];
+    assign up_out_valid = out_valid_r[DIR_UP];
+    assign down_out_valid = out_valid_r[DIR_DOWN];
+
+    assign local_out_dst = out_dst_r[DIR_LOCAL];
+    assign north_out_dst = out_dst_r[DIR_NORTH];
+    assign south_out_dst = out_dst_r[DIR_SOUTH];
+    assign east_out_dst = out_dst_r[DIR_EAST];
+    assign west_out_dst = out_dst_r[DIR_WEST];
+    assign up_out_dst = out_dst_r[DIR_UP];
+    assign down_out_dst = out_dst_r[DIR_DOWN];
+
+    assign local_out_payload = out_payload_r[DIR_LOCAL];
+    assign north_out_payload = out_payload_r[DIR_NORTH];
+    assign south_out_payload = out_payload_r[DIR_SOUTH];
+    assign east_out_payload = out_payload_r[DIR_EAST];
+    assign west_out_payload = out_payload_r[DIR_WEST];
+    assign up_out_payload = out_payload_r[DIR_UP];
+    assign down_out_payload = out_payload_r[DIR_DOWN];
+
+    integer out_i;
+    integer in_i;
+    integer init_i;
+    integer selected_input;
 
     always @(*) begin
-        local_in_ready = 1'b0;
-        north_in_ready = 1'b0;
-        south_in_ready = 1'b0;
-        east_in_ready = 1'b0;
-        west_in_ready = 1'b0;
-
-        local_out_valid = 1'b0;
-        local_out_dst = {CORE_ID_WIDTH{1'b0}};
-        local_out_payload = {PAYLOAD_WIDTH{1'b0}};
-
-        north_out_valid = 1'b0;
-        north_out_dst = {CORE_ID_WIDTH{1'b0}};
-        north_out_payload = {PAYLOAD_WIDTH{1'b0}};
-
-        south_out_valid = 1'b0;
-        south_out_dst = {CORE_ID_WIDTH{1'b0}};
-        south_out_payload = {PAYLOAD_WIDTH{1'b0}};
-
-        east_out_valid = 1'b0;
-        east_out_dst = {CORE_ID_WIDTH{1'b0}};
-        east_out_payload = {PAYLOAD_WIDTH{1'b0}};
-
-        west_out_valid = 1'b0;
-        west_out_dst = {CORE_ID_WIDTH{1'b0}};
-        west_out_payload = {PAYLOAD_WIDTH{1'b0}};
-
-        sel_local = -1;
-        sel_north = -1;
-        sel_south = -1;
-        sel_east = -1;
-        sel_west = -1;
-
-        if (local_in_valid && local_dir == DIR_LOCAL) begin
-            sel_local = 0;
-        end else if (north_in_valid && north_dir == DIR_LOCAL) begin
-            sel_local = 1;
-        end else if (south_in_valid && south_dir == DIR_LOCAL) begin
-            sel_local = 2;
-        end else if (east_in_valid && east_dir == DIR_LOCAL) begin
-            sel_local = 3;
-        end else if (west_in_valid && west_dir == DIR_LOCAL) begin
-            sel_local = 4;
+        for (init_i = 0; init_i < PORT_COUNT; init_i = init_i + 1) begin
+            in_ready_r[init_i] = 1'b0;
+            out_valid_r[init_i] = 1'b0;
+            out_dst_r[init_i] = {CORE_ID_WIDTH{1'b0}};
+            out_payload_r[init_i] = {PAYLOAD_WIDTH{1'b0}};
         end
 
-        if (local_in_valid && local_dir == DIR_NORTH) begin
-            sel_north = 0;
-        end else if (north_in_valid && north_dir == DIR_NORTH) begin
-            sel_north = 1;
-        end else if (south_in_valid && south_dir == DIR_NORTH) begin
-            sel_north = 2;
-        end else if (east_in_valid && east_dir == DIR_NORTH) begin
-            sel_north = 3;
-        end else if (west_in_valid && west_dir == DIR_NORTH) begin
-            sel_north = 4;
+        for (out_i = 0; out_i < PORT_COUNT; out_i = out_i + 1) begin
+            selected_input = -1;
+            for (in_i = 0; in_i < PORT_COUNT; in_i = in_i + 1) begin
+                if ((selected_input < 0) && in_valid[in_i] && (route_dir(in_dst[in_i]) == out_i)) begin
+                    selected_input = in_i;
+                end
+            end
+
+            if (selected_input >= 0) begin
+                out_valid_r[out_i] = 1'b1;
+                out_dst_r[out_i] = in_dst[selected_input];
+                out_payload_r[out_i] = in_payload[selected_input];
+                in_ready_r[selected_input] = out_ready[out_i];
+            end
         end
-
-        if (local_in_valid && local_dir == DIR_SOUTH) begin
-            sel_south = 0;
-        end else if (north_in_valid && north_dir == DIR_SOUTH) begin
-            sel_south = 1;
-        end else if (south_in_valid && south_dir == DIR_SOUTH) begin
-            sel_south = 2;
-        end else if (east_in_valid && east_dir == DIR_SOUTH) begin
-            sel_south = 3;
-        end else if (west_in_valid && west_dir == DIR_SOUTH) begin
-            sel_south = 4;
-        end
-
-        if (local_in_valid && local_dir == DIR_EAST) begin
-            sel_east = 0;
-        end else if (north_in_valid && north_dir == DIR_EAST) begin
-            sel_east = 1;
-        end else if (south_in_valid && south_dir == DIR_EAST) begin
-            sel_east = 2;
-        end else if (east_in_valid && east_dir == DIR_EAST) begin
-            sel_east = 3;
-        end else if (west_in_valid && west_dir == DIR_EAST) begin
-            sel_east = 4;
-        end
-
-        if (local_in_valid && local_dir == DIR_WEST) begin
-            sel_west = 0;
-        end else if (north_in_valid && north_dir == DIR_WEST) begin
-            sel_west = 1;
-        end else if (south_in_valid && south_dir == DIR_WEST) begin
-            sel_west = 2;
-        end else if (east_in_valid && east_dir == DIR_WEST) begin
-            sel_west = 3;
-        end else if (west_in_valid && west_dir == DIR_WEST) begin
-            sel_west = 4;
-        end
-
-        case (sel_local)
-            0: begin
-                local_out_valid = 1'b1;
-                local_out_dst = local_in_dst;
-                local_out_payload = local_in_payload;
-                local_in_ready = local_out_ready;
-            end
-            1: begin
-                local_out_valid = 1'b1;
-                local_out_dst = north_in_dst;
-                local_out_payload = north_in_payload;
-                north_in_ready = local_out_ready;
-            end
-            2: begin
-                local_out_valid = 1'b1;
-                local_out_dst = south_in_dst;
-                local_out_payload = south_in_payload;
-                south_in_ready = local_out_ready;
-            end
-            3: begin
-                local_out_valid = 1'b1;
-                local_out_dst = east_in_dst;
-                local_out_payload = east_in_payload;
-                east_in_ready = local_out_ready;
-            end
-            4: begin
-                local_out_valid = 1'b1;
-                local_out_dst = west_in_dst;
-                local_out_payload = west_in_payload;
-                west_in_ready = local_out_ready;
-            end
-            default: begin
-            end
-        endcase
-
-        case (sel_north)
-            0: begin
-                north_out_valid = 1'b1;
-                north_out_dst = local_in_dst;
-                north_out_payload = local_in_payload;
-                local_in_ready = north_out_ready;
-            end
-            1: begin
-                north_out_valid = 1'b1;
-                north_out_dst = north_in_dst;
-                north_out_payload = north_in_payload;
-                north_in_ready = north_out_ready;
-            end
-            2: begin
-                north_out_valid = 1'b1;
-                north_out_dst = south_in_dst;
-                north_out_payload = south_in_payload;
-                south_in_ready = north_out_ready;
-            end
-            3: begin
-                north_out_valid = 1'b1;
-                north_out_dst = east_in_dst;
-                north_out_payload = east_in_payload;
-                east_in_ready = north_out_ready;
-            end
-            4: begin
-                north_out_valid = 1'b1;
-                north_out_dst = west_in_dst;
-                north_out_payload = west_in_payload;
-                west_in_ready = north_out_ready;
-            end
-            default: begin
-            end
-        endcase
-
-        case (sel_south)
-            0: begin
-                south_out_valid = 1'b1;
-                south_out_dst = local_in_dst;
-                south_out_payload = local_in_payload;
-                local_in_ready = south_out_ready;
-            end
-            1: begin
-                south_out_valid = 1'b1;
-                south_out_dst = north_in_dst;
-                south_out_payload = north_in_payload;
-                north_in_ready = south_out_ready;
-            end
-            2: begin
-                south_out_valid = 1'b1;
-                south_out_dst = south_in_dst;
-                south_out_payload = south_in_payload;
-                south_in_ready = south_out_ready;
-            end
-            3: begin
-                south_out_valid = 1'b1;
-                south_out_dst = east_in_dst;
-                south_out_payload = east_in_payload;
-                east_in_ready = south_out_ready;
-            end
-            4: begin
-                south_out_valid = 1'b1;
-                south_out_dst = west_in_dst;
-                south_out_payload = west_in_payload;
-                west_in_ready = south_out_ready;
-            end
-            default: begin
-            end
-        endcase
-
-        case (sel_east)
-            0: begin
-                east_out_valid = 1'b1;
-                east_out_dst = local_in_dst;
-                east_out_payload = local_in_payload;
-                local_in_ready = east_out_ready;
-            end
-            1: begin
-                east_out_valid = 1'b1;
-                east_out_dst = north_in_dst;
-                east_out_payload = north_in_payload;
-                north_in_ready = east_out_ready;
-            end
-            2: begin
-                east_out_valid = 1'b1;
-                east_out_dst = south_in_dst;
-                east_out_payload = south_in_payload;
-                south_in_ready = east_out_ready;
-            end
-            3: begin
-                east_out_valid = 1'b1;
-                east_out_dst = east_in_dst;
-                east_out_payload = east_in_payload;
-                east_in_ready = east_out_ready;
-            end
-            4: begin
-                east_out_valid = 1'b1;
-                east_out_dst = west_in_dst;
-                east_out_payload = west_in_payload;
-                west_in_ready = east_out_ready;
-            end
-            default: begin
-            end
-        endcase
-
-        case (sel_west)
-            0: begin
-                west_out_valid = 1'b1;
-                west_out_dst = local_in_dst;
-                west_out_payload = local_in_payload;
-                local_in_ready = west_out_ready;
-            end
-            1: begin
-                west_out_valid = 1'b1;
-                west_out_dst = north_in_dst;
-                west_out_payload = north_in_payload;
-                north_in_ready = west_out_ready;
-            end
-            2: begin
-                west_out_valid = 1'b1;
-                west_out_dst = south_in_dst;
-                west_out_payload = south_in_payload;
-                south_in_ready = west_out_ready;
-            end
-            3: begin
-                west_out_valid = 1'b1;
-                west_out_dst = east_in_dst;
-                west_out_payload = east_in_payload;
-                east_in_ready = west_out_ready;
-            end
-            4: begin
-                west_out_valid = 1'b1;
-                west_out_dst = west_in_dst;
-                west_out_payload = west_in_payload;
-                west_in_ready = west_out_ready;
-            end
-            default: begin
-            end
-        endcase
     end
 
     // Observability: count successful forwards (any direction's accepted handshake),
     // local-out deliveries (packets that exit the mesh at this node), and stalls
     // (input valid but downstream not ready, i.e. handshake denied on this cycle).
-    wire local_handshake = local_in_valid && local_in_ready;
-    wire north_handshake = north_in_valid && north_in_ready;
-    wire south_handshake = south_in_valid && south_in_ready;
-    wire east_handshake = east_in_valid && east_in_ready;
-    wire west_handshake = west_in_valid && west_in_ready;
+    reg [3:0] in_handshake_count;
+    reg [3:0] stall_now;
+    reg [3:0] forwarded_to_neighbour;
+    integer count_i;
 
-    wire local_stall = local_in_valid && !local_in_ready;
-    wire north_stall = north_in_valid && !north_in_ready;
-    wire south_stall = south_in_valid && !south_in_ready;
-    wire east_stall = east_in_valid && !east_in_ready;
-    wire west_stall = west_in_valid && !west_in_ready;
-
-    wire local_out_handshake = local_out_valid && local_out_ready;
-    wire north_out_handshake = north_out_valid && north_out_ready;
-    wire south_out_handshake = south_out_valid && south_out_ready;
-    wire east_out_handshake = east_out_valid && east_out_ready;
-    wire west_out_handshake = west_out_valid && west_out_ready;
-
-    function [3:0] popcount5;
-        input [4:0] bits;
-        integer pc_i;
-        begin
-            popcount5 = 4'd0;
-            for (pc_i = 0; pc_i < 5; pc_i = pc_i + 1) begin
-                if (bits[pc_i]) popcount5 = popcount5 + 4'd1;
+    always @(*) begin
+        in_handshake_count = 4'd0;
+        stall_now = 4'd0;
+        forwarded_to_neighbour = 4'd0;
+        for (count_i = 0; count_i < PORT_COUNT; count_i = count_i + 1) begin
+            if (in_valid[count_i] && in_ready_r[count_i]) begin
+                in_handshake_count = in_handshake_count + 4'd1;
+            end
+            if (in_valid[count_i] && !in_ready_r[count_i]) begin
+                stall_now = stall_now + 4'd1;
+            end
+            if ((count_i != DIR_LOCAL) && out_valid_r[count_i] && out_ready[count_i]) begin
+                forwarded_to_neighbour = forwarded_to_neighbour + 4'd1;
             end
         end
-    endfunction
+    end
 
-    wire [3:0] in_handshake_count = popcount5(
-        {west_handshake, east_handshake, south_handshake, north_handshake, local_handshake}
-    );
-    wire [3:0] stall_now = popcount5(
-        {west_stall, east_stall, south_stall, north_stall, local_stall}
-    );
-    wire [3:0] forwarded_to_neighbour = popcount5(
-        {west_out_handshake, east_out_handshake, south_out_handshake, north_out_handshake, 1'b0}
-    );
+    wire local_out_handshake = out_valid_r[DIR_LOCAL] && out_ready[DIR_LOCAL];
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -946,6 +781,7 @@ def _render_highway_mesh() -> str:
 module wau_highway_mesh #(
     parameter GRID_X = `WAU_GRID_X,
     parameter GRID_Y = `WAU_GRID_Y,
+    parameter GRID_Z = `WAU_GRID_Z,
     parameter CORE_COUNT = `WAU_CORE_COUNT,
     parameter CORE_ID_WIDTH = 8,
     parameter PAYLOAD_WIDTH = 64
@@ -1004,22 +840,48 @@ module wau_highway_mesh #(
     wire [CORE_COUNT*CORE_ID_WIDTH-1:0] west_out_dst;
     wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] west_out_payload;
 
+    wire [CORE_COUNT-1:0] up_in_valid;
+    wire [CORE_COUNT-1:0] up_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] up_in_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] up_in_payload;
+    wire [CORE_COUNT-1:0] up_out_valid;
+    wire [CORE_COUNT-1:0] up_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] up_out_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] up_out_payload;
+
+    wire [CORE_COUNT-1:0] down_in_valid;
+    wire [CORE_COUNT-1:0] down_in_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] down_in_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] down_in_payload;
+    wire [CORE_COUNT-1:0] down_out_valid;
+    wire [CORE_COUNT-1:0] down_out_ready;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] down_out_dst;
+    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] down_out_payload;
+
+    localparam integer LAYER_CORE_COUNT = GRID_X * GRID_Y;
+
+    genvar gz;
     genvar gy;
     genvar gx;
     generate
+        for (gz = 0; gz < GRID_Z; gz = gz + 1) begin : gen_z
         for (gy = 0; gy < GRID_Y; gy = gy + 1) begin : gen_y
             for (gx = 0; gx < GRID_X; gx = gx + 1) begin : gen_x
-                localparam integer CORE_INDEX = (gy * GRID_X) + gx;
+                localparam integer CORE_INDEX = (gz * LAYER_CORE_COUNT) + (gy * GRID_X) + gx;
                 localparam integer NORTH_INDEX = CORE_INDEX - GRID_X;
                 localparam integer SOUTH_INDEX = CORE_INDEX + GRID_X;
                 localparam integer EAST_INDEX = CORE_INDEX + 1;
                 localparam integer WEST_INDEX = CORE_INDEX - 1;
+                localparam integer UP_INDEX = CORE_INDEX - LAYER_CORE_COUNT;
+                localparam integer DOWN_INDEX = CORE_INDEX + LAYER_CORE_COUNT;
 
                 wau_highway_router #(
                     .CORE_INDEX(CORE_INDEX),
                     .CORE_X(gx),
                     .CORE_Y(gy),
+                    .CORE_Z(gz),
                     .GRID_X(GRID_X),
+                    .GRID_Y(GRID_Y),
                     .CORE_ID_WIDTH(CORE_ID_WIDTH),
                     .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
                 ) router_u (
@@ -1068,7 +930,23 @@ module wau_highway_mesh #(
                     .west_out_valid(west_out_valid[CORE_INDEX]),
                     .west_out_ready(west_out_ready[CORE_INDEX]),
                     .west_out_dst(west_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .west_out_payload(west_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    .west_out_payload(west_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .up_in_valid(up_in_valid[CORE_INDEX]),
+                    .up_in_ready(up_in_ready[CORE_INDEX]),
+                    .up_in_dst(up_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .up_in_payload(up_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .up_out_valid(up_out_valid[CORE_INDEX]),
+                    .up_out_ready(up_out_ready[CORE_INDEX]),
+                    .up_out_dst(up_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .up_out_payload(up_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .down_in_valid(down_in_valid[CORE_INDEX]),
+                    .down_in_ready(down_in_ready[CORE_INDEX]),
+                    .down_in_dst(down_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .down_in_payload(down_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                    .down_out_valid(down_out_valid[CORE_INDEX]),
+                    .down_out_ready(down_out_ready[CORE_INDEX]),
+                    .down_out_dst(down_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .down_out_payload(down_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
                 );
 
                 if (gy == 0) begin : north_edge
@@ -1154,7 +1032,50 @@ module wau_highway_mesh #(
                         .out_payload(west_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
                     );
                 end
+
+                if (gz == 0) begin : up_edge
+                    assign up_in_valid[CORE_INDEX] = 1'b0;
+                    assign up_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+                    assign up_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
+                    assign up_out_ready[CORE_INDEX] = 1'b1;
+                end else begin : up_link
+                    wau_neighbor_forward #(
+                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+                    ) from_up_u (
+                        .in_valid(down_out_valid[UP_INDEX]),
+                        .in_ready(down_out_ready[UP_INDEX]),
+                        .in_dst(down_out_dst[(UP_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .in_payload(down_out_payload[(UP_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                        .out_valid(up_in_valid[CORE_INDEX]),
+                        .out_ready(up_in_ready[CORE_INDEX]),
+                        .out_dst(up_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .out_payload(up_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    );
+                end
+
+                if (gz == GRID_Z - 1) begin : down_edge
+                    assign down_in_valid[CORE_INDEX] = 1'b0;
+                    assign down_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+                    assign down_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
+                    assign down_out_ready[CORE_INDEX] = 1'b1;
+                end else begin : down_link
+                    wau_neighbor_forward #(
+                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+                    ) from_down_u (
+                        .in_valid(up_out_valid[DOWN_INDEX]),
+                        .in_ready(up_out_ready[DOWN_INDEX]),
+                        .in_dst(up_out_dst[(DOWN_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .in_payload(up_out_payload[(DOWN_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
+                        .out_valid(down_in_valid[CORE_INDEX]),
+                        .out_ready(down_in_ready[CORE_INDEX]),
+                        .out_dst(down_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                        .out_payload(down_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
+                    );
+                end
             end
+        end
         end
     endgenerate
 endmodule
@@ -1169,11 +1090,23 @@ def _stage_case_entries(project: CompiledProject, field: str) -> str:
             if field == "opcode":
                 value = f"{project.config.device.opcode_width}'h{stage.opcode:02X}"
             elif field == "primary_core":
-                idx = core_index(stage.primary_core.x, stage.primary_core.y, project.config.device.grid_x)
+                idx = core_index(
+                    stage.primary_core.x,
+                    stage.primary_core.y,
+                    project.config.device.grid_x,
+                    stage.primary_core.z,
+                    project.config.device.grid_y,
+                )
                 value = f"8'd{idx}"
             elif field == "fallback_core":
                 fallback = stage.fallback_core or stage.primary_core
-                idx = core_index(fallback.x, fallback.y, project.config.device.grid_x)
+                idx = core_index(
+                    fallback.x,
+                    fallback.y,
+                    project.config.device.grid_x,
+                    fallback.z,
+                    project.config.device.grid_y,
+                )
                 value = f"8'd{idx}"
             elif field == "use_immediate":
                 value = "1'b1" if stage.immediate_b is not None else "1'b0"
@@ -1602,6 +1535,7 @@ module __WAU_TOP_MODULE__ #(
     parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH,
     parameter GRID_X = `WAU_GRID_X,
     parameter GRID_Y = `WAU_GRID_Y,
+    parameter GRID_Z = `WAU_GRID_Z,
     parameter CORE_COUNT = `WAU_CORE_COUNT
 ) (
     input wire clk,
@@ -1817,6 +1751,7 @@ module __WAU_TOP_MODULE__ #(
     wau_highway_mesh #(
         .GRID_X(GRID_X),
         .GRID_Y(GRID_Y),
+        .GRID_Z(GRID_Z),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH)
@@ -1840,6 +1775,7 @@ module __WAU_TOP_MODULE__ #(
     wau_highway_mesh #(
         .GRID_X(GRID_X),
         .GRID_Y(GRID_Y),
+        .GRID_Z(GRID_Z),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH)
@@ -1860,16 +1796,21 @@ module __WAU_TOP_MODULE__ #(
         .router_forward_count(data_router_forward_count)
     );
 
+    localparam integer LAYER_CORE_COUNT = GRID_X * GRID_Y;
+
+    genvar gz;
     genvar gy;
     genvar gx;
     generate
+        for (gz = 0; gz < GRID_Z; gz = gz + 1) begin : gen_z
         for (gy = 0; gy < GRID_Y; gy = gy + 1) begin : gen_y
             for (gx = 0; gx < GRID_X; gx = gx + 1) begin : gen_x
-                localparam integer CORE_INDEX = (gy * GRID_X) + gx;
+                localparam integer CORE_INDEX = (gz * LAYER_CORE_COUNT) + (gy * GRID_X) + gx;
 
                 wau_core #(
                     .CORE_X(gx),
                     .CORE_Y(gy),
+                    .CORE_Z(gz),
                     .DATA_WIDTH(DATA_WIDTH),
                     .FLOW_ID_WIDTH(FLOW_ID_WIDTH),
                     .OPCODE_WIDTH(OPCODE_WIDTH)
@@ -1896,6 +1837,7 @@ module __WAU_TOP_MODULE__ #(
                     .cache_lookup_count(core_cache_lookup_count[(CORE_INDEX*32) +: 32])
                 );
             end
+        end
         end
     endgenerate
 
@@ -2308,6 +2250,19 @@ endmodule
 
 def _render_program_json(project: CompiledProject) -> dict:
     flow_to_slot = {flow.flow_id: flow.flow_slot for flow in project.flows}
+    grid_x = project.config.device.grid_x
+    grid_y = project.config.device.grid_y
+
+    def coord_with_index(coord: object) -> dict[str, int]:
+        x = getattr(coord, "x")
+        y = getattr(coord, "y")
+        z = getattr(coord, "z")
+        return {
+            "x": x,
+            "y": y,
+            "z": z,
+            "index": core_index(x, y, grid_x, z, grid_y),
+        }
 
     return {
         "project": project.config.project_name,
@@ -2320,7 +2275,11 @@ def _render_program_json(project: CompiledProject) -> dict:
             "vendor": project.config.device.vendor,
             "family": project.config.device.family,
             "part": project.config.device.part,
-            "grid": {"x": project.config.device.grid_x, "y": project.config.device.grid_y},
+            "grid": {
+                "x": project.config.device.grid_x,
+                "y": project.config.device.grid_y,
+                "z": project.config.device.grid_z,
+            },
             "coordinator_mode": project.config.device.coordinator_mode,
             "supported_data_types": list(project.config.device.supported_data_types),
         },
@@ -2331,7 +2290,7 @@ def _render_program_json(project: CompiledProject) -> dict:
             "allow_cycle_recurrence": project.config.compiler.allow_cycle_recurrence,
             "core_capabilities": [
                 {
-                    "core": {"x": cap.core.x, "y": cap.core.y},
+                    "core": {"x": cap.core.x, "y": cap.core.y, "z": cap.core.z},
                     "operations": list(cap.operations),
                     "data_types": list(cap.data_types),
                 }
@@ -2351,25 +2310,9 @@ def _render_program_json(project: CompiledProject) -> dict:
                         "opcode": stage.opcode,
                         "latency": stage.latency,
                         "pipelined": stage.pipelined,
-                        "primary_core": {
-                            "x": stage.primary_core.x,
-                            "y": stage.primary_core.y,
-                            "index": core_index(
-                                stage.primary_core.x,
-                                stage.primary_core.y,
-                                project.config.device.grid_x,
-                            ),
-                        },
+                        "primary_core": coord_with_index(stage.primary_core),
                         "fallback_core": (
-                            {
-                                "x": stage.fallback_core.x,
-                                "y": stage.fallback_core.y,
-                                "index": core_index(
-                                    stage.fallback_core.x,
-                                    stage.fallback_core.y,
-                                    project.config.device.grid_x,
-                                ),
-                            }
+                            coord_with_index(stage.fallback_core)
                             if stage.fallback_core is not None
                             else None
                         ),
@@ -2388,37 +2331,13 @@ def _render_program_json(project: CompiledProject) -> dict:
                         "opcode": node.opcode,
                         "latency": node.latency,
                         "pipelined": node.pipelined,
-                        "primary_core": {
-                            "x": node.primary_core.x,
-                            "y": node.primary_core.y,
-                            "index": core_index(
-                                node.primary_core.x,
-                                node.primary_core.y,
-                                project.config.device.grid_x,
-                            ),
-                        },
+                        "primary_core": coord_with_index(node.primary_core),
                         "candidate_cores": [
-                            {
-                                "x": coord.x,
-                                "y": coord.y,
-                                "index": core_index(
-                                    coord.x,
-                                    coord.y,
-                                    project.config.device.grid_x,
-                                ),
-                            }
+                            coord_with_index(coord)
                             for coord in node.candidate_cores
                         ],
                         "fallback_core": (
-                            {
-                                "x": node.fallback_core.x,
-                                "y": node.fallback_core.y,
-                                "index": core_index(
-                                    node.fallback_core.x,
-                                    node.fallback_core.y,
-                                    project.config.device.grid_x,
-                                ),
-                            }
+                            coord_with_index(node.fallback_core)
                             if node.fallback_core is not None
                             else None
                         ),
