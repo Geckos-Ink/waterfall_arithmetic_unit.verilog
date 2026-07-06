@@ -4,7 +4,7 @@ The **Waterfall Arithmetic Unit (WAU)** is a configurable arithmetic compute fab
 
 This repository is the **toolchain that builds one**. You describe your kernel in a high-level form — an arithmetic expression, a constrained pseudo-C snippet, or a `.cw` program — and the Python generator emits the full Verilog (cores, mesh, coordinator, host MMIO), a compiled schedule, and a software reference model used as a correctness oracle. No hand-written RTL, no separate compiler stack.
 
-It is **silicon-verified**: the same flow has been taken end-to-end onto a Terasic DE0-Nano (Intel Cyclone IV E), where 795/795 random and corner-case operand pairs round-tripped through the live mesh and matched the software reference (see [DE0-Nano demo](#de0-nano-real-silicon-implementation)).
+It is **silicon-verified**: the same flow has been taken end-to-end onto a Terasic DE0-Nano (Intel Cyclone IV E), where 795/795 random and corner-case operand pairs plus 150/150 real Iris samples round-tripped through the live mesh and matched the software reference (see [DE0-Nano demo](#de0-nano-real-silicon-implementation)).
 
 Typical uses: experimenting with small FPGA-side math accelerators, teaching dataflow / NoC concepts on real silicon, or as a reusable reference for the "high-level kernel → generated RTL → working bitstream" path.
 
@@ -322,6 +322,7 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `benchmarks/example_pogram_benchmark_best.json`: machine-readable best-known benchmark snapshot
 - `benchmarks/example_pogram_benchmark_history.json`: benchmark history for trend checks
 - `benchmarks/de0_nano_basic_benchmark.txt`: silicon-verified reference run on the DE0-Nano (resource fit, per-corner Fmax, 795/795 scoreboard pass, live observability counters)
+- `benchmarks/de0_nano_iris_stats_benchmark.txt`: real-data DE0-Nano benchmark for the 2D WAU using 150 Iris samples, live board measurements, and tracked JSON sidecars
 - `demo/de0-nano/basic-example/`: end-to-end physical deployment — Quartus 25.1 project + reusable vJTAG MMIO bridge RTL + reusable Python/TCL host stack + automation scripts; produces the artifact above
 
 ## Generated Artifacts
@@ -436,7 +437,7 @@ non-MMIO integrations.
 This is a robust **basis**, not final silicon architecture:
 - Control-plane dispatch and data-plane results now traverse explicit neighbor-linked highway meshes with valid/ready backpressure.
 - `grid.z > 1` emits layered 3D core indexing and vertical `up/down` mesh links; this path is currently verified with `iverilog` (`tb_wau_highway_mesh_3d`) and has not yet been calibrated on the DE0-NANO board flow.
-- A 2026-07-06 Quartus 23.1std compile of the regenerated 2D DE0-NANO demo fits and produces a `.sof`, but TimeQuest does not close the 50 MHz board clock (`CLOCK_50` Fmax 23.06 MHz, worst setup slack -23.360 ns) and reports a mesh combinational-loop warning. Treat the existing silicon benchmark below as the prior reference; do not use the current regenerated bitstream for real-data benchmarking until the mesh has registered/elastic timing cuts.
+- A 2026-07-06 Quartus 23.1std compile of the regenerated 2D DE0-NANO demo fits, was programmed onto the board, and completed a real-data Iris benchmark with 150/150 passing samples; however, TimeQuest still does not close the 50 MHz board clock (`CLOCK_50` setup slack -29.585 ns at slow 0 C and -11.578 ns at fast 0 C). Treat the board result as empirical room-temperature validation, and treat registered/elastic mesh timing cuts or a slower board-clock profile as the next hardware-closing slice.
 - Runtime adaptation is implemented as primary/fallback/candidate core selection per node, constrained by per-core capability metadata.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
 - Current pseudo-C frontend targets accumulator-style pipelines (`acc = a; acc = acc <op> ...`) to stay compatible with the present coordinator execution model.
@@ -479,6 +480,45 @@ traverse the mesh (not a degenerate short-circuit): `6 890` total hops,
 `0` stall events, `4 240` packets locally delivered, `93 / 2 120` station-cache
 hits (4.4 % — expected for random operand pairs).
 
+### Real-data statistical workload — live board run (2026-07-06)
+The same 2D DE0-Nano path was then used for a deeper, fixed-point statistical
+program over real data: flow `4`, `iris_morphology_score`, driven by the
+tracked dataset copy at
+[`demo/de0-nano/basic-example/host/data/iris_sepal_petal_tenths.csv`](demo/de0-nano/basic-example/host/data/iris_sepal_petal_tenths.csv).
+The exact board report lives in
+[`benchmarks/de0_nano_iris_stats_benchmark.txt`](benchmarks/de0_nano_iris_stats_benchmark.txt),
+with JSON sidecars for both captured runs.
+
+The hardware formula is intentionally simple but nontrivial for the 2D WAU:
+
+```text
+score(a, b) = max((((max((((a - 58) * 4 + b - 44) * 3 + 32), 0)) * 2) - 80), 0)
+```
+
+where `a` is sepal length in tenths of a centimeter and `b` is petal length in
+the same fixed-point scale.
+
+| Run | Rows | Pass | Throughput | p50 / p95 |
+|-----|-----:|:----:|-----------:|----------:|
+| `run1` | 150 | **150/150** | 80.7 op/s | 15 / 16 ms |
+| `run2` | 150 | **150/150** | 79.3 op/s | 16 / 16 ms |
+| **Aggregate** | **300** | **300/300 (100%)** | 79.3-80.7 op/s | p95 16 ms |
+
+Per-label output summaries were stable across both board runs:
+
+| Label | Nonzero | Min | p50 | p95 | Max |
+|-------|--------:|----:|----:|----:|----:|
+| `Iris-setosa` | 0 / 50 | 0 | 0 | 0 | 0 |
+| `Iris-versicolor` | 25 / 50 | 0 | 4 | 236 | 290 |
+| `Iris-virginica` | 47 / 50 | 0 | 200 | 578 | 608 |
+
+This is not presented as a classifier. It is a compact morphology score used
+to exercise a longer arithmetic chain on real measurements while keeping a
+precise host-side reference. The useful point is that the live device stayed
+bit-exact across all 300 checked samples and the observability counters still
+showed real mesh traffic (`5 700` hops, `0` stalls, `2 700` forwards,
+`3 000` local deliveries per 150-row run).
+
 ### Resource & timing
 Post-fit on EP4CE22F17C6 (Quartus Standard 25.1, 2×2 grid, int32, 4 ops):
 
@@ -494,6 +534,16 @@ Setup timing closes at the Fast corner (+4.06 ns slack) and the empirically
 verified room-temperature build runs cleanly at 50 MHz. Per-corner Fmax:
 36 MHz @ slow-85 °C, 40 MHz @ slow-0 °C, > 50 MHz @ fast-0 °C — see
 section 4 of the benchmark txt for the honest worst-case story.
+
+For the 2026-07-06 Iris benchmark image, the machine-local Quartus Standard
+25.1 installation at `C:\altera_standard\25.1std` could not compile because
+its evaluation period had expired, so synthesis/programming fell back to
+Quartus Lite 23.1 at `C:\intelFPGA_lite\23.1std`. That build still fit
+comfortably (`9 616 / 22 320` logic elements, `24 / 132` embedded
+multipliers), but TimeQuest reported negative setup slack at both published
+corners. The board measurements above are therefore empirical validation of
+this exact bitstream on July 6, 2026, not a claim of formal 50 MHz timing
+closure.
 
 ### Conclusions
 - **The WAU works on real silicon.** 795 / 795 random + corner-case operand

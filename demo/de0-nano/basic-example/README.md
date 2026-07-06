@@ -12,7 +12,7 @@ operands are pushed via vJTAG, and results stream back the same way.
 │  waujtag.WAU     │                    │  vJTAG ── wau_vjtag_bridge  │
 │   └ MMIO         │     TCP 2540       │           └ wau_host_mmio   │
 │      └ TCLClient ├────────────────────┤              └ wau_top      │
-│                  │                    │                  (3x2 grid) │
+│                  │                    │                  (2x2 grid) │
 │  quartus_stp     │   TCL server       │                             │
 └──────────────────┘                    └─────────────────────────────┘
 ```
@@ -57,14 +57,18 @@ demo/de0-nano/basic-example/
 │   │   └── wau_jtag_server.tcl        quartus_stp TCL server (REUSABLE)
 │   ├── programs/
 │   │   ├── basic_arithmetic.cw        compact compile-cw kernel for DE0-Nano
-│   │   └── run_benchmark.py           benchmark driver
+│   │   ├── run_benchmark.py           randomized arithmetic benchmark driver
+│   │   └── run_iris_stats_benchmark.py real-data Iris benchmark driver
+│   ├── data/
+│   │   └── iris_sepal_petal_tenths.csv tracked real dataset copy (scaled)
 │   └── config/
-│       └── wau_de0_nano_basic.json    WAU config (3x2 grid, 5 ops, 2 flows)
+│       └── wau_de0_nano_basic.json    WAU config (2x2 grid, 4 ops, 4 flows)
 ├── scripts/
 │   ├── build.ps1                      generate RTL + Quartus full compile
 │   ├── program.ps1                    quartus_pgm download
 │   ├── server.ps1                     quartus_stp TCL server
-│   └── run.ps1                        python benchmark
+│   ├── run.ps1                        randomized arithmetic benchmark
+│   └── run_iris_stats.ps1             real-data Iris benchmark
 └── build/                             gitignored: generated/, *.json reports
 ```
 
@@ -73,7 +77,11 @@ demo/de0-nano/basic-example/
 ## Prerequisites
 
 * Quartus Standard 25.1 at `C:\altera_standard\25.1std`
-  (the bundled `quartus_sh`, `quartus_pgm`, `quartus_stp` are all used)
+  (pass `-QuartusRoot` if your install lives elsewhere; the bundled
+  `quartus_sh`, `quartus_pgm`, and `quartus_stp` are all used)
+* If the local 25.1 Standard install cannot compile because its evaluation has
+  expired, use `-QuartusRoot C:\intelFPGA_lite\23.1std` for build/program/server.
+  The tracked 2026-07-06 Iris board report in this repo was produced that way.
 * DE0-Nano connected via USB (USB-Blaster driver visible in Device Manager)
 * Python 3.10+ on PATH
 
@@ -106,8 +114,11 @@ If LED[6] is blinking and LED[1] is solid, the design is alive and ready.
 # 3. In a SECOND PowerShell, start the TCL vJTAG MMIO server.
 .\scripts\server.ps1
 
-# 4. In a THIRD PowerShell, run the host benchmark.
+# 4. In a THIRD PowerShell, run the arithmetic smoke benchmark.
 .\scripts\run.ps1 -Iters 256
+
+# 5. Or run the real-data statistical benchmark instead.
+.\scripts\run_iris_stats.ps1
 ```
 
 POSIX equivalent (Git Bash / WSL / MSYS):
@@ -117,6 +128,7 @@ make build
 make program
 make server         # in its own terminal
 make run            # in another terminal
+make run-iris       # real-data Iris workload
 ```
 
 Validated end-to-end output on a real DE0-Nano (Quartus 25.1std, USB-Blaster,
@@ -145,6 +157,9 @@ observability delta after all cases:
 ```
 
 Reports are written to `build/benchmark_<timestamp>.json`.
+
+Real-data Iris benchmark reports are written to
+`build/iris_benchmark_<timestamp>.json`.
 
 Per-trigger wall-clock latency (~15 ms p50) is dominated by USB-Blaster JTAG
 round-trip — the WAU itself completes each 2- or 3-stage flow in well under
@@ -178,6 +193,10 @@ The default WAU config (`host/config/wau_de0_nano_basic.json`) defines:
   `y = (max(a, b) − b) × 2`  (max → sub → mul-by-2)
 * **flow 3 — `fma_a_b_plus_b`** (2 stages):
   `y = a × b + b`            (mul → add)
+* **flow 4 — `iris_morphology_score`** (10 stages):
+  `score(a, b) = max((((max((((a - 58) * 4 + b - 44) * 3 + 32), 0)) * 2) - 80), 0)`
+  where `a` is sepal length and `b` is petal length, both scaled to tenths of
+  a centimeter
 
 Why no `div`? The bundled `wau_operation_alu.v` emits a purely combinational
 signed divide whose 32-bit settling time exceeds one 50 MHz period on
@@ -187,11 +206,18 @@ divider has settled and come back as garbage on silicon. The other four ops
 are 1- or 3-cycle bounded and are reliable. Re-enabling division is a
 station/divider rework upstream of this demo.
 
-The Python benchmark feeds 265 randomized + corner-case `(a, b)` pairs into
-each flow over JTAG, polls `wau_host_mmio` for results, validates each result
-against the software reference, and reports throughput / latency percentiles
-plus the **delta** of all observability counters (hops, stalls, forwards,
+`run.ps1` feeds 265 randomized + corner-case `(a, b)` pairs into flows 1-3
+over JTAG, polls `wau_host_mmio` for results, validates each result against
+the software reference, and reports throughput / latency percentiles plus the
+**delta** of all observability counters (hops, stalls, forwards,
 local-delivered, cache hit-rate).
+
+`run_iris_stats.ps1` instead streams the tracked dataset
+`host/data/iris_sepal_petal_tenths.csv` through flow 4, computes a host-side
+reference with the same staged fixed-point chain, and emits per-label score
+distributions plus the same observability deltas. The tracked board reference
+for that workload is
+[`../../../benchmarks/de0_nano_iris_stats_benchmark.txt`](../../../benchmarks/de0_nano_iris_stats_benchmark.txt).
 
 ### Optional: also compile the `.cw` kernel
 

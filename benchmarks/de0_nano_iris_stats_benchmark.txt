@@ -1,0 +1,162 @@
+==============================================================================
+WAU on real silicon - DE0-Nano Iris morphology benchmark
+==============================================================================
+
+Reference runs captured 2026-07-06 on a Terasic DE0-Nano using the classic
+2D WAU (2x2 grid). This is the first tracked real-data statistical workload
+for the board demo: 150 Iris samples streamed over vJTAG into a 10-stage
+fixed-point flow, with every board result checked against a host-side
+reference that mirrors the staged WAU program exactly.
+
+Re-run with:
+
+    cd demo/de0-nano/basic-example
+    .\scripts\build.ps1 -QuartusRoot C:\intelFPGA_lite\23.1std
+    .\scripts\program.ps1 -QuartusRoot C:\intelFPGA_lite\23.1std
+    .\scripts\server.ps1 -QuartusRoot C:\intelFPGA_lite\23.1std
+    .\scripts\run_iris_stats.ps1
+
+Note on toolchains:
+  The demo scripts default to Quartus Standard 25.1 at
+  C:\altera_standard\25.1std, but on 2026-07-06 that installation on this
+  machine could not compile because its 30-day evaluation had expired.
+  Synthesis/programming for this report therefore used Quartus Lite 23.1 at
+  C:\intelFPGA_lite\23.1std. The FPGA was programmed successfully over the
+  same USB-Blaster path used by the rest of the demo flow.
+
+------------------------------------------------------------------------------
+1. Hardware
+------------------------------------------------------------------------------
+Board                 : Terasic DE0-Nano
+Device                : Intel Cyclone IV E EP4CE22F17C6
+Tools used for build  : Quartus Prime Lite 23.1std.0 Build 991
+Programming           : USB-Blaster (volatile JTAG, RAM-only load)
+Live control path     : quartus_stp TCL server on TCP 2540
+System clock          : CLOCK_50 (50 MHz on-board oscillator, PIN_R8)
+
+------------------------------------------------------------------------------
+2. WAU configuration
+------------------------------------------------------------------------------
+Grid                  : 2 x 2 (4 cores)
+Data width            : int32 signed
+Flow under test       : flow 4 "iris_morphology_score"
+Operation set         : add, sub, mul, max
+Multiplier mapping    : mul stages pinned to core (1,0)
+Station cache         : 2 entries, FIFO replacement
+
+Hardware formula (scaled integer domain, a=sepal_length_tenths,
+b=petal_length_tenths):
+
+    acc = a
+    acc = acc - 58
+    acc = acc * 4
+    acc = acc + b
+    acc = acc - 44
+    acc = acc * 3
+    acc = acc + 32
+    acc = max(acc, 0)
+    acc = acc * 2
+    acc = acc - 80
+    acc = max(acc, 0)
+
+This uses the board's existing 2D WAU fabric only; no 3D layering is involved
+in the DE0-Nano validation path.
+
+------------------------------------------------------------------------------
+3. Dataset
+------------------------------------------------------------------------------
+Dataset source        : UCI Iris dataset
+Repo copy             : demo/de0-nano/basic-example/host/data/iris_sepal_petal_tenths.csv
+Rows                  : 150
+Features used         : sepal length, petal length
+Scaling               : centimeters * 10 -> signed int32 tenths
+Labels                : Iris-setosa / Iris-versicolor / Iris-virginica
+
+------------------------------------------------------------------------------
+4. Post-fit utilization and timing (Quartus 23.1 build used on hardware)
+------------------------------------------------------------------------------
+Flow status                   : Successful
+Total logic elements          :   9 616 / 22 320 (43 %)
+Dedicated logic registers     :   3 925 / 22 320 (18 %)
+Embedded 9-bit multipliers    :      24 /   132 (18 %)
+Pins                          :      66 /   154 (43 %)
+Memory bits                   :       0 / 608 256
+
+TimeQuest summary:
+  Slow 1200 mV 0 C setup slack   : -29.585 ns
+  Fast 1200 mV 0 C setup slack   : -11.578 ns
+  Hold slack (CLOCK_50)          : +0.298 ns slow, +0.178 ns fast
+
+Honest reading:
+  This bitstream still does not close formal 50 MHz setup timing in TimeQuest.
+  The measurements below are empirical room-temperature board results, not a
+  signoff-grade timing closure claim. The next board-facing optimization slice
+  should register or otherwise cut the long mesh paths before treating this as
+  production timing.
+
+------------------------------------------------------------------------------
+5. Live board benchmark (real dataset, two runs)
+------------------------------------------------------------------------------
+Run 1 timestamp        : 2026-07-06T05:23:11Z
+Run 2 timestamp        : 2026-07-06T05:23:18Z
+
+Per-run summary:
+
+  run    rows    pass        throughput     p50       p95
+  -----  ------  ----------  -------------  --------  --------
+  run 1    150   150 / 150   80.69 ops/s    15.00 ms  16.00 ms
+  run 2    150   150 / 150   79.32 ops/s    16.00 ms  16.00 ms
+
+Aggregate correctness          : 300 / 300 PASS across two live runs
+Observed throughput band       : 79.3 - 80.7 ops/s
+Observed latency band          : p50 15-16 ms, p95 16 ms
+
+------------------------------------------------------------------------------
+6. Label-separated score distribution (identical on both runs)
+------------------------------------------------------------------------------
+Iris-setosa
+  n=50, nonzero=0, min=0, p50=0, p95=0, max=0
+
+Iris-versicolor
+  n=50, nonzero=25, min=0, p50=4, p95=236, max=290
+
+Iris-virginica
+  n=50, nonzero=47, min=0, p50=200, p95=578, max=608
+
+Interpretation:
+  The fixed-point flow is not a classifier. It is a compact morphology score
+  chosen to exercise a deeper arithmetic chain on real measurements. The board
+  run still shows useful separation: setosa collapses to zero for all 50
+  samples, versicolor sits low and sparse, and virginica carries the highest
+  median and tail.
+
+------------------------------------------------------------------------------
+7. Observability counters (per 150-row run)
+------------------------------------------------------------------------------
+obs_total_hop_count              : 5 700
+obs_total_stall_count            :     0
+obs_total_forward_count          : 2 700
+obs_total_local_delivered_count  : 3 000
+obs_total_cache_hit_count        :    67
+obs_total_cache_lookup_count     : 1 500
+Station-cache hit rate           : 0.0447
+
+Per-row average:
+  hops per sample                : 38.0
+  forwards per sample            : 18.0
+  local deliveries per sample    : 20.0
+
+------------------------------------------------------------------------------
+8. Machine-readable sidecars
+------------------------------------------------------------------------------
+Primary JSON report :
+  benchmarks/de0_nano_iris_stats_benchmark_latest.json
+
+Stability rerun :
+  benchmarks/de0_nano_iris_stats_benchmark_rerun.json
+
+Original raw captures :
+  demo/de0-nano/basic-example/build/iris_benchmark_live_20260706.json
+  demo/de0-nano/basic-example/build/iris_benchmark_live_20260706_rerun.json
+
+==============================================================================

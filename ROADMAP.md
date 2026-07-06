@@ -34,15 +34,30 @@ Implemented this cycle:
   `scripts/run_iverilog_tests.sh`. The 3D path is currently simulator-verified
   with Icarus Verilog; DE0-NANO board calibration for layered designs remains
   future work.
-- Ran the existing DE0-NANO 2D board flow with Quartus 23.1std at
-  `C:\intelFPGA_lite\23.1std` after regenerating the demo RTL. The fitter
-  succeeded for the 2x2 board design (9,537 / 22,320 logic elements, 24 / 132
-  9-bit multipliers, `.sof` produced), but TimeQuest did not close at the
-  50 MHz board clock (`CLOCK_50` Fmax 23.06 MHz, worst setup slack -23.360 ns)
-  and reported a mesh combinational-loop warning through
-  `wau_highway_router.v`. The bitstream was not programmed; next hardware slice
-  should add registered/elastic mesh cuts or a board-clock constraint/profile
-  before real-data DE0-NANO benchmarking.
+- Added a first tracked real-data DE0-NANO board benchmark for the classic 2D
+  WAU. The demo config now includes flow 4, `iris_morphology_score`, a 10-stage
+  fixed-point morphology program over the UCI Iris dataset copy at
+  `demo/de0-nano/basic-example/host/data/iris_sepal_petal_tenths.csv`, plus a
+  dedicated host runner `run_iris_stats_benchmark.py` / `run_iris_stats.ps1`
+  that validates every board output against a host-side reference mirroring the
+  staged flow exactly and records per-label distributions plus observability
+  deltas.
+- Built and programmed the regenerated DE0-NANO 2D board flow with Quartus
+  23.1std at `C:\intelFPGA_lite\23.1std` on 2026-07-06 because the newer local
+  Quartus Standard 25.1 install at `C:\altera_standard\25.1std` could not
+  compile after its evaluation expired. The hardware build fit at
+  9,616 / 22,320 logic elements and 24 / 132 9-bit multipliers, then passed
+  two live 150-row board runs at 150/150 each (`300/300` aggregate) with
+  79.3-80.7 ops/s end-to-end JTAG throughput and stable observability
+  (`5,700` hops, `0` stalls, `2,700` forwards, `3,000` local deliveries per
+  run). The tracked report lives in
+  `benchmarks/de0_nano_iris_stats_benchmark.txt`.
+- TimeQuest still does not close `CLOCK_50` for that 23.1 bitstream
+  (setup slack `-29.585 ns` slow 0 C, `-11.578 ns` fast 0 C), so the current
+  board result is empirical room-temperature validation rather than signoff.
+  The next hardware-closing slice remains registered/elastic mesh timing cuts
+  or a slower board-clock profile so real-data benchmarking and timing closure
+  converge onto the same artifact.
 
 ## Progress Update (2026-07-03)
 Implemented this cycle:
@@ -420,7 +435,7 @@ Acceptance:
 1. Keep best-known `exec_latency_cycles_avg` at or below `68.00` while preserving pass status for all RTL tests and multirun stability. (held at 68.00 on 2026-06-14 with scoreboard pass ratio 1.0, 3-run stability median/p95=68.00, and saved best/stage-winner replay passing 3/3)
 2. Add capability-aware CW candidate generation so known-invalid topology combinations fail earlier and less often during autotune. (supported)
 3. Add a CW software reference/value scoreboard so benchmark execution checks cover correctness, not timing shape alone. (supported)
-4. Stand up a first closed-loop FPGA benchmark path that can re-run workloads and remap programs on real hardware without full restart between each tuning attempt.
+4. Stand up a first closed-loop FPGA benchmark path that can re-run workloads and remap programs on real hardware without full restart between each tuning attempt. (first board benchmark path now supported for fixed demo flows over vJTAG, including the tracked Iris real-data workload; still open: live remap/program update without rebuild/restart)
 5. Stand up a first architecture-search report that ranks at least core disposition, operation distribution, on-chip memory split, and external-DRAM usage for synthesis candidates. (first slice supported 2026-07-03 via `waugen arch-search`: deterministic ranked report over all four axes with real compile/schedule metrics plus versioned resource/DRAM estimate models; synthesis-tool calibration and board-measured scoring still open)
 
 ## Guiding Priorities

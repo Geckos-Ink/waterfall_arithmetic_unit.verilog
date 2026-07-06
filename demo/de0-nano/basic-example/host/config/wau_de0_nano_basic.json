@@ -69,6 +69,23 @@
         { "op": "mul",                    "dtype": "int32", "core": { "x": 1, "y": 0 } },
         { "op": "add",                    "dtype": "int32", "core": { "x": 0, "y": 0 }, "fallback_core": { "x": 0, "y": 1 } }
       ]
+    },
+    {
+      "id": 4,
+      "name": "iris_morphology_score",
+      "entry": { "x": 0, "y": 0 },
+      "stages": [
+        { "op": "sub", "immediate_b": 58,  "dtype": "int32", "core": { "x": 0, "y": 0 }, "fallback_core": { "x": 0, "y": 1 } },
+        { "op": "mul", "immediate_b": 4,   "dtype": "int32", "core": { "x": 1, "y": 0 } },
+        { "op": "add",                     "dtype": "int32", "core": { "x": 0, "y": 0 }, "fallback_core": { "x": 0, "y": 1 } },
+        { "op": "sub", "immediate_b": 44,  "dtype": "int32", "core": { "x": 0, "y": 1 }, "fallback_core": { "x": 0, "y": 0 } },
+        { "op": "mul", "immediate_b": 3,   "dtype": "int32", "core": { "x": 1, "y": 0 } },
+        { "op": "add", "immediate_b": 32,  "dtype": "int32", "core": { "x": 0, "y": 0 }, "fallback_core": { "x": 0, "y": 1 } },
+        { "op": "max", "immediate_b": 0,   "dtype": "int32", "core": { "x": 1, "y": 1 }, "fallback_core": { "x": 0, "y": 0 } },
+        { "op": "mul", "immediate_b": 2,   "dtype": "int32", "core": { "x": 1, "y": 0 } },
+        { "op": "sub", "immediate_b": 80,  "dtype": "int32", "core": { "x": 0, "y": 1 }, "fallback_core": { "x": 0, "y": 0 } },
+        { "op": "max", "immediate_b": 0,   "dtype": "int32", "core": { "x": 1, "y": 1 }, "fallback_core": { "x": 0, "y": 0 } }
+      ]
     }
   ]
 }

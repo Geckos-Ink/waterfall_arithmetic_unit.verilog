@@ -1,0 +1,149 @@
+{
+  "timestamp": "2026-07-06T05:23:18Z",
+  "host": "127.0.0.1",
+  "port": 2540,
+  "flow_id": 4,
+  "dataset": "C:\\Sources\\GitHub\\waterfall_arithmetic_unit.verilog\\demo\\de0-nano\\basic-example\\host\\data\\iris_sepal_petal_tenths.csv",
+  "dataset_rows": 150,
+  "pass_count": 150,
+  "pass_ratio": 1.0,
+  "throughput_ops_per_s": 79.32310946819601,
+  "latency_s": {
+    "min": 0.0,
+    "p50": 0.015999999945051968,
+    "mean": 0.012606666666300347,
+    "p95": 0.01600000006146729,
+    "max": 0.01600000006146729
+  },
+  "obs_delta": {
+    "hops": 5700,
+    "stalls": 0,
+    "forwards": 2700,
+    "local_delivered": 3000,
+    "cache_hits": 67,
+    "cache_lookups": 1500,
+    "hit_rate": 0.04466666666666667
+  },
+  "label_stats": {
+    "Iris-setosa": {
+      "min": 0,
+      "p50": 0.0,
+      "p95": 0,
+      "max": 0,
+      "nonzero": 0
+    },
+    "Iris-versicolor": {
+      "min": 0,
+      "p50": 4.0,
+      "p95": 236,
+      "max": 290,
+      "nonzero": 25
+    },
+    "Iris-virginica": {
+      "min": 0,
+      "p50": 200.0,
+      "p95": 578,
+      "max": 608,
+      "nonzero": 47
+    }
+  },
+  "sample_outputs": [
+    {
+      "row": 0,
+      "label": "Iris-setosa",
+      "a": 51,
+      "b": 14,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 1,
+      "label": "Iris-setosa",
+      "a": 49,
+      "b": 14,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 2,
+      "label": "Iris-setosa",
+      "a": 47,
+      "b": 13,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 3,
+      "label": "Iris-setosa",
+      "a": 46,
+      "b": 15,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 4,
+      "label": "Iris-setosa",
+      "a": 50,
+      "b": 14,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 5,
+      "label": "Iris-setosa",
+      "a": 54,
+      "b": 17,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 6,
+      "label": "Iris-setosa",
+      "a": 46,
+      "b": 14,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 7,
+      "label": "Iris-setosa",
+      "a": 50,
+      "b": 15,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 8,
+      "label": "Iris-setosa",
+      "a": 44,
+      "b": 14,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 9,
+      "label": "Iris-setosa",
+      "a": 49,
+      "b": 15,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 10,
+      "label": "Iris-setosa",
+      "a": 54,
+      "b": 15,
+      "expected": 0,
+      "got": 0
+    },
+    {
+      "row": 11,
+      "label": "Iris-setosa",
+      "a": 48,
+      "b": 16,
+      "expected": 0,
+      "got": 0
+    }
+  ],
+  "failures": []
+}

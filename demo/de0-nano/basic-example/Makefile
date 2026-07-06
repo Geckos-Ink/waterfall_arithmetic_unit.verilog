@@ -8,7 +8,7 @@ DEMO_ROOT    := $(CURDIR)
 REPO_ROOT    := $(realpath $(DEMO_ROOT)/../../..)
 PYTHON       ?= python
 
-.PHONY: help generate build program server run clean
+.PHONY: help generate build program server run run-iris clean
 
 help:
 	@echo "make generate   - regenerate WAU RTL into quartus/wau_rtl/"
@@ -16,6 +16,7 @@ help:
 	@echo "make program    - quartus_pgm download .sof to USB-Blaster"
 	@echo "make server     - run TCL vJTAG MMIO server (port 2540)"
 	@echo "make run        - python benchmark against running server"
+	@echo "make run-iris   - python Iris benchmark against running server"
 	@echo "make clean      - remove build/ and Quartus output_files/"
 
 generate:
@@ -40,8 +41,9 @@ build: generate
 	cd quartus && $(QUARTUS_ROOT)/quartus/bin64/quartus_sh.exe -t ../build/flow.tcl
 
 program:
-	$(QUARTUS_ROOT)/quartus/bin64/quartus_pgm.exe -c 1 -m jtag \
-	    -o "p;quartus/output_files/wau_de0_nano_basic.sof"
+	@SOF=quartus/wau_de0_nano_basic.sof; \
+	if [ ! -f "$$SOF" ]; then SOF=quartus/output_files/wau_de0_nano_basic.sof; fi; \
+	$(QUARTUS_ROOT)/quartus/bin64/quartus_pgm.exe -c 1 -m jtag -o "p;$$SOF"
 
 server:
 	$(QUARTUS_ROOT)/quartus/bin64/quartus_stp.exe -t host/tcl/wau_jtag_server.tcl --port 2540
@@ -49,6 +51,10 @@ server:
 run:
 	PYTHONPATH=host $(PYTHON) host/programs/run_benchmark.py \
 	    --iters 256 --report build/benchmark_$$(date +%Y%m%d_%H%M%S).json
+
+run-iris:
+	PYTHONPATH=host $(PYTHON) host/programs/run_iris_stats_benchmark.py \
+	    --report build/iris_benchmark_$$(date +%Y%m%d_%H%M%S).json
 
 clean:
 	rm -rf build/ quartus/wau_rtl quartus/db quartus/incremental_db quartus/output_files quartus/*.qws
