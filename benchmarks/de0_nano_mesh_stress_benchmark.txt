@@ -1,0 +1,99 @@
+================================================================================
+DE0-Nano live-board benchmark - ad-hoc mesh-stress CW kernel
+================================================================================
+Captured 2026-07-07 on a Terasic DE0-Nano (Intel Cyclone IV E, EP4CE22F17C6),
+driving the generated WAU over USB-Blaster + Altera virtual JTAG.
+
+This is the "complex CW program" run: CWs/stress/mesh_stress.cw, the ad-hoc
+kernel purpose-built to saturate the mesh (as opposed to CWs/example-program.cw,
+which is kept complex to stress the compiler front-end). Every board result is
+validated bit-exact against the software reference waugen.cw_reference.
+
+--------------------------------------------------------------------------------
+Toolchain note
+--------------------------------------------------------------------------------
+Requested toolchain was Quartus Prime Standard 25.1 at C:\altera_standard\25.1std.
+That install still refuses to compile - "Error (292037): Your 30-day evaluation
+period has expired" (Standard Edition needs a paid license). Synthesis therefore
+fell back to Quartus Prime Lite 23.1 at C:\intelFPGA_lite\23.1std (Lite Edition
+is free with no evaluation expiry), the same working toolchain used for the
+2026-07-06 board results.
+
+A real build-script bug was fixed along the way: build_cw_stress.ps1 / program.ps1
+/ server.ps1 ran under $ErrorActionPreference = "Stop", so Quartus 25.1's harmless
+"TBBmalloc: skip allocation functions..." stderr line at startup was promoted to a
+terminating error that aborted the build BEFORE compilation. The native Quartus
+calls now relax the preference and rely on the real process exit code.
+
+--------------------------------------------------------------------------------
+Image under test
+--------------------------------------------------------------------------------
+Source kernel   : CWs/stress/mesh_stress.cw
+Board grid      : 2x2 (4 cores)
+Lowering        : lane_parallelism=4 -> 27-node add/mul/max flow, flow id 90
+                  (max_in_flight=2, placement=balance, profile=throughput_optimized)
+Top entity      : wau_jtag_top (vJTAG MMIO bridge + wau_top)
+.sof checksum   : 0x0076E796
+
+Resource fit (Quartus Lite 23.1, EP4CE22F17C6):
+  Total logic elements          : 10,268 / 22,320 ( 46 % )
+    Combinational functions     :  9,067 / 22,320 ( 41 % )
+    Dedicated logic registers   :  4,709 / 22,320 ( 21 % )
+  Embedded 9-bit multipliers    :     24 /    132 ( 18 % )
+  Total memory bits             :      0 / 608,256 (  0 % )
+  I/O pins                      :     66 /    154 ( 43 % )
+
+The 27-node stress flow fits in the same footprint as the 17-node example image
+(10,268 vs 10,372 LEs): the synthesized hardware is sized by grid/ops/coordinator,
+not by flow length, so lowering the kernel richer costs no extra area.
+
+Timing (TimeQuest, CLOCK_50 setup slack):
+  Slow 1200mV 85C : -27.913 ns
+  Slow 1200mV  0C : -23.336 ns
+  Fast 1200mV  0C :  -7.671 ns
+As with the 2026-07-06 example image, the 50 MHz board clock does NOT close in
+TimeQuest (slightly better slack than that image's -11.578 ns fast-0C). The board
+results below are therefore empirical room-temperature validation, not formal
+timing closure. Hold/recovery/removal all pass; only CLOCK_50 setup is negative.
+
+--------------------------------------------------------------------------------
+Live run 1 - random operands (matches the example run parameters)
+--------------------------------------------------------------------------------
+Cases           : 1032  (8 golden + 1024 random in [-1023, 1023], seed 1592594996)
+Scoreboard      : 1032 / 1032  (100%)  vs waugen.cw_reference
+Throughput      : 81.5 ops/s   (p50 15 ms / p95 16 ms, JTAG round-trip dominated)
+Observability   : 123,840 hops | 0 stalls | 68,112 forwards | 55,728 local deliveries
+                  station cache 490 / 27,864 hits (1.8%)
+Per case        : ~120 hops, ~66 forwards, ~54 local deliveries
+
+The example-program.cw 2x2 image drove ~70 hops/case (72,240 over 1032). This
+27-node mesh-stress flow drives ~120 hops/case - about 1.7x more mesh traffic per
+trigger at the same 46% logic footprint and zero stalls.
+
+--------------------------------------------------------------------------------
+Live run 2 - real data operands (MNIST pixels)
+--------------------------------------------------------------------------------
+Cases           : 520  (8 golden + 512 MNIST pixels, t10k-images idx3, offset 350,
+                  centered to [-128, 127]; fetched by scripts/fetch_dataset.py)
+Scoreboard      : 520 / 520  (100%)  vs waugen.cw_reference
+Throughput      : 79.8 ops/s   (p50 15 ms / p95 16 ms)
+Observability   : 62,400 hops | 0 stalls | 34,320 forwards | 28,080 local deliveries
+                  station cache 3,436 / 14,040 hits (24.5%)
+
+Real-data insight: with random operands the station cache hits only 1.8% of the
+time, but real MNIST pixels are spatially correlated (repeated values, black
+borders), so the hit rate jumps to 24.5% for the same hardware. This is exactly
+the data-exchange-efficiency signal the dataset path was added to expose.
+
+--------------------------------------------------------------------------------
+Conclusion
+--------------------------------------------------------------------------------
+The ad-hoc complex CW program synthesizes and runs correctly on the DE0-Nano at
+2x2, staying bit-exact across 1,552 checked triggers (1032 random + 520 MNIST)
+with zero stalls, while driving ~1.7x the per-case mesh traffic of the example
+image. The open item remains CLOCK_50 timing closure (registered/elastic mesh
+timing cuts or a slower board-clock profile), tracked in ROADMAP.md.
+
+Machine-readable sidecars:
+  benchmarks/de0_nano_mesh_stress_benchmark_random.json
+  benchmarks/de0_nano_mesh_stress_benchmark_mnist.json

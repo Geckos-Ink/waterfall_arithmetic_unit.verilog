@@ -1,0 +1,187 @@
+{
+  "timestamp": "2026-07-07T08:59:15Z",
+  "host": "localhost",
+  "port": 2540,
+  "config": "C:\\Sources\\GitHub\\waterfall_arithmetic_unit.verilog\\demo\\de0-nano\\basic-example\\build\\wau_de0_nano_cw_stress_last.json",
+  "flow_id": 90,
+  "seed": 1592594996,
+  "random_iters": 1024,
+  "random_range": 1023,
+  "operand_source": "random",
+  "mnist_images": null,
+  "total_cases": 1032,
+  "pass_count": 1032,
+  "pass_ratio": 1.0,
+  "pass_by_kind": {
+    "golden": 8,
+    "random": 1024
+  },
+  "total_by_kind": {
+    "golden": 8,
+    "random": 1024
+  },
+  "throughput_ops_per_s": 81.5423514541199,
+  "latency_s": {
+    "min": 0.0,
+    "p50": 0.015000000013969839,
+    "mean": 0.01226356589143316,
+    "p95": 0.01600000006146729,
+    "max": 0.01600000006146729
+  },
+  "obs_delta": {
+    "hops": 123840,
+    "stalls": 0,
+    "forwards": 68112,
+    "local_delivered": 55728,
+    "cache_hits": 490,
+    "cache_lookups": 27864,
+    "hit_rate": 0.01758541487223658
+  },
+  "sample_outputs": [
+    {
+      "case": 1,
+      "kind": "golden",
+      "a": 10,
+      "b": 4,
+      "expected": 7681,
+      "got_flow": 90,
+      "got_value": 7681
+    },
+    {
+      "case": 2,
+      "kind": "golden",
+      "a": -7,
+      "b": 5,
+      "expected": 10471,
+      "got_flow": 90,
+      "got_value": 10471
+    },
+    {
+      "case": 3,
+      "kind": "golden",
+      "a": 21,
+      "b": -3,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 4,
+      "kind": "golden",
+      "a": 0,
+      "b": 0,
+      "expected": 1,
+      "got_flow": 90,
+      "got_value": 1
+    },
+    {
+      "case": 5,
+      "kind": "golden",
+      "a": 31,
+      "b": 31,
+      "expected": 146008699,
+      "got_flow": 90,
+      "got_value": 146008699
+    },
+    {
+      "case": 6,
+      "kind": "golden",
+      "a": -15,
+      "b": -9,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 7,
+      "kind": "golden",
+      "a": 127,
+      "b": -11,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 8,
+      "kind": "golden",
+      "a": -64,
+      "b": 17,
+      "expected": 600322,
+      "got_flow": 90,
+      "got_value": 600322
+    },
+    {
+      "case": 9,
+      "kind": "random",
+      "a": -302,
+      "b": -254,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 10,
+      "kind": "random",
+      "a": 255,
+      "b": -880,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 11,
+      "kind": "random",
+      "a": 468,
+      "b": -484,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 12,
+      "kind": "random",
+      "a": -198,
+      "b": -578,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 13,
+      "kind": "random",
+      "a": -729,
+      "b": -753,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 14,
+      "kind": "random",
+      "a": 931,
+      "b": 211,
+      "expected": 845,
+      "got_flow": 90,
+      "got_value": 845
+    },
+    {
+      "case": 15,
+      "kind": "random",
+      "a": 75,
+      "b": -658,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 16,
+      "kind": "random",
+      "a": -636,
+      "b": 577,
+      "expected": 2309,
+      "got_flow": 90,
+      "got_value": 2309
+    }
+  ],
+  "failures": []
+}

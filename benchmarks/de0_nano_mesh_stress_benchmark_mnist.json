@@ -1,0 +1,187 @@
+{
+  "timestamp": "2026-07-07T08:59:46Z",
+  "host": "localhost",
+  "port": 2540,
+  "config": "demo\\de0-nano\\basic-example\\build\\wau_de0_nano_cw_stress_last.json",
+  "flow_id": 90,
+  "seed": 12648430,
+  "random_iters": 512,
+  "random_range": 255,
+  "operand_source": "mnist",
+  "mnist_images": "C:\\Sources\\GitHub\\waterfall_arithmetic_unit.verilog\\datasets\\mnist\\t10k-images-idx3-ubyte.gz",
+  "total_cases": 520,
+  "pass_count": 520,
+  "pass_ratio": 1.0,
+  "pass_by_kind": {
+    "golden": 8,
+    "mnist": 512
+  },
+  "total_by_kind": {
+    "golden": 8,
+    "mnist": 512
+  },
+  "throughput_ops_per_s": 79.81580966982118,
+  "latency_s": {
+    "min": 0.0,
+    "p50": 0.015000000013969839,
+    "mean": 0.012528846153873018,
+    "p95": 0.01600000006146729,
+    "max": 0.03200000000651926
+  },
+  "obs_delta": {
+    "hops": 62400,
+    "stalls": 0,
+    "forwards": 34320,
+    "local_delivered": 28080,
+    "cache_hits": 3436,
+    "cache_lookups": 14040,
+    "hit_rate": 0.24472934472934474
+  },
+  "sample_outputs": [
+    {
+      "case": 1,
+      "kind": "golden",
+      "a": 10,
+      "b": 4,
+      "expected": 7681,
+      "got_flow": 90,
+      "got_value": 7681
+    },
+    {
+      "case": 2,
+      "kind": "golden",
+      "a": -7,
+      "b": 5,
+      "expected": 10471,
+      "got_flow": 90,
+      "got_value": 10471
+    },
+    {
+      "case": 3,
+      "kind": "golden",
+      "a": 21,
+      "b": -3,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 4,
+      "kind": "golden",
+      "a": 0,
+      "b": 0,
+      "expected": 1,
+      "got_flow": 90,
+      "got_value": 1
+    },
+    {
+      "case": 5,
+      "kind": "golden",
+      "a": 31,
+      "b": 31,
+      "expected": 146008699,
+      "got_flow": 90,
+      "got_value": 146008699
+    },
+    {
+      "case": 6,
+      "kind": "golden",
+      "a": -15,
+      "b": -9,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 7,
+      "kind": "golden",
+      "a": 127,
+      "b": -11,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 8,
+      "kind": "golden",
+      "a": -64,
+      "b": 17,
+      "expected": 600322,
+      "got_flow": 90,
+      "got_value": 600322
+    },
+    {
+      "case": 9,
+      "kind": "mnist",
+      "a": -128,
+      "b": -128,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 10,
+      "kind": "mnist",
+      "a": -128,
+      "b": -106,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 11,
+      "kind": "mnist",
+      "a": 105,
+      "b": 127,
+      "expected": 1341502949,
+      "got_flow": 90,
+      "got_value": 1341502949
+    },
+    {
+      "case": 12,
+      "kind": "mnist",
+      "a": -45,
+      "b": -128,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 13,
+      "kind": "mnist",
+      "a": -128,
+      "b": -128,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 14,
+      "kind": "mnist",
+      "a": -128,
+      "b": -128,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 15,
+      "kind": "mnist",
+      "a": -128,
+      "b": -128,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    },
+    {
+      "case": 16,
+      "kind": "mnist",
+      "a": -128,
+      "b": -128,
+      "expected": 0,
+      "got_flow": 90,
+      "got_value": 0
+    }
+  ],
+  "failures": []
+}

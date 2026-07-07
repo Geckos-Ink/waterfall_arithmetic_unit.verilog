@@ -4,7 +4,7 @@ The **Waterfall Arithmetic Unit (WAU)** is a configurable arithmetic compute fab
 
 This repository is the **toolchain that builds one**. You describe your kernel in a high-level form — an arithmetic expression, a constrained pseudo-C snippet, or a `.cw` program — and the Python generator emits the full Verilog (cores, mesh, coordinator, host MMIO), a compiled schedule, and a software reference model used as a correctness oracle. No hand-written RTL, no separate compiler stack.
 
-It is **silicon-verified**: the same flow has been taken end-to-end onto a Terasic DE0-Nano (Intel Cyclone IV E), where 795/795 random and corner-case operand pairs, 150/150 real Iris samples, and 1032/1032 `CWs/example-program.cw` stress cases round-tripped through the live mesh and matched the software reference (see [DE0-Nano demo](#de0-nano-real-silicon-implementation)).
+It is **silicon-verified**: the same flow has been taken end-to-end onto a Terasic DE0-Nano (Intel Cyclone IV E), where 795/795 random and corner-case operand pairs, 150/150 real Iris samples, 1032/1032 `CWs/example-program.cw` stress cases, and 1552/1552 `CWs/stress/mesh_stress.cw` triggers (1032 random + 520 real MNIST pixels) round-tripped through the live mesh and matched the software reference (see [DE0-Nano demo](#de0-nano-real-silicon-implementation)).
 
 Typical uses: experimenting with small FPGA-side math accelerators, teaching dataflow / NoC concepts on real silicon, or as a reusable reference for the "high-level kernel → generated RTL → working bitstream" path.
 
@@ -375,6 +375,7 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `benchmarks/de0_nano_cw_stress_benchmark.txt`: live DE0-Nano benchmark for `CWs/example-program.cw`, including the passing 2x2 image and the measured larger-grid failure ceiling
 - `benchmarks/de0_nano_cw_stress_benchmark_latest.json`: machine-readable passing 2x2 stress run (`1032/1032`)
 - `benchmarks/de0_nano_cw_stress_2x4_timeout.json`: machine-readable failure capture for the largest fitting (`2x4`) image
+- `benchmarks/de0_nano_mesh_stress_benchmark.txt`: live DE0-Nano run of the ad-hoc `CWs/stress/mesh_stress.cw` kernel at 2x2 (`1032/1032` random + `520/520` MNIST, ~1.7x the example's per-case mesh traffic), with `*_random.json` / `*_mnist.json` sidecars
 - `demo/de0-nano/basic-example/`: end-to-end physical deployment — Quartus 25.1 project + reusable vJTAG MMIO bridge RTL + reusable Python/TCL host stack + automation scripts; produces the artifact above
 
 ## Generated Artifacts
@@ -490,6 +491,7 @@ This is a robust **basis**, not final silicon architecture:
 - Control-plane dispatch and data-plane results now traverse explicit neighbor-linked highway meshes with valid/ready backpressure.
 - `grid.z > 1` emits layered 3D core indexing and vertical `up/down` mesh links; this path is currently verified with `iverilog` (`tb_wau_highway_mesh_3d`) and has not yet been calibrated on the DE0-NANO board flow.
 - A 2026-07-06 Quartus 23.1std compile of the regenerated 2D DE0-NANO demo fits, was programmed onto the board, and completed both a real-data Iris benchmark (`150/150` per run) and a heavier `CWs/example-program.cw` stress benchmark (`1032/1032` at `2x2`). The same session also established the current heavier-workload ceiling on EP4CE22: `2x4` fits at `99%` logic but times out all `8/8` golden cases on hardware, while `4x4` and `2x5` fail fit. TimeQuest still does not close the 50 MHz board clock on either tracked 23.1 image, so treat the board results as empirical room-temperature validation and treat registered/elastic mesh timing cuts or a slower board-clock profile as the next hardware-closing slice.
+- On 2026-07-07 the ad-hoc `CWs/stress/mesh_stress.cw` kernel was synthesized (Quartus Lite 23.1; Standard 25.1's eval is still expired) and run at 2x2 — a 27-node flow at `10,268 / 22,320` LEs (46%) passing `1032/1032` random and `520/520` real-MNIST triggers at ~1.7x the example's per-case mesh traffic and zero stalls. A build-script bug (`$ErrorActionPreference=Stop` turning Quartus 25.1's benign `TBBmalloc` stderr into a fatal error) was fixed so 25.1 runs can proceed once licensed.
 - Runtime adaptation is implemented as primary/fallback/candidate core selection per node, constrained by per-core capability metadata.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
 - Current pseudo-C frontend targets accumulator-style pipelines (`acc = a; acc = acc <op> ...`) to stay compatible with the present coordinator execution model.
@@ -612,6 +614,44 @@ although it still fits, TimeQuest slack falls to `-167.709 ns` at the slow
 0 C setup corner and `-101.518 ns` at the fast 0 C setup corner, and the live
 board run times out every golden case. For this workload on EP4CE22, `2x2`
 is therefore the largest empirically validated image today.
+
+### Ad-hoc mesh-stress kernel — live board run (2026-07-07)
+The ad-hoc [`CWs/stress/mesh_stress.cw`](CWs/stress/mesh_stress.cw) kernel — built
+to *saturate the mesh* rather than stress the compiler — was then synthesized and
+run on the same board. Lowered at 2x2 with `lane_parallelism=4` it becomes a
+**27-node** `add`/`mul`/`max` flow (vs the example's 17), so it drives markedly
+more mesh traffic per trigger. The full report is in
+[`benchmarks/de0_nano_mesh_stress_benchmark.txt`](benchmarks/de0_nano_mesh_stress_benchmark.txt).
+
+Toolchain note: the requested Quartus **Standard 25.1** (`C:\altera_standard\25.1std`)
+still refuses to compile — `Error (292037): Your 30-day evaluation period has
+expired` — so synthesis used the free **Quartus Lite 23.1**, the repo's documented
+working fallback. A real build-script bug was fixed en route: `build_cw_stress.ps1`
+/ `program.ps1` / `server.ps1` ran under `$ErrorActionPreference = "Stop"`, so
+Quartus 25.1's harmless `TBBmalloc` stderr line at startup was promoted to a
+terminating error that aborted the build *before compilation*; the native Quartus
+calls now relax the preference and check the real exit code.
+
+Resource fit was essentially identical to the example image
+(`10,268 / 22,320` LEs, 46%; `24 / 132` multipliers) — lowering the kernel richer
+costs no extra area, since the hardware is sized by grid/ops/coordinator, not flow
+length. CLOCK_50 setup slack is still negative (`-7.671 ns` fast-0C,
+`-23.336 ns` slow-0C), so this is again empirical room-temperature validation.
+
+| Run | Cases | Pass | Throughput | Hops (per case) | Station cache |
+|-----|------:|:----:|-----------:|----------------:|--------------:|
+| random `[-1023,1023]`, seed `1592594996` | 1032 | **1032/1032** | 81.5 op/s | 123,840 (**~120**) | 490 / 27,864 (1.8%) |
+| **real data** — MNIST pixels | 520 | **520/520** | 79.8 op/s | 62,400 (~120) | 3,436 / 14,040 (**24.5%**) |
+
+Two findings worth calling out:
+- **~1.7x heavier mesh traffic.** The example image drove ~70 hops/case; this
+  27-node flow drives ~120 hops/case at the same footprint and **zero stalls**,
+  bit-exact across all 1,552 checked triggers.
+- **Real data changes the cache story.** With random operands the station cache
+  hits only 1.8% of the time; streaming real MNIST pixels
+  (`scripts/fetch_dataset.py` → `--mnist-images`) lifts the hit rate to **24.5%**
+  on the same hardware, because image data is spatially correlated. This is the
+  data-exchange-efficiency signal the dataset path was added to expose.
 
 ### Resource & timing
 Post-fit on EP4CE22F17C6 (Quartus Standard 25.1, 2×2 grid, int32, 4 ops):

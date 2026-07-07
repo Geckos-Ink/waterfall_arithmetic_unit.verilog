@@ -42,6 +42,20 @@ Implemented this cycle (DE0-NANO real-board testing support):
   (`benchmarks/mesh_stress_benchmark.txt`). `example-program.cw` remains the
   compiler-oriented reference and keeps the CI-gated
   `benchmarks/example_pogram_benchmark.txt` (still `68.00`, scoreboard 1.0).
+- **Live DE0-NANO bring-up of the stress kernel**: `mesh_stress.cw` was
+  synthesized and run on the board at 2x2 (`10,268 / 22,320` LEs, 46%), passing
+  `1032/1032` random and `520/520` real-MNIST triggers bit-exact against
+  `waugen.cw_reference`, at ~1.7x the example image's per-case mesh traffic
+  (~120 vs ~70 hops/case) and zero stalls. Report:
+  `benchmarks/de0_nano_mesh_stress_benchmark.txt`. Two fixes were required:
+  (1) Quartus Prime **Standard 25.1**'s 30-day evaluation is still expired
+  (`Error 292037`), so synthesis used the free **Lite 23.1** fallback; and
+  (2) `build_cw_stress.ps1` / `program.ps1` / `server.ps1` aborted under
+  `$ErrorActionPreference=Stop` on Quartus 25.1's benign `TBBmalloc` startup
+  stderr — the native Quartus calls now relax the preference and check the real
+  exit code, so a licensed 25.1 can run the flow. CLOCK_50 setup timing still
+  does not close (empirical room-temperature validation); registered/elastic
+  mesh timing cuts remain the next hardware-closing slice.
 - **Real dataset for data-exchange testing**: `scripts/fetch_dataset.py`
   (+ `.ps1`) downloads MNIST on demand from the CVDF mirror into a git-ignored
   `datasets/` directory (skip-if-present, magic-number/count verified). The

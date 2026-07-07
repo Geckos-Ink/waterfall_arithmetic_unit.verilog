@@ -28,7 +28,14 @@ if (-not (Test-Path $pgm)) {
 }
 
 Write-Host "Programming $Sof onto cable #$Cable via USB-Blaster ..." -ForegroundColor Cyan
+# Quartus 25.1 tools emit a harmless "TBBmalloc" line to stderr at startup that
+# ErrorActionPreference=Stop would turn into a terminating error; relax it here
+# and rely on the real exit code.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 & $pgm -c $Cable -m jtag -o "p;$Sof"
-if ($LASTEXITCODE -ne 0) { throw "quartus_pgm failed (exit $LASTEXITCODE)" }
+$pgmExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+if ($pgmExit -ne 0) { throw "quartus_pgm failed (exit $pgmExit)" }
 
 Write-Host "Programming OK." -ForegroundColor Green

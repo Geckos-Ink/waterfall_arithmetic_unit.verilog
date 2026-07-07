@@ -165,8 +165,17 @@ project_close
 Push-Location $QuartusDir
 try {
     Write-Host "`n[quartus] quartus_sh -t $FlowTcl" -ForegroundColor Cyan
+    # Quartus 25.1's quartus_sh prints a harmless "TBBmalloc: skip allocation..."
+    # line to stderr at startup. Under ErrorActionPreference=Stop, PowerShell 5.1
+    # turns that native stderr into a terminating error and aborts before the
+    # compile runs, so relax the preference around the native call and rely on the
+    # real process exit code instead.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & $quartus_sh -t $FlowTcl
-    if ($LASTEXITCODE -ne 0) { throw "quartus_sh execute_flow -compile failed (exit $LASTEXITCODE)" }
+    $quartusExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($quartusExit -ne 0) { throw "quartus_sh execute_flow -compile failed (exit $quartusExit)" }
 }
 finally {
     Pop-Location

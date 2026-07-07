@@ -18,4 +18,8 @@ $stp = Join-Path $QuartusRoot "quartus\bin64\quartus_stp.exe"
 if (-not (Test-Path $stp)) { throw "quartus_stp.exe not found at $stp" }
 
 Write-Host "Starting vJTAG MMIO server on TCP $Port (instance=$Instance) ..." -ForegroundColor Cyan
+# quartus_stp (25.1) prints a harmless "TBBmalloc" line to stderr at startup;
+# under ErrorActionPreference=Stop that would abort the server before it runs.
+# The server runs until killed, so just relax the preference for the native call.
+$ErrorActionPreference = 'Continue'
 & $stp -t $Tcl --port $Port --instance $Instance
