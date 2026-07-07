@@ -60,12 +60,13 @@ class LexerTests(unittest.TestCase):
 class ParserTests(unittest.TestCase):
     def test_all_repo_samples_parse(self) -> None:
         samples = [
-            "docs/example-program.cw",
-            "docs/samples/nn/linear.cw",
-            "docs/samples/nn/gru.cw",
-            "docs/samples/nn/transformer.cw",
-            "docs/samples/types/fixed_point.cw",
-            "demo/de0-nano/basic-example/host/programs/basic_arithmetic.cw",
+            "CWs/example-program.cw",
+            "CWs/stress/mesh_stress.cw",
+            "CWs/samples/nn/linear.cw",
+            "CWs/samples/nn/gru.cw",
+            "CWs/samples/nn/transformer.cw",
+            "CWs/samples/types/fixed_point.cw",
+            "CWs/basic_arithmetic.cw",
         ]
         for s in samples:
             with self.subTest(sample=s):

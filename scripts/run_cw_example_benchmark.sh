@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-CW_FILE="${1:-docs/example-program.cw}"
+CW_FILE="${1:-CWs/example-program.cw}"
 BASE_CONFIG="${2:-src/python/configs/wau_2d_multiprogram_demo.json}"
 OUT_CONFIG="${3:-src/python/configs/wau_example_pogram_compiled.json}"
 BENCH_FILE="${4:-benchmarks/example_pogram_benchmark.txt}"

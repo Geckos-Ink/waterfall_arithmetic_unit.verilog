@@ -14,14 +14,14 @@ Validate general `.cw` syntax and `// @wau` pragmas without lowering to RTL:
 
 ```bash
 PYTHONPATH=src/python python3 -m waugen cw-lint \
-  --program-file docs/samples/types/fixed_point.cw
+  --program-file CWs/samples/types/fixed_point.cw
 ```
 
 Also require compatibility with the current `compile-cw` kernel template:
 
 ```bash
 PYTHONPATH=src/python python3 -m waugen cw-lint \
-  --program-file docs/example-program.cw \
+  --program-file CWs/example-program.cw \
   --compile-template
 ```
 
@@ -156,7 +156,7 @@ Supported values:
 
 General `.cw` syntax validation does not imply the program can be lowered to
 RTL. The current `compile-cw` path still requires the kernel-template surface
-used by `docs/example-program.cw`:
+used by `CWs/example-program.cw`:
 
 - a `space <kernel_name> { ... }` block,
 - integer constants `K`, `TILE_H`, `TILE_W`, `CIN_BLOCK`, and `COUT_BLOCK`,

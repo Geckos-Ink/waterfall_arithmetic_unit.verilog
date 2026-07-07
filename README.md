@@ -4,7 +4,7 @@ The **Waterfall Arithmetic Unit (WAU)** is a configurable arithmetic compute fab
 
 This repository is the **toolchain that builds one**. You describe your kernel in a high-level form — an arithmetic expression, a constrained pseudo-C snippet, or a `.cw` program — and the Python generator emits the full Verilog (cores, mesh, coordinator, host MMIO), a compiled schedule, and a software reference model used as a correctness oracle. No hand-written RTL, no separate compiler stack.
 
-It is **silicon-verified**: the same flow has been taken end-to-end onto a Terasic DE0-Nano (Intel Cyclone IV E), where 795/795 random and corner-case operand pairs, 150/150 real Iris samples, and 1032/1032 `docs/example-program.cw` stress cases round-tripped through the live mesh and matched the software reference (see [DE0-Nano demo](#de0-nano-real-silicon-implementation)).
+It is **silicon-verified**: the same flow has been taken end-to-end onto a Terasic DE0-Nano (Intel Cyclone IV E), where 795/795 random and corner-case operand pairs, 150/150 real Iris samples, and 1032/1032 `CWs/example-program.cw` stress cases round-tripped through the live mesh and matched the software reference (see [DE0-Nano demo](#de0-nano-real-silicon-implementation)).
 
 Typical uses: experimenting with small FPGA-side math accelerators, teaching dataflow / NoC concepts on real silicon, or as a reusable reference for the "high-level kernel → generated RTL → working bitstream" path.
 
@@ -70,7 +70,7 @@ Compile an advanced WAU kernel-style `.cw` program into a DAG flow and execution
 
 ```bash
 PYTHONPATH=src/python python3 -m waugen compile-cw \
-  --program-file docs/example-program.cw \
+  --program-file CWs/example-program.cw \
   --flow-id 90 \
   --name cw_conv2d_residual_reference \
   --entry 0,0 \
@@ -98,12 +98,12 @@ their conversions:
 ```bash
 # Run main() and print its output + return value.
 PYTHONPATH=src/python python3 -m waugen cw-eval \
-  --program-file docs/samples/types/fixed_point.cw
+  --program-file CWs/samples/types/fixed_point.cw
 
 # Ask the compiler to convert an expression to a dtype via the class's
 # conversion magic methods (__convert__ / __to_float__ / __to_int__).
 PYTHONPATH=src/python python3 -m waugen cw-eval \
-  --program-file docs/samples/types/fixed_point.cw \
+  --program-file CWs/samples/types/fixed_point.cw \
   --convert 'new q8_8(384)' float32        # -> 1.5
 ```
 
@@ -111,11 +111,11 @@ Validate `.cw` syntax and `@wau` pragmas without lowering:
 
 ```bash
 PYTHONPATH=src/python python3 -m waugen cw-lint \
-  --program-file docs/samples/types/fixed_point.cw
+  --program-file CWs/samples/types/fixed_point.cw
 
 # Add the current compile-cw template check for RTL-lowered kernels.
 PYTHONPATH=src/python python3 -m waugen cw-lint \
-  --program-file docs/example-program.cw \
+  --program-file CWs/example-program.cw \
   --compile-template
 ```
 
@@ -150,6 +150,48 @@ area/BRAM/DSP figures come from the versioned `wau_resource_model_v1`
 estimator checked against the device preset's datasheet capacity, and DRAM
 traffic from `dram_model_v1`. Ranking is `arch_search_rank_v1`: feasible
 first, then lower makespan, transfer hops, DRAM bytes, peak utilization.
+
+### Find the best-fitting config for your program
+
+A small board fits only so many cores (the DE0-Nano's EP4CE22, ~20k LEs, tops
+out around a 2x4 grid for the heavier CW workloads). `fit-config` answers
+"what's the best WAU I can actually synthesize for *this* program, and how few
+cores do I really need?" — it sweeps every grid shape up to a device budget,
+predicts each one's behaviour with the real scheduler (the simulator), and
+recommends both a best-performance config and an efficient/knee config (the
+fewest cores still within a small makespan tolerance of the best):
+
+```bash
+# From a .cw kernel (compiled on the fly) ...
+PYTHONPATH=src/python python3 -m waugen fit-config \
+  --program-file CWs/stress/mesh_stress.cw \
+  --device intel_de0_nano --max-grid 2x4 \
+  --out-report .build/fit/report.json \
+  --out-config .build/fit/best.json --emit efficient
+
+# ... or the friendly wrapper (also accepts an existing .json workload):
+python3 scripts/find_best_wau_config.py CWs/stress/mesh_stress.cw
+```
+
+It prints a ranked table plus the exact `build_cw_stress.ps1` command for the
+recommended grid, and writes a ready-to-build config. On `mesh_stress.cw` the
+efficient pick is a `2x2` grid — matching the board's empirically validated
+ceiling. `fit-config` is additive; `arch-search` (fixed-core-count reshapes) is
+unchanged. Use `--quick` for a grid-only sweep, `--lut-budget` /
+`--max-utilization` / `--tolerance` to tune the envelope.
+
+### Datasets for data-exchange testing
+
+Real operand streams (instead of random data) make the mesh/JTAG throughput
+numbers representative. `scripts/fetch_dataset.py` downloads MNIST on demand
+into a git-ignored `datasets/` directory (skip-if-present, verified):
+
+```bash
+python3 scripts/fetch_dataset.py            # -> datasets/mnist/*.gz (~11 MB)
+```
+
+The DE0-Nano CW stress runner can then stream real pixels as operands with
+`--mnist-images datasets/mnist/t10k-images-idx3-ubyte.gz`.
 
 ## Testing
 Run all RTL test cases with `iverilog` (generation + compile + simulation):
@@ -307,12 +349,18 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `src/python/configs/wau_example_pogram_compiled.json`: example output of `compile-cw`
 - `src/python/configs/wau_2d_multiprogram_demo.json`: advanced DAG + multi-program example
 - `src/python/configs/wau_3d_demo.json`: minimal layered-3D example using `grid.z` and vertical core placement
+- `src/python/configs/wau_cw_fit_base.json`: minimal DE0-Nano base used by `fit-config` (compiling a raw `.cw`) and by `run_cw_stress_benchmark.sh`
+- `CWs/`: all real `.cw` programs — `example-program.cw` (compiler-oriented Conv2D reference), `stress/mesh_stress.cw` (ad-hoc mesh/hardware-stress kernel), `basic_arithmetic.cw`, and `samples/{nn,types}/*.cw`
+- `datasets/`: git-ignored, populated on demand by `scripts/fetch_dataset.py` (MNIST)
 - `src/verilog/generated/`: generated output artifacts
 - `tests/rtl/`: SystemVerilog/Verilog testbenches (ALU, top demo, highway mesh + hop counters, MMIO register file)
 - `tests/python/`: Python unit tests for compiler helpers, CW reference scoreboard, and program-level priority/replicas/policy stress matrix
 - `scripts/run_randomized_stress.py`: randomized multi-flow stress (CI input)
 - `scripts/run_iverilog_tests.sh`: iverilog test runner
 - `scripts/run_cw_example_benchmark.sh`: CW kernel benchmark, autotune, saved-candidate replay, multi-run stability, regression check
+- `scripts/run_cw_stress_benchmark.sh`: same engine pointed at `CWs/stress/mesh_stress.cw` (own tracked log; never touches the example benchmark)
+- `scripts/find_best_wau_config.py`: convenience wrapper over `waugen fit-config` (best/efficient config for a program)
+- `scripts/fetch_dataset.py` / `.ps1`: on-demand git-ignored dataset download (MNIST) for data-exchange testing
 - `.github/workflows/ci.yml`: CI matrix (python tests, randomized stress, iverilog tests, autotuned CW benchmark) with artifact uploads
 - `benchmarks/example_pogram_benchmark.txt`: tracked benchmark/reference metrics for `.cw` flow compilation
 - `benchmarks/example_pogram_tuning_latest.txt`: latest autotune sweep summary
@@ -321,9 +369,10 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `benchmarks/example_pogram_benchmark_latest.json`: machine-readable latest benchmark snapshot
 - `benchmarks/example_pogram_benchmark_best.json`: machine-readable best-known benchmark snapshot
 - `benchmarks/example_pogram_benchmark_history.json`: benchmark history for trend checks
+- `benchmarks/mesh_stress_benchmark.txt`: tracked simulator benchmark for the ad-hoc `CWs/stress/mesh_stress.cw` kernel (heavier 47-node flow; `scoreboard_pass_ratio=1.0`)
 - `benchmarks/de0_nano_basic_benchmark.txt`: silicon-verified reference run on the DE0-Nano (resource fit, per-corner Fmax, 795/795 scoreboard pass, live observability counters)
 - `benchmarks/de0_nano_iris_stats_benchmark.txt`: real-data DE0-Nano benchmark for the 2D WAU using 150 Iris samples, live board measurements, and tracked JSON sidecars
-- `benchmarks/de0_nano_cw_stress_benchmark.txt`: live DE0-Nano benchmark for `docs/example-program.cw`, including the passing 2x2 image and the measured larger-grid failure ceiling
+- `benchmarks/de0_nano_cw_stress_benchmark.txt`: live DE0-Nano benchmark for `CWs/example-program.cw`, including the passing 2x2 image and the measured larger-grid failure ceiling
 - `benchmarks/de0_nano_cw_stress_benchmark_latest.json`: machine-readable passing 2x2 stress run (`1032/1032`)
 - `benchmarks/de0_nano_cw_stress_2x4_timeout.json`: machine-readable failure capture for the largest fitting (`2x4`) image
 - `demo/de0-nano/basic-example/`: end-to-end physical deployment — Quartus 25.1 project + reusable vJTAG MMIO bridge RTL + reusable Python/TCL host stack + automation scripts; produces the artifact above
@@ -434,13 +483,13 @@ non-MMIO integrations.
 - `python-tests`: full `unittest` discovery on `tests/python` (compiler, scheduler, CW frontends, CW reference scoreboard, program-stress matrix).
 - `randomized-stress`: 50-seed sweep of `scripts/run_randomized_stress.py` with JSON report artifact.
 - `iverilog-tests`: installs Icarus Verilog and runs `scripts/run_iverilog_tests.sh` (uploads generated RTL as artifact).
-- `cw-benchmark`: runs `scripts/run_cw_example_benchmark.sh` with the autotuned knobs, surfaces a summary into the GitHub Step Summary, and uploads `benchmarks/*` plus `cw_scoreboard.json` as artifacts (30-day retention).
+- `cw-benchmark`: runs `scripts/run_cw_example_benchmark.sh` with the autotuned knobs and `scripts/run_cw_stress_benchmark.sh` for the ad-hoc mesh-stress kernel, surfaces both summaries into the GitHub Step Summary, and uploads `benchmarks/*` plus `cw_scoreboard.json` as artifacts (30-day retention).
 
 ## Current Hardware Scope
 This is a robust **basis**, not final silicon architecture:
 - Control-plane dispatch and data-plane results now traverse explicit neighbor-linked highway meshes with valid/ready backpressure.
 - `grid.z > 1` emits layered 3D core indexing and vertical `up/down` mesh links; this path is currently verified with `iverilog` (`tb_wau_highway_mesh_3d`) and has not yet been calibrated on the DE0-NANO board flow.
-- A 2026-07-06 Quartus 23.1std compile of the regenerated 2D DE0-NANO demo fits, was programmed onto the board, and completed both a real-data Iris benchmark (`150/150` per run) and a heavier `docs/example-program.cw` stress benchmark (`1032/1032` at `2x2`). The same session also established the current heavier-workload ceiling on EP4CE22: `2x4` fits at `99%` logic but times out all `8/8` golden cases on hardware, while `4x4` and `2x5` fail fit. TimeQuest still does not close the 50 MHz board clock on either tracked 23.1 image, so treat the board results as empirical room-temperature validation and treat registered/elastic mesh timing cuts or a slower board-clock profile as the next hardware-closing slice.
+- A 2026-07-06 Quartus 23.1std compile of the regenerated 2D DE0-NANO demo fits, was programmed onto the board, and completed both a real-data Iris benchmark (`150/150` per run) and a heavier `CWs/example-program.cw` stress benchmark (`1032/1032` at `2x2`). The same session also established the current heavier-workload ceiling on EP4CE22: `2x4` fits at `99%` logic but times out all `8/8` golden cases on hardware, while `4x4` and `2x5` fail fit. TimeQuest still does not close the 50 MHz board clock on either tracked 23.1 image, so treat the board results as empirical room-temperature validation and treat registered/elastic mesh timing cuts or a slower board-clock profile as the next hardware-closing slice.
 - Runtime adaptation is implemented as primary/fallback/candidate core selection per node, constrained by per-core capability metadata.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
 - Current pseudo-C frontend targets accumulator-style pipelines (`acc = a; acc = acc <op> ...`) to stay compatible with the present coordinator execution model.
@@ -524,7 +573,7 @@ showed real mesh traffic (`5 700` hops, `0` stalls, `2 700` forwards,
 
 ### Complex CW workload - live board run (2026-07-06)
 The same board wrapper was then pushed with the repository's tracked
-[`docs/example-program.cw`](docs/example-program.cw) kernel rather than the
+[`CWs/example-program.cw`](CWs/example-program.cw) kernel rather than the
 small `basic_arithmetic.cw` demo. The board build path is now tracked in
 [`demo/de0-nano/basic-example/scripts/build_cw_stress.ps1`](demo/de0-nano/basic-example/scripts/build_cw_stress.ps1),
 and the live scoreboard harness is

@@ -104,11 +104,18 @@ jobs:
       - name: Run CW benchmark
         run: |
           bash scripts/run_cw_example_benchmark.sh
+      - name: Run CW mesh-stress benchmark
+        run: |
+          bash scripts/run_cw_stress_benchmark.sh
       - name: Show benchmark summary
         run: |
           echo '### CW Benchmark summary' >> $GITHUB_STEP_SUMMARY
+          echo '#### example-program.cw' >> $GITHUB_STEP_SUMMARY
           grep -E '^(exec_latency_cycles_avg|scoreboard_pass_ratio|fallback_instruction_ratio|makespan_cycles):' \
             benchmarks/example_pogram_benchmark.txt | sed 's/^/* /' >> $GITHUB_STEP_SUMMARY || true
+          echo '#### stress/mesh_stress.cw' >> $GITHUB_STEP_SUMMARY
+          grep -E '^(exec_latency_cycles_avg|scoreboard_pass_ratio|fallback_instruction_ratio|makespan_cycles):' \
+            benchmarks/mesh_stress_benchmark.txt | sed 's/^/* /' >> $GITHUB_STEP_SUMMARY || true
       - name: Upload benchmark reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -122,6 +129,9 @@ jobs:
             benchmarks/example_pogram_multirun_latest.txt
             benchmarks/example_pogram_replay_latest.txt
             benchmarks/example_pogram_tuning_latest.txt
+            benchmarks/mesh_stress_benchmark.txt
+            benchmarks/mesh_stress_benchmark_latest.json
+            benchmarks/mesh_stress_benchmark_best.json
             .build/cw_iverilog/cw_scoreboard.json
           if-no-files-found: warn
           retention-days: 30

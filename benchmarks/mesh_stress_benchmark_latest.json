@@ -1,0 +1,97 @@
+{
+  "format_version": 1,
+  "inputs": {
+    "base_config": "src/python/configs/wau_cw_fit_base.json",
+    "compiled_config": ".build\\cw_stress\\wau_mesh_stress_compiled.json",
+    "cw_dtype_requested": "auto",
+    "cw_lane_parallelism_requested": "auto",
+    "cw_lowering_profile_requested": "auto",
+    "cw_max_in_flight": 4,
+    "cw_placement_policy_requested": "auto",
+    "cw_source": "CWs/stress/mesh_stress.cw",
+    "effective_base_config": "src/python/configs/wau_cw_fit_base.json",
+    "flow_id": 91,
+    "program_id": 91,
+    "program_load_balance_requested": "auto",
+    "program_max_parallel_flows": 1,
+    "program_priority_requested": "auto",
+    "program_replicas": 2,
+    "scheduler_program_policy_requested": "auto"
+  },
+  "metrics": {
+    "benchmark_ranking_score": 179297760.0,
+    "busiest_core_busy_cycles": 37,
+    "busiest_core_index": 4,
+    "busiest_core_issue_count": 37,
+    "estimated_transfer_hops_avg_edge": 0.480916,
+    "estimated_transfer_hops_edge_count": 131,
+    "estimated_transfer_hops_metric": "dependency_edges_v1",
+    "estimated_transfer_hops_total": 63,
+    "estimated_transfer_hops_unresolved_edges": 0,
+    "exec_latency_cycles_avg": 179.25,
+    "exec_latency_cycles_max": 196,
+    "exec_latency_cycles_min": 139,
+    "exec_latency_cycles_p50": 175.0,
+    "exec_latency_cycles_p95": 196.0,
+    "fallback_instruction_count": 35,
+    "fallback_instruction_ratio": 0.448718,
+    "instruction_count": 78,
+    "makespan_cycles": 43,
+    "scoreboard_matches": 8,
+    "scoreboard_pass_ratio": 1.0,
+    "scoreboard_total": 8,
+    "total_ms": 4760
+  },
+  "paths": {
+    "benchmark_text": "benchmarks\\mesh_stress_benchmark.txt",
+    "schedule_json": ".build\\cw_stress_generated\\wau_schedule.json"
+  },
+  "placement_quality": {
+    "core_issue_hotspots": [
+      "core=4 issues=37 busy_cycles=37",
+      "core=2 issues=8 busy_cycles=12",
+      "core=0 issues=6 busy_cycles=8",
+      "core=5 issues=6 busy_cycles=8",
+      "core=6 issues=6 busy_cycles=8"
+    ],
+    "critical_path_tail_by_node": [
+      "node=tile_done_gate program=91:0 flow=91 cycle_end=43",
+      "node=tile_counter program=91:0 flow=91 cycle_end=42",
+      "node=tile_counter program=91:0 flow=91 cycle_end=41",
+      "node=tile_counter program=91:0 flow=91 cycle_end=40",
+      "node=tile_counter program=91:0 flow=91 cycle_end=39"
+    ],
+    "dependency_hotspots": [
+      "node=store_tile max_dependencies=9",
+      "node=lane0_bias max_dependencies=2",
+      "node=lane0_mul max_dependencies=2",
+      "node=lane1_bias max_dependencies=2",
+      "node=lane1_mul max_dependencies=2"
+    ],
+    "fallback_ratio_by_flow": {
+      "91": 0.448718
+    },
+    "node_latency_hotspots": [
+      "node=tile_counter total_latency=32 issues=32",
+      "node=lane0_mul total_latency=3 issues=1",
+      "node=lane1_mul total_latency=3 issues=1",
+      "node=lane2_mul total_latency=3 issues=1",
+      "node=lane3_mul total_latency=3 issues=1"
+    ]
+  },
+  "run_profile": "mesh_stress",
+  "run_utc": "2026-07-07T08:18:59Z",
+  "timing_ms": {
+    "compile_cw_ms": 579,
+    "generate_ms": 621,
+    "iverilog_tests_ms": 2451,
+    "total_ms": 4760,
+    "validate_ms": 532
+  },
+  "tool_versions": {
+    "git_commit": "898f806",
+    "git_tree_state": "dirty",
+    "iverilog_version": "Icarus Verilog version 13.0 (stable) (v13_0)",
+    "python_version": "Python 3.11.9"
+  }
+}

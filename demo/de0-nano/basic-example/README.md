@@ -56,23 +56,22 @@ demo/de0-nano/basic-example/
 │   ├── tcl/
 │   │   └── wau_jtag_server.tcl        quartus_stp TCL server (REUSABLE)
 │   ├── programs/
-│   │   ├── basic_arithmetic.cw        compact compile-cw kernel for DE0-Nano
 │   │   ├── run_benchmark.py           randomized arithmetic benchmark driver
 │   │   ├── run_iris_stats_benchmark.py real-data Iris benchmark driver
-│   │   └── run_cw_stress_benchmark.py live docs/example-program.cw driver
+│   │   └── run_cw_stress_benchmark.py live CW stress driver (default CWs/stress/mesh_stress.cw)
 │   ├── data/
 │   │   └── iris_sepal_petal_tenths.csv tracked real dataset copy (scaled)
 │   └── config/
 │       ├── wau_de0_nano_basic.json    WAU config (2x2 grid, 4 ops, 4 flows)
-│       └── wau_de0_nano_cw_stress_base.json board base config for example-program.cw
+│       └── wau_de0_nano_cw_stress_base.json board base config for CW stress kernels
 ├── scripts/
 │   ├── build.ps1                      generate RTL + Quartus full compile
-│   ├── build_cw_stress.ps1            build docs/example-program.cw board image
+│   ├── build_cw_stress.ps1            build CW stress board image (default CWs/stress/mesh_stress.cw)
 │   ├── program.ps1                    quartus_pgm download
 │   ├── server.ps1                     quartus_stp TCL server
 │   ├── run.ps1                        randomized arithmetic benchmark
 │   ├── run_iris_stats.ps1             real-data Iris benchmark
-│   └── run_cw_stress.ps1              live docs/example-program.cw benchmark
+│   └── run_cw_stress.ps1              live CW stress benchmark
 └── build/                             gitignored: generated/, *.json reports
 ```
 
@@ -124,7 +123,7 @@ If LED[6] is blinking and LED[1] is solid, the design is alive and ready.
 # 5. Or run the real-data statistical benchmark instead.
 .\scripts\run_iris_stats.ps1
 
-# 6. Or build and run the heavier docs/example-program.cw board image.
+# 6. Or build and run the heavier CW mesh-stress board image.
 .\scripts\build_cw_stress.ps1 -GridX 2 -GridY 2 -QuartusRoot C:\intelFPGA_lite\23.1std
 .\scripts\program.ps1 -QuartusRoot C:\intelFPGA_lite\23.1std
 # server still running
@@ -173,7 +172,7 @@ Reports are written to `build/benchmark_<timestamp>.json`.
 Real-data Iris benchmark reports are written to
 `build/iris_benchmark_<timestamp>.json`.
 
-Live `docs/example-program.cw` stress reports are written to
+Live CW stress reports are written to
 `build/cw_stress_benchmark_<timestamp>.json`.
 
 Per-trigger wall-clock latency (~15 ms p50) is dominated by USB-Blaster JTAG
@@ -243,13 +242,13 @@ for that workload is
 .\scripts\run.ps1 -IncludeCw
 ```
 
-This invokes `python -m waugen compile-cw` against `basic_arithmetic.cw`
+This invokes `python -m waugen compile-cw` against `CWs/basic_arithmetic.cw`
 (a minimal Conv2D+bias+residual+ReLU kernel sized for EP4CE22) to merge a
 new flow_id=90 into the config before regenerating the RTL. The benchmark
 exercises it as a smoke-test (no per-pair scoreboard, since the reference
 is the existing `waugen.cw_reference`).
 
-### Optional: run the repository `docs/example-program.cw` on the board
+### Optional: run a heavier CW stress kernel on the board
 
 ```powershell
 .\scripts\build_cw_stress.ps1 -GridX 2 -GridY 2 -QuartusRoot C:\intelFPGA_lite\23.1std
@@ -258,14 +257,17 @@ is the existing `waugen.cw_reference`).
 .\scripts\run_cw_stress.ps1 -Config .\build\cw_stress_2x2_merged.json -RandomIters 1024 -RandomRange 1023 -Seed 1592594996
 ```
 
-This path lowers the tracked repository kernel `docs/example-program.cw`
-instead of the tiny `basic_arithmetic.cw` demo. The generated board flow keeps
-the tuned CW knobs (`lane_parallelism=2`, `max_in_flight=2`,
-`program_replicas=2`, `placement=balance`,
-`lowering_profile=throughput_optimized`) and validates every board result
-against `waugen.cw_reference`.
+This path lowers a heavier CW kernel instead of the tiny `basic_arithmetic.cw`
+demo. `build_cw_stress.ps1` defaults to the ad-hoc mesh-stress kernel
+`CWs/stress/mesh_stress.cw` (tuned to saturate the mesh on small grids); pass
+`-ProgramFile ..\..\..\CWs\example-program.cw` to build the original Conv2D
+reference kernel instead. The generated board flow keeps the tuned CW knobs
+(`lane_parallelism=2`, `max_in_flight=2`, `program_replicas=2`,
+`placement=balance`, `lowering_profile=throughput_optimized`) and validates
+every board result against `waugen.cw_reference`.
 
-The 2026-07-06 tracked board result is:
+The 2026-07-06 tracked board result (measured with `CWs/example-program.cw`)
+is:
 
 * `2x2` grid: `1032/1032` pass (`8` golden + `1024` seeded random), `88.3` ops/s,
   `15/16 ms` p50/p95 latency, `72,240` mesh hops total

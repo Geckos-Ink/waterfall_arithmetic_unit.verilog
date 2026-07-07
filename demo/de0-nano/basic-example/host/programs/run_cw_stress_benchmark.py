@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import random
 import statistics
+import struct
 import sys
 import time
 from collections import Counter
@@ -65,16 +67,70 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0xC0FFEE)
     parser.add_argument("--random-iters", type=int, default=128)
     parser.add_argument("--random-range", type=int, default=255)
+    parser.add_argument(
+        "--mnist-images",
+        type=Path,
+        default=None,
+        help=(
+            "Optional MNIST images idx3(.gz) file (see scripts/fetch_dataset.py). "
+            "When set, the --random-iters operand pairs are streamed from real "
+            "MNIST pixels (centered to [-128,127]) instead of the RNG, to test "
+            "data-exchange efficiency on representative, spatially-correlated data."
+        ),
+    )
+    parser.add_argument(
+        "--mnist-offset",
+        type=int,
+        default=0,
+        help="Skip this many leading MNIST pixels before streaming operand pairs",
+    )
     parser.add_argument("--skip-soft-reset", action="store_true")
     parser.add_argument("--report", type=Path, default=None)
     return parser.parse_args()
 
 
-def _build_cases(seed: int, random_iters: int, random_range: int) -> list[tuple[int, int, int, str]]:
-    rng = random.Random(seed)
+def _load_mnist_pixels(path: Path) -> bytes:
+    """Read raw uint8 pixels from an MNIST images idx3 file (plain or .gz).
+
+    Kept self-contained so the demo host stays independent of repo scripts/.
+    """
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rb") as handle:
+        magic, count, rows, cols = struct.unpack(">IIII", handle.read(16))
+        if magic != 2051:
+            raise ValueError(f"{path}: bad MNIST images magic {magic} (expected 2051)")
+        pixels = handle.read(count * rows * cols)
+    if len(pixels) != count * rows * cols:
+        raise ValueError(f"{path}: truncated MNIST image data")
+    return pixels
+
+
+def _build_cases(
+    seed: int,
+    random_iters: int,
+    random_range: int,
+    *,
+    mnist_images: Path | None = None,
+    mnist_offset: int = 0,
+) -> list[tuple[int, int, int, str]]:
     rows: list[tuple[int, int, int, str]] = []
     for case_id, a, b in GOLDEN_CASES:
         rows.append((case_id, a, b, "golden"))
+
+    if mnist_images is not None:
+        # Stream (a, b) operand pairs from consecutive MNIST pixels, centered to
+        # [-128, 127] so signed add/mul/max/residual/ReLU paths are exercised on
+        # real, spatially-correlated data instead of the RNG.
+        pixels = _load_mnist_pixels(mnist_images)
+        start = mnist_offset % max(1, len(pixels))
+        for idx in range(random_iters):
+            case_id = len(GOLDEN_CASES) + idx + 1
+            pa = pixels[(start + 2 * idx) % len(pixels)]
+            pb = pixels[(start + 2 * idx + 1) % len(pixels)]
+            rows.append((case_id, pa - 128, pb - 128, "mnist"))
+        return rows
+
+    rng = random.Random(seed)
     for idx in range(random_iters):
         case_id = len(GOLDEN_CASES) + idx + 1
         a = rng.randint(-random_range, random_range)
@@ -89,7 +145,13 @@ def main() -> int:
         print(f"missing compiled config: {args.config}", file=sys.stderr)
         return 2
 
-    cases = _build_cases(args.seed, args.random_iters, args.random_range)
+    cases = _build_cases(
+        args.seed,
+        args.random_iters,
+        args.random_range,
+        mnist_images=args.mnist_images,
+        mnist_offset=args.mnist_offset,
+    )
     expected_rows = compute_expected_values(
         args.config,
         args.flow_id,
@@ -197,12 +259,8 @@ def main() -> int:
     print(f"config             : {args.config}")
     print(f"flow id            : {args.flow_id}")
     print(f"total cases        : {len(cases)}")
-    print(
-        f"golden pass        : {pass_by_kind['golden']}/{total_by_kind['golden']}"
-    )
-    print(
-        f"random pass        : {pass_by_kind['random']}/{total_by_kind['random']}"
-    )
+    for kind in sorted(total_by_kind):
+        print(f"{kind + ' pass':<19}: {pass_by_kind[kind]}/{total_by_kind[kind]}")
     print(f"scoreboard pass    : {pass_count}/{len(cases)}")
     print(f"throughput (ops/s) : {throughput:.1f}")
     print(f"latency p50 / p95  : {latency['p50']*1000:.2f} ms / {latency['p95']*1000:.2f} ms")
@@ -240,6 +298,8 @@ def main() -> int:
             "seed": args.seed,
             "random_iters": args.random_iters,
             "random_range": args.random_range,
+            "operand_source": "mnist" if args.mnist_images is not None else "random",
+            "mnist_images": str(args.mnist_images) if args.mnist_images is not None else None,
             "total_cases": len(cases),
             "pass_count": pass_count,
             "pass_ratio": (pass_count / len(cases)) if cases else 0.0,

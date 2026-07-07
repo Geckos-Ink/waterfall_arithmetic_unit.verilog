@@ -8,7 +8,7 @@
     "cw_lowering_profile_requested": "throughput_optimized",
     "cw_max_in_flight": 2,
     "cw_placement_policy_requested": "balance",
-    "cw_source": "docs/example-program.cw",
+    "cw_source": "CWs/example-program.cw",
     "effective_base_config": ".build\\cw_iverilog\\benchmark_base_config.json",
     "flow_id": 90,
     "program_id": 90,
@@ -19,7 +19,7 @@
     "scheduler_program_policy_requested": "weighted_fair"
   },
   "metrics": {
-    "benchmark_ranking_score": 68046807.0,
+    "benchmark_ranking_score": 68046370.0,
     "busiest_core_busy_cycles": 35,
     "busiest_core_index": 8,
     "busiest_core_issue_count": 35,
@@ -40,7 +40,7 @@
     "scoreboard_matches": 8,
     "scoreboard_pass_ratio": 1.0,
     "scoreboard_total": 8,
-    "total_ms": 4807
+    "total_ms": 4370
   },
   "paths": {
     "benchmark_text": "benchmarks\\example_pogram_benchmark.txt",
@@ -82,17 +82,17 @@
       "node=mix total_latency=4 issues=4"
     ]
   },
-  "run_profile": "dependency_metric_refresh",
-  "run_utc": "2026-07-06T01:46:59Z",
+  "run_profile": "reference",
+  "run_utc": "2026-07-07T08:19:55Z",
   "timing_ms": {
-    "compile_cw_ms": 1004,
-    "generate_ms": 634,
-    "iverilog_tests_ms": 2015,
-    "total_ms": 4807,
-    "validate_ms": 605
+    "compile_cw_ms": 884,
+    "generate_ms": 585,
+    "iverilog_tests_ms": 1773,
+    "total_ms": 4370,
+    "validate_ms": 538
   },
   "tool_versions": {
-    "git_commit": "02c7531",
+    "git_commit": "898f806",
     "git_tree_state": "dirty",
     "iverilog_version": "Icarus Verilog version 13.0 (stable) (v13_0)",
     "python_version": "Python 3.11.9"

@@ -24,7 +24,7 @@ $WauRtlDir  = Join-Path $QuartusDir "wau_rtl"
 $GenOutDir  = Join-Path $DemoRoot "build\generated"
 $BaseCfg    = Join-Path $DemoRoot "host\config\wau_de0_nano_basic.json"
 $MergedCfg  = Join-Path $DemoRoot "build\wau_de0_nano_basic_merged.json"
-$CwProgram  = Join-Path $DemoRoot "host\programs\basic_arithmetic.cw"
+$CwProgram  = Join-Path $RepoRoot "CWs\basic_arithmetic.cw"
 
 Write-Host "Repo root  : $RepoRoot"
 Write-Host "Demo root  : $DemoRoot"

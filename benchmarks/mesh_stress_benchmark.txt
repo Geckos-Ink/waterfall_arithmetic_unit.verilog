@@ -1,0 +1,95 @@
+WAU CW Example Benchmark Reference (latest)
+run_utc: 2026-07-07T08:18:59Z
+git_commit: 898f806
+git_tree_state: dirty
+python_version: Python 3.11.9
+iverilog_version: Icarus Verilog version 13.0 (stable) (v13_0)
+cw_source: CWs/stress/mesh_stress.cw
+base_config: src/python/configs/wau_cw_fit_base.json
+effective_base_config: src/python/configs/wau_cw_fit_base.json
+compiled_config: .build\cw_stress\wau_mesh_stress_compiled.json
+schedule_json: .build\cw_stress_generated\wau_schedule.json
+
+Benchmark Mode
+run_profile: mesh_stress
+tune_mode: 0
+update_sidecar: 1
+
+Workload/Program
+flow_id: 91
+program_id: 91
+program_priority_requested: auto
+program_replicas: 2
+program_max_parallel_flows: 1
+program_load_balance_requested: auto
+scheduler_program_policy_requested: auto
+cw_max_in_flight: 4
+cw_lane_parallelism_requested: auto
+cw_dtype_requested: auto
+cw_placement_policy_requested: auto
+cw_lowering_profile_requested: auto
+compiled_nodes: 47
+lane_parallelism_compiled: 8
+placement_policy_compiled: balance
+lowering_profile_compiled: throughput_optimized
+program_priority_compiled: 4
+program_load_balance_compiled: least_busy
+scheduler_program_policy_compiled: weighted_fair
+dtype: float32
+tile_counter_max_iterations: 32
+
+Timing (ms)
+compile_cw_ms: 579
+validate_ms: 532
+generate_ms: 621
+iverilog_tests_ms: 2451
+total_ms: 4760
+
+Effective Execution Benchmark (CW flow stress)
+exec_flow_id: 91
+exec_case_count: 8
+exec_latency_cycles_min: 139
+exec_latency_cycles_max: 196
+exec_latency_cycles_avg: 179.25
+exec_latency_cycles_p50: 175.00
+exec_latency_cycles_p95: 196.00
+benchmark_ranking_score: 179297760.00
+exec_case_1: flow=91, latency_cycles=196, out_value=1966081, expected_value=1966081, scoreboard=match
+exec_case_2: flow=91, latency_cycles=196, out_value=6542971, expected_value=6542971, scoreboard=match
+exec_case_3: flow=91, latency_cycles=168, out_value=0, expected_value=0, scoreboard=match
+exec_case_4: flow=91, latency_cycles=139, out_value=1, expected_value=1, scoreboard=match
+exec_case_5: flow=91, latency_cycles=196, out_value=3008, expected_value=3008, scoreboard=match
+exec_case_6: flow=91, latency_cycles=175, out_value=0, expected_value=0, scoreboard=match
+exec_case_7: flow=91, latency_cycles=168, out_value=0, expected_value=0, scoreboard=match
+exec_case_8: flow=91, latency_cycles=196, out_value=69, expected_value=69, scoreboard=match
+scoreboard_total: 8
+scoreboard_matches: 8
+scoreboard_pass_ratio: 1.0000
+
+Schedule Metrics
+makespan_cycles: 43
+instruction_count: 78
+fallback_instruction_count: 35
+fallback_instruction_ratio: 0.4487
+fallback_ratio_by_flow: {91: 0.449}
+estimated_transfer_hops_metric: dependency_edges_v1
+estimated_transfer_hops_total: 63
+estimated_transfer_hops_edge_count: 131
+estimated_transfer_hops_avg_edge: 0.4809
+estimated_transfer_hops_unresolved_edges: 0
+unique_core_count: 8
+busiest_core_index: 4
+busiest_core_issue_count: 37
+busiest_core_busy_cycles: 37
+flow_ids_in_schedule: [91]
+program_ids_in_schedule: [91]
+operations_seen: ['add', 'max', 'mul']
+core_issue_hotspots: ['core=4 issues=37 busy_cycles=37', 'core=2 issues=8 busy_cycles=12', 'core=0 issues=6 busy_cycles=8', 'core=5 issues=6 busy_cycles=8', 'core=6 issues=6 busy_cycles=8']
+node_latency_hotspots: ['node=tile_counter total_latency=32 issues=32', 'node=lane0_mul total_latency=3 issues=1', 'node=lane1_mul total_latency=3 issues=1', 'node=lane2_mul total_latency=3 issues=1', 'node=lane3_mul total_latency=3 issues=1']
+dependency_hotspots: ['node=store_tile max_dependencies=9', 'node=lane0_bias max_dependencies=2', 'node=lane0_mul max_dependencies=2', 'node=lane1_bias max_dependencies=2', 'node=lane1_mul max_dependencies=2']
+critical_path_tail_by_node: ['node=tile_done_gate program=91:0 flow=91 cycle_end=43', 'node=tile_counter program=91:0 flow=91 cycle_end=42', 'node=tile_counter program=91:0 flow=91 cycle_end=41', 'node=tile_counter program=91:0 flow=91 cycle_end=40', 'node=tile_counter program=91:0 flow=91 cycle_end=39']
+
+RTL Test Results
+tb_wau_operation_alu: pass, finish_ps=145000, log=.build\cw_stress_iverilog\tb_wau_operation_alu.run.log
+tb_wau_highway_mesh: pass, finish_ps=105000, log=.build\cw_stress_iverilog\tb_wau_highway_mesh.run.log
+tb_wau_cw_compiled_exec: pass, finish_ps=14535000, log=.build\cw_stress_iverilog\tb_wau_cw_compiled_exec.run.log

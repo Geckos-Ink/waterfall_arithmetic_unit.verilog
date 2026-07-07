@@ -25,16 +25,59 @@ def _base_payload() -> dict[str, object]:
 
 
 def _base_program_without_wau_pragmas() -> str:
-    program = Path("docs/example-program.cw").read_text()
+    program = Path("CWs/example-program.cw").read_text()
     stripped_lines = [
         line for line in program.splitlines() if not line.lstrip().startswith("// @wau ")
     ]
     return "\n".join(stripped_lines) + "\n"
 
 
+class MeshStressKernelTests(unittest.TestCase):
+    """The ad-hoc hardware-stress kernel must lower to a heavy, mesh-saturating
+    flow: 8 lanes, the saturated recurrence cap, and all data-movement flags."""
+
+    def test_parse_stress_kernel_spec(self) -> None:
+        program = Path("CWs/stress/mesh_stress.cw").read_text()
+        spec, _shape = parse_cw_program(program)
+        self.assertEqual(spec.kernel_name, "mesh_stress_kernel")
+        self.assertEqual(spec.worker_count, 8)
+        self.assertEqual((spec.tile_h, spec.tile_w), (8, 8))
+        self.assertEqual(spec.preferred_lane_parallelism, 8)
+        self.assertEqual(spec.preferred_lowering_profile, "throughput_optimized")
+        self.assertTrue(spec.has_prefetch)
+        self.assertTrue(spec.has_residual)
+        self.assertTrue(spec.has_relu)
+        self.assertTrue(spec.has_double_buffering)
+
+    def test_stress_kernel_lowers_to_heavy_flow(self) -> None:
+        program = Path("CWs/stress/mesh_stress.cw").read_text()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td) / "base.json"
+            payload = _base_payload()
+            payload["device"]["grid"] = {"x": 2, "y": 4}
+            payload["device"]["data_types"] = ["float32"]
+            base.write_text(json.dumps(payload))
+            out = Path(td) / "merged.json"
+            flow, _program = merge_cw_into_config(
+                base_config_path=base,
+                out_config_path=out,
+                program=program,
+                flow_id=91,
+                name="mesh_stress",
+                entry_x=0,
+                entry_y=0,
+                replace_existing=True,
+            )
+        # 4 load nodes + 8 lanes * 5 compute nodes + store + counter + gate.
+        self.assertEqual(len(flow["nodes"]), 4 + 8 * 5 + 3)
+        self.assertEqual(flow["cw_hints"]["lane_parallelism_compiled"], 8)
+        recurrent = [n for n in flow["nodes"] if n.get("recurrent")]
+        self.assertEqual(recurrent[0]["max_iterations"], 32)
+
+
 class CWCompilerTests(unittest.TestCase):
     def test_parse_reference_example(self) -> None:
-        program = Path("docs/example-program.cw").read_text()
+        program = Path("CWs/example-program.cw").read_text()
         spec, shape = parse_cw_program(program)
 
         self.assertEqual(spec.kernel_name, "conv2d_residual_kernel")
@@ -78,7 +121,7 @@ class CWCompilerTests(unittest.TestCase):
             base_payload = _base_payload()
             base_path.write_text(json.dumps(base_payload, indent=2) + "\n")
 
-            program = Path("docs/example-program.cw").read_text()
+            program = Path("CWs/example-program.cw").read_text()
             flow, program_obj = merge_cw_into_config(
                 base_config_path=base_path,
                 out_config_path=out_path,
@@ -312,7 +355,7 @@ class CWCompilerTests(unittest.TestCase):
             }
             base_path.write_text(json.dumps(base_payload, indent=2) + "\n")
 
-            program = Path("docs/example-program.cw").read_text()
+            program = Path("CWs/example-program.cw").read_text()
             flow, _program_obj = merge_cw_into_config(
                 base_config_path=base_path,
                 out_config_path=out_path,

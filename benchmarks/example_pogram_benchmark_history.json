@@ -172,6 +172,15 @@
       "run_profile": "dependency_metric_refresh",
       "run_utc": "2026-07-06T01:46:59Z",
       "total_ms": 4807
+    },
+    {
+      "benchmark_ranking_score": 68046370.0,
+      "benchmark_text": "benchmarks\\example_pogram_benchmark.txt",
+      "exec_latency_cycles_avg": 68.0,
+      "makespan_cycles": 42,
+      "run_profile": "reference",
+      "run_utc": "2026-07-07T08:19:55Z",
+      "total_ms": 4370
     }
   ]
 }

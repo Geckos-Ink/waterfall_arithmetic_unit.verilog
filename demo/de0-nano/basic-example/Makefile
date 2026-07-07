@@ -18,7 +18,7 @@ CW_STRESS_SEED  ?= 1592594996
 help:
 	@echo "make generate   - regenerate WAU RTL into quartus/wau_rtl/"
 	@echo "make build      - generate + quartus_sh full compile"
-	@echo "make build-cw-stress - compile docs/example-program.cw for the board wrapper"
+	@echo "make build-cw-stress - compile CWs/stress/mesh_stress.cw for the board wrapper"
 	@echo "make program    - quartus_pgm download .sof to USB-Blaster"
 	@echo "make server     - run TCL vJTAG MMIO server (port 2540)"
 	@echo "make run        - python benchmark against running server"

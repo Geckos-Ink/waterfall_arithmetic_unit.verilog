@@ -1,0 +1,45 @@
+{
+  "project": "wau_cw_fit_base",
+  "output_module_name": "wau_top",
+  "abstraction": {
+    "language": "wau_flow_ir",
+    "version": 1
+  },
+  "device": {
+    "preset": "intel_de0_nano",
+    "grid": { "x": 2, "y": 4 },
+    "coordinator_mode": "direct",
+    "enable_runtime_auto_adapt": true,
+    "data_width": 32,
+    "flow_id_width": 12,
+    "opcode_width": 8,
+    "data_types": ["float32"],
+    "local_ram_depth": 32,
+    "global_ram_depth": 128
+  },
+  "operations": {
+    "library": ["add", "sub", "mul", "div", "max"],
+    "overrides": {
+      "mul": { "latency": 3, "pipelined": true },
+      "div": { "latency": 8, "pipelined": false }
+    }
+  },
+  "compiler": {
+    "routing": "waterfall",
+    "allow_adaptive_reroute": true,
+    "allow_cycle_recurrence": true,
+    "fallback_radius": 2,
+    "station_cache": { "entries": 4, "replacement_policy": "fifo" }
+  },
+  "scheduler": {
+    "strategy": "dependency_aware",
+    "program_policy": "weighted_fair",
+    "emit_timeline": true,
+    "locality_bias": 1.0
+  },
+  "coordinator": {
+    "max_in_flight": 2
+  },
+  "flows": [],
+  "programs": []
+}

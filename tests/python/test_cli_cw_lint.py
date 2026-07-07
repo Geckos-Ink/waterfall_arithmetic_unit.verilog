@@ -25,7 +25,7 @@ class CWLintCliTests(unittest.TestCase):
             [
                 "cw-lint",
                 "--program-file",
-                "docs/samples/types/fixed_point.cw",
+                "CWs/samples/types/fixed_point.cw",
                 "--json",
             ]
         )
@@ -43,7 +43,7 @@ class CWLintCliTests(unittest.TestCase):
             [
                 "cw-lint",
                 "--program-file",
-                "docs/example-program.cw",
+                "CWs/example-program.cw",
                 "--compile-template",
                 "--json",
             ]
@@ -74,7 +74,7 @@ class CWLintCliTests(unittest.TestCase):
             [
                 "cw-lint",
                 "--program-file",
-                "docs/samples/types/fixed_point.cw",
+                "CWs/samples/types/fixed_point.cw",
                 "--compile-template",
             ]
         )

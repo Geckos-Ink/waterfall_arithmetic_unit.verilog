@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-# Build a DE0-Nano CW stress image from docs/example-program.cw (or another
+# Build a DE0-Nano CW stress image from CWs/stress/mesh_stress.cw (or another
 # compile-cw-compatible kernel) and optionally override the board grid.
 #
 # Usage:
@@ -36,7 +36,7 @@ $WauRtlDir = Join-Path $QuartusDir "wau_rtl"
 $BuildDir = Join-Path $DemoRoot "build"
 
 if ([string]::IsNullOrWhiteSpace($ProgramFile)) {
-    $ProgramFile = (Join-Path $RepoRoot "docs\example-program.cw")
+    $ProgramFile = (Join-Path $RepoRoot "CWs\stress\mesh_stress.cw")
 }
 if ([string]::IsNullOrWhiteSpace($BaseConfig)) {
     $BaseConfig = (Join-Path $DemoRoot "host\config\wau_de0_nano_cw_stress_base.json")

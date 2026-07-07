@@ -7,7 +7,15 @@ import argparse
 from pathlib import Path
 import sys
 
-from .arch_search import ArchSearchError, format_report_text, run_arch_search
+from .arch_search import (
+    ArchSearchError,
+    FitBudget,
+    emit_fit_config,
+    format_fit_report_text,
+    format_report_text,
+    run_arch_search,
+    run_fit_search,
+)
 from .basic_compiler import BasicCompilerError, merge_expression_into_config, merge_pseudoc_into_config
 from .compiler import compile_project
 from .config import ConfigError, load_config
@@ -280,6 +288,88 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Optional cap on the number of evaluated candidates",
+    )
+
+    fit = sub.add_parser(
+        "fit-config",
+        help=(
+            "find the best-fitting WAU config for a program: sweep grid shapes up "
+            "to a device budget, predict behaviour via the scheduler, and rank the "
+            "ones that fit (recommends both a best-performance and a fewest-cores config)"
+        ),
+    )
+    fit_source = fit.add_mutually_exclusive_group(required=True)
+    fit_source.add_argument("--config", type=Path, help="Existing WAU JSON config (the workload)")
+    fit_source.add_argument(
+        "--program-file", type=Path, help="A .cw kernel to compile then fit (via compile-cw)"
+    )
+    fit.add_argument(
+        "--device",
+        default="intel_de0_nano",
+        help="Device preset to fit against (default: intel_de0_nano)",
+    )
+    fit.add_argument(
+        "--max-grid",
+        default="2x4",
+        help="Largest grid to consider as XxY or XxYxZ (default: 2x4, the DE0-Nano CW ceiling)",
+    )
+    fit.add_argument(
+        "--max-cores",
+        type=int,
+        default=None,
+        help="Optional cap on total cores (default: product of --max-grid)",
+    )
+    fit.add_argument(
+        "--lut-budget",
+        type=int,
+        default=None,
+        help="Estimated LUT budget (default: device preset logic_cells)",
+    )
+    fit.add_argument(
+        "--max-utilization",
+        type=float,
+        default=0.9,
+        help="Max estimated resource utilization a candidate may use (default: 0.9)",
+    )
+    fit.add_argument(
+        "--tolerance",
+        type=float,
+        default=0.10,
+        help="Makespan slack for the efficient/knee pick vs the best (default: 0.10)",
+    )
+    fit.add_argument(
+        "--quick",
+        action="store_true",
+        help="Only sweep grid shapes at balanced memory + uniform ops (faster)",
+    )
+    fit.add_argument(
+        "--base-config",
+        type=Path,
+        default=Path("src/python/configs/wau_cw_fit_base.json"),
+        help="Base config used to compile a --program-file (default: wau_cw_fit_base.json)",
+    )
+    fit.add_argument("--flow-id", type=int, default=90, help="Flow id for --program-file compile")
+    fit.add_argument("--lane-parallelism", type=int, default=None, help="Optional lane override for compile")
+    fit.add_argument(
+        "--out-report", type=Path, default=None, help="Optional machine-readable JSON report path"
+    )
+    fit.add_argument(
+        "--out-summary", type=Path, default=None, help="Optional human-readable summary path"
+    )
+    fit.add_argument(
+        "--out-config",
+        type=Path,
+        default=None,
+        help="Optional path to write the recommended concrete, buildable config",
+    )
+    fit.add_argument(
+        "--emit",
+        choices=["best", "efficient"],
+        default="efficient",
+        help="Which recommendation to write to --out-config (default: efficient)",
+    )
+    fit.add_argument(
+        "--top", type=int, default=12, help="Number of ranked candidates to print (default: 12)"
     )
 
     sub.add_parser("list-devices", help="list built-in real device presets")
@@ -579,6 +669,123 @@ def _run_arch_search(
     return 0
 
 
+def _parse_grid(text: str) -> tuple[int, int, int]:
+    try:
+        parts = [int(chunk) for chunk in text.lower().split("x")]
+    except ValueError as exc:
+        raise ArchSearchError(f"--max-grid must be XxY or XxYxZ integers, got '{text}'") from exc
+    if len(parts) == 2:
+        gx, gy, gz = parts[0], parts[1], 1
+    elif len(parts) == 3:
+        gx, gy, gz = parts
+    else:
+        raise ArchSearchError(f"--max-grid must be XxY or XxYxZ, got '{text}'")
+    if gx < 1 or gy < 1 or gz < 1:
+        raise ArchSearchError("--max-grid dimensions must be >= 1")
+    return gx, gy, gz
+
+
+def _run_fit_config(args) -> int:
+    import json
+    import tempfile
+
+    from .device_library import get_device_preset
+
+    gx, gy, gz = _parse_grid(args.max_grid)
+    max_cores = args.max_cores if args.max_cores is not None else gx * gy * gz
+    preset = get_device_preset(args.device)
+    lut_budget = args.lut_budget if args.lut_budget is not None else preset.logic_cells
+
+    budget = FitBudget(
+        max_grid_x=gx,
+        max_grid_y=gy,
+        max_grid_z=gz,
+        max_cores=max_cores,
+        lut_budget=lut_budget,
+        max_utilization=args.max_utilization,
+    )
+
+    tmp_dir: tempfile.TemporaryDirectory | None = None
+    if args.program_file is not None:
+        # Compile the .cw into a base config sized to the max grid so lane
+        # parallelism is not capped below the largest candidate we consider.
+        base_payload = json.loads(args.base_config.read_text())
+        base_payload.setdefault("device", {})["preset"] = args.device
+        base_payload["device"].setdefault("grid", {})
+        base_payload["device"]["grid"] = {"x": gx, "y": gy, "z": gz}
+        tmp_dir = tempfile.TemporaryDirectory(prefix="wau_fit_")
+        tmp_path = Path(tmp_dir.name)
+        staged_base = tmp_path / "fit_base.json"
+        staged_base.write_text(json.dumps(base_payload, indent=2) + "\n")
+        merged = tmp_path / "fit_workload.json"
+        merge_cw_into_config(
+            base_config_path=staged_base,
+            out_config_path=merged,
+            program=args.program_file.read_text(),
+            flow_id=args.flow_id,
+            name=f"fit_flow_{args.flow_id}",
+            entry_x=0,
+            entry_y=0,
+            replace_existing=True,
+            lane_parallelism=args.lane_parallelism,
+            program_id=args.flow_id,
+        )
+        config_path = merged
+    else:
+        config_path = args.config
+
+    memory_splits = ("balanced",) if args.quick else None
+    op_distributions = ("uniform",) if args.quick else None
+
+    kwargs: dict = {"budget": budget, "device_preset": args.device}
+    if memory_splits is not None:
+        kwargs["memory_splits"] = memory_splits
+    if op_distributions is not None:
+        kwargs["op_distributions"] = op_distributions
+    kwargs["tolerance"] = args.tolerance
+
+    try:
+        report = run_fit_search(config_path, **kwargs)
+
+        summary = format_fit_report_text(report, top=args.top)
+        print(summary)
+
+        if args.out_report is not None:
+            args.out_report.parent.mkdir(parents=True, exist_ok=True)
+            args.out_report.write_text(json.dumps(report.to_json(), indent=2) + "\n")
+            print(f"Wrote fit-config report: {args.out_report}")
+        if args.out_summary is not None:
+            args.out_summary.parent.mkdir(parents=True, exist_ok=True)
+            args.out_summary.write_text(summary + "\n")
+            print(f"Wrote fit-config summary: {args.out_summary}")
+
+        chosen_id = report.efficient_id if args.emit == "efficient" else report.best_id
+        if args.out_config is not None:
+            if chosen_id is None:
+                print(
+                    "No candidate fits the budget; nothing written to --out-config.",
+                    file=sys.stderr,
+                )
+                return 1
+            payload = emit_fit_config(config_path, chosen_id, device_preset=args.device)
+            args.out_config.parent.mkdir(parents=True, exist_ok=True)
+            args.out_config.write_text(json.dumps(payload, indent=2) + "\n")
+            grid = payload.get("device", {}).get("grid", {})
+            print(f"Wrote recommended ({args.emit}) config: {args.out_config}")
+            print(
+                "Build this grid on the DE0-Nano (uses the board's lean base) with:\n"
+                f"  demo/de0-nano/basic-example/scripts/build_cw_stress.ps1 "
+                f"-GridX {grid.get('x')} -GridY {grid.get('y')}\n"
+                "  (or pass -BaseConfig "
+                f"{args.out_config} to build the exact simulated architecture)"
+            )
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
+
+    return 0 if report.best_id is not None else 1
+
+
 def _run_list_devices() -> int:
     for name in sorted(DEVICE_PRESETS):
         preset = DEVICE_PRESETS[name]
@@ -674,6 +881,8 @@ def main(argv: list[str] | None = None) -> int:
                 compile_template=args.compile_template,
                 as_json=args.json,
             )
+        if args.command == "fit-config":
+            return _run_fit_config(args)
         if args.command == "arch-search":
             return _run_arch_search(
                 config_path=args.config,

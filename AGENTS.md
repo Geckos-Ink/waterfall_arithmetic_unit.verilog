@@ -16,12 +16,12 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 5. If touching pseudo-C lowering, validate the pseudo-C compiler path:
    - `PYTHONPATH=src/python python3 -m waugen compile-pseudoc --program 'acc = a; acc = acc + b; acc *= 3;' --flow-id <id> --base-config <in> --out-config <out>`
 6. If touching `.cw` kernel lowering, validate the CW compiler path:
-   - syntax/template preflight: `PYTHONPATH=src/python python3 -m waugen cw-lint --program-file docs/example-program.cw --compile-template`
-   - `PYTHONPATH=src/python python3 -m waugen compile-cw --program-file docs/example-program.cw --flow-id <id> --base-config <in> --out-config <out> --replace-existing`
+   - syntax/template preflight: `PYTHONPATH=src/python python3 -m waugen cw-lint --program-file CWs/example-program.cw --compile-template`
+   - `PYTHONPATH=src/python python3 -m waugen compile-cw --program-file CWs/example-program.cw --flow-id <id> --base-config <in> --out-config <out> --replace-existing`
 6b. If touching the `.cw` language front-end (`cw_lang.py`), validate the host-side parser/interpreter path:
-   - `PYTHONPATH=src/python python3 -m waugen cw-lint --program-file docs/samples/types/fixed_point.cw`
-   - `PYTHONPATH=src/python python3 -m waugen cw-eval --program-file docs/samples/types/fixed_point.cw`
-   - conversion hook: `PYTHONPATH=src/python python3 -m waugen cw-eval --program-file docs/samples/types/fixed_point.cw --convert 'new q8_8(384)' float32`
+   - `PYTHONPATH=src/python python3 -m waugen cw-lint --program-file CWs/samples/types/fixed_point.cw`
+   - `PYTHONPATH=src/python python3 -m waugen cw-eval --program-file CWs/samples/types/fixed_point.cw`
+   - conversion hook: `PYTHONPATH=src/python python3 -m waugen cw-eval --program-file CWs/samples/types/fixed_point.cw --convert 'new q8_8(384)' float32`
 7. Regenerate artifacts when behavior changes:
    - `PYTHONPATH=src/python python3 -m waugen generate --config <config.json> --out src/verilog/generated --summary`
 8. Run RTL tests when RTL, scheduler, or flow semantics change:
@@ -37,11 +37,25 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
     - `PYTHONPATH=src/python python3 scripts/run_randomized_stress.py --start-seed 2000 --count 25 --report .build/stress/randomized.json`
 11. For synthesis-time architecture exploration of a workload config, run the ranked architecture search:
     - `PYTHONPATH=src/python python3 -m waugen arch-search --config <config.json> --out-report .build/arch_search/report.json`
-12. For the DE0-NANO live-board `docs/example-program.cw` stress path, use the board wrapper workflow:
+12. For the DE0-NANO live-board CW stress path, use the board wrapper workflow
+    (defaults to the ad-hoc `CWs/stress/mesh_stress.cw`; pass
+    `-ProgramFile CWs/example-program.cw` for the original reference kernel):
     - `demo/de0-nano/basic-example/scripts/build_cw_stress.ps1 -GridX 2 -GridY 2 -QuartusRoot <quartus_root>`
     - `demo/de0-nano/basic-example/scripts/program.ps1 -QuartusRoot <quartus_root>`
     - `demo/de0-nano/basic-example/scripts/server.ps1 -QuartusRoot <quartus_root>`
     - `demo/de0-nano/basic-example/scripts/run_cw_stress.ps1 -Config demo/de0-nano/basic-example/build/cw_stress_2x2_merged.json -RandomIters 1024 -RandomRange 1023`
+    - stream real data instead of random operands: add `--mnist-images datasets/mnist/t10k-images-idx3-ubyte.gz` to `run_cw_stress_benchmark.py`
+13. To pick the best-fitting WAU architecture for a program (the board fits at
+    most ~2x4 cores), use the simulator-driven fit finder. It sweeps grid shapes
+    up to a device budget, predicts behaviour via the real scheduler, and
+    recommends a best-performance and a fewest-cores (knee) config:
+    - `PYTHONPATH=src/python python3 -m waugen fit-config --program-file CWs/stress/mesh_stress.cw --max-grid 2x4 --out-report .build/fit/report.json --out-config .build/fit/best.json`
+    - convenience wrapper: `python3 scripts/find_best_wau_config.py CWs/stress/mesh_stress.cw`
+14. For the ad-hoc stress kernel's simulator benchmark (own tracked log, does not
+    touch the CI-gated example benchmark):
+    - `./scripts/run_cw_stress_benchmark.sh` (writes `benchmarks/mesh_stress_benchmark.txt`)
+15. To fetch a real dataset for data-exchange testing (git-ignored, skip-if-present):
+    - `python3 scripts/fetch_dataset.py` (MNIST into `datasets/mnist/`)
 
 ## Ownership Boundaries
 - `config.py`: schema and validation only (includes `compiler.station_cache`, `compiler.core_capabilities`, `scheduler.locality_bias`, and `coordinator.max_in_flight` schema).
@@ -51,9 +65,12 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - `benchmark_replay.py`: deterministic parsing and selection of saved CW
   autotune candidates for best/stage-winner/worst replay modes.
 - `cw_reference.py`: software reference model for CW flows (one pass over `flow.stages` linear order, mirroring the coordinator state machine); consumed by the benchmark scoreboard and tests.
-- `demo/de0-nano/basic-example/host/programs/run_cw_stress_benchmark.py`: live DE0-NANO scoreboard/observability harness for `docs/example-program.cw`-class flows compiled into the board wrapper.
+- `demo/de0-nano/basic-example/host/programs/run_cw_stress_benchmark.py`: live DE0-NANO scoreboard/observability harness for `CWs/example-program.cw`-class flows compiled into the board wrapper.
 - `cw_lang.py`: the real `.cw` front-end (lexer → AST → recursive-descent parser → host-side tree-walking interpreter). Independent of `cw_compiler.py`'s regex/template RTL-lowering path. Owns **compile-time class magic methods** (operator overloading + type-conversion hooks `__to_int__`/`__to_float__`/`__convert__`); `Interpreter.convert()` is the toolchain hook for dynamic type-format conversion. Driven by the `cw-eval` CLI subcommand and the syntax side of `cw-lint`. Must not be wired into RTL lowering or the benchmark gate.
-- `arch_search.py`: synthesis-time architecture-candidate enumeration and ranking (`arch-search` CLI). Reuses the real `compile_project`/`build_schedule` pipeline for performance metrics; owns 2D/3D grid-shape enumeration, the versioned estimate models (`wau_resource_model_v1`, `dram_model_v1`, `arch_search_rank_v1`), and reads device capacity metadata (`logic_cells`/`bram_kbits`/`dsp_blocks`) from `device_library.py`. Must not change scheduling/emission behavior — it only builds and evaluates candidate config payloads in memory.
+- `arch_search.py`: synthesis-time architecture-candidate enumeration and ranking (`arch-search` CLI) plus the simulator-driven fit finder (`fit-config` CLI via `run_fit_search`/`emit_fit_config`/`FitBudget`, schema `wau_fit_search_v1`). Reuses the real `compile_project`/`build_schedule` pipeline for performance metrics; owns 2D/3D grid-shape enumeration (fixed-core-count reshapes for `arch-search`; variable-core-count sweeps bounded by a device budget for `fit-config`), the versioned estimate models (`wau_resource_model_v1`, `dram_model_v1`, `arch_search_rank_v1`), and reads device capacity metadata (`logic_cells`/`bram_kbits`/`dsp_blocks`) from `device_library.py`. Must not change scheduling/emission behavior — it only builds and evaluates candidate config payloads in memory. `run_arch_search` must stay byte-identical (guarded by `tests/python/test_arch_search.py`); `fit-config` is additive.
+- `scripts/find_best_wau_config.py`: thin convenience wrapper over `waugen fit-config` (a `.cw` kernel or `.json` workload -> best/efficient config recommendation). Keeps all logic in `arch_search.py`.
+- `scripts/fetch_dataset.py` (+ `.ps1`): on-demand, git-ignored dataset download (MNIST via the CVDF mirror) for data-exchange testing; also exposes `load_mnist_images`/`load_mnist_labels` readers. `datasets/` is git-ignored and never committed.
+- `src/python/configs/wau_cw_fit_base.json`: minimal, demo-independent DE0-NANO base used to compile a raw `.cw` for `fit-config` and as the base for `scripts/run_cw_stress_benchmark.sh`. Carries the full `add/sub/mul/div/max` op set so the fixed ALU testbench elaborates; the board keeps its own lean `add/mul/max` base (`wau_de0_nano_cw_stress_base.json`).
 - `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by 2D/3D Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.
 - `verilog_emit.py`: WAU-specific RTL text rendering only; no scheduling decisions should live here. Also owns 2D/layered-3D mesh emission (north/south/east/west plus up/down links), the per-router/per-station observability counter wiring, the `wau_host_mmio` register file emission, and the multi-issue `wau_coordinator` emission (N-slot in-flight table sized by `coordinator.max_in_flight` / `WAU_COORD_MAX_IN_FLIGHT`). Generic generated-project assembly is delegated to `thirds/veribuilder`.
 - `thirds/veribuilder/`: externalizable Python library for dynamic Verilog project construction, feature-gated file manifests, lightweight template rendering, and deterministic file emission. Keep it independent from WAU config/compiler/scheduler types so it can be published as a standalone repository.
@@ -77,6 +94,9 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - The CW software reference (`waugen.cw_reference.evaluate_flow`) must produce the same `host_out_value` as the generated RTL for the deterministic benchmark cases; the generated CW exec testbench `$fatal`s on mismatch.
 - License headers in `src/**/*.py`, `src/**/*.v`, and `src/**/*.vh` are managed by `scripts/sync_license_headers.py`; run it after each implementation and before review.
 - `run_cw_example_benchmark.sh` must produce a valid `benchmarks/example_pogram_benchmark.txt` log with passing RTL tests, CW execution metrics, and `scoreboard_pass_ratio == 1.0`.
+- `run_cw_stress_benchmark.sh` is a thin wrapper over the same engine for `CWs/stress/mesh_stress.cw`; it must write only `benchmarks/mesh_stress_*` artifacts and must never overwrite the CI-gated `example_pogram_*` files. It must also keep `scoreboard_pass_ratio == 1.0`.
+- All real `.cw` programs live under `CWs/` (canonical location). Historical board reports (`benchmarks/de0_nano_*`) and dated ROADMAP entries keep their original `docs/...` paths as run-time records and must not be rewritten.
+- `waugen.arch_search.run_arch_search` must stay byte-identical (guarded by `tests/python/test_arch_search.py`); `fit-config`/`run_fit_search` is additive and must not alter `arch-search` behavior. `fit-config` must only build/evaluate candidate payloads in memory (no scheduling/emission changes).
 - Whenever new possible future implementations, optimizations, or architecture changes are identified, update `ROADMAP.md` in the same work cycle.
 - Whenever workflow steps, ownership boundaries, invariants, or scope change, update both `AGENTS.md` and `README.md` in the same work cycle.
 
@@ -99,7 +119,7 @@ the value scoreboard):
 - 3-run stability: `median=68.00`, `p95=68.00`, `3/3` passing
 - 8/8 scoreboard cases match the software reference (`scoreboard_pass_ratio=1.0`)
 
-Current DE0-NANO real-board ceiling for `docs/example-program.cw` (measured
+Current DE0-NANO real-board ceiling for `CWs/example-program.cw` (measured
 2026-07-06 on EP4CE22):
 - validated live board image: `2x2`, `1032/1032` pass against `waugen.cw_reference`
 - larger fitting image: `2x4`, `22,166 / 22,320` logic elements (99%) but `0/8` golden-case pass on hardware

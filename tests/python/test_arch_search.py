@@ -20,9 +20,13 @@ import unittest
 
 from waugen.arch_search import (
     CandidateKnobs,
+    FitBudget,
+    _fits_budget,
     _rank_key,
     build_candidate_payload,
+    emit_fit_config,
     run_arch_search,
+    run_fit_search,
 )
 from waugen.cli import main as waugen_main
 
@@ -195,6 +199,135 @@ class CandidatePayloadTests(unittest.TestCase):
         self.assertEqual(payload["device"]["local_ram_depth"], 256)
         self.assertEqual(payload["device"]["global_ram_depth"], 1024)
         self.assertEqual(payload["compiler"]["station_cache"]["entries"], 16)
+
+
+def _de0_budget(**overrides) -> FitBudget:
+    defaults = dict(
+        max_grid_x=2,
+        max_grid_y=4,
+        max_grid_z=1,
+        max_cores=8,
+        lut_budget=22320,
+        max_utilization=0.9,
+    )
+    defaults.update(overrides)
+    return FitBudget(**defaults)
+
+
+class FitSearchTests(unittest.TestCase):
+    """The fit finder must sweep grid *sizes* (not a fixed core count) up to a
+    device budget, predict behaviour via the real scheduler, and recommend both
+    a best-performance and a fewest-cores (knee) config that fit."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.report = run_fit_search(CW_CONFIG, budget=_de0_budget())
+
+    def test_report_is_deterministic(self) -> None:
+        again = run_fit_search(CW_CONFIG, budget=_de0_budget())
+        self.assertEqual(self.report.to_json(), again.to_json())
+
+    def test_sweeps_variable_core_counts_within_box(self) -> None:
+        core_counts = {
+            c.knobs.grid_x * c.knobs.grid_y * c.knobs.grid_z for c in self.report.candidates
+        }
+        # A fixed-core-count reshape (arch-search) would give a single value;
+        # the fit sweep must span from 1 core up to the budget.
+        self.assertGreater(len(core_counts), 1)
+        self.assertIn(1, core_counts)
+        self.assertLessEqual(max(core_counts), 8)
+        for cand in self.report.candidates:
+            self.assertLessEqual(cand.knobs.grid_x, 2)
+            self.assertLessEqual(cand.knobs.grid_y, 4)
+            self.assertLessEqual(cand.knobs.grid_z, 1)
+
+    def test_recommendations_present_and_coherent(self) -> None:
+        self.assertIsNotNone(self.report.best_id)
+        self.assertIsNotNone(self.report.efficient_id)
+        best = _candidate_by_id(self.report, self.report.best_id)
+        eff = _candidate_by_id(self.report, self.report.efficient_id)
+        best_cores = best.knobs.grid_x * best.knobs.grid_y * best.knobs.grid_z
+        eff_cores = eff.knobs.grid_x * eff.knobs.grid_y * eff.knobs.grid_z
+        # The efficient/knee pick uses no more cores than the best performer...
+        self.assertLessEqual(eff_cores, best_cores)
+        # ...and stays within tolerance of the best makespan.
+        self.assertLessEqual(
+            eff.metrics["makespan_cycles"],
+            best.metrics["makespan_cycles"] * (1.0 + self.report.tolerance),
+        )
+        self.assertTrue(_fits_budget(best, self.report.budget))
+        self.assertTrue(_fits_budget(eff, self.report.budget))
+
+    def test_tight_lut_budget_prunes_larger_grids(self) -> None:
+        tight = run_fit_search(CW_CONFIG, budget=_de0_budget(lut_budget=2600))
+        eligible = [c for c in tight.candidates if _fits_budget(c, tight.budget)]
+        self.assertTrue(all(c.resources["luts"] <= 2600 for c in eligible))
+        # The best pick under a tight budget must itself fit the budget.
+        if tight.best_id is not None:
+            self.assertTrue(
+                _fits_budget(_candidate_by_id(tight, tight.best_id), tight.budget)
+            )
+
+    def test_impossible_budget_yields_no_recommendation(self) -> None:
+        impossible = run_fit_search(CW_CONFIG, budget=_de0_budget(lut_budget=10))
+        self.assertIsNone(impossible.best_id)
+        self.assertIsNone(impossible.efficient_id)
+
+    def test_emit_fit_config_rebuilds_chosen_grid(self) -> None:
+        eff = _candidate_by_id(self.report, self.report.efficient_id)
+        payload = emit_fit_config(CW_CONFIG, self.report.efficient_id)
+        self.assertEqual(payload["device"]["grid"]["x"], eff.knobs.grid_x)
+        self.assertEqual(payload["device"]["grid"]["y"], eff.knobs.grid_y)
+
+
+class FitConfigCliTests(unittest.TestCase):
+    def test_cli_fits_cw_program_and_emits_buildable_config(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            report_path = Path(td) / "report.json"
+            out_config = Path(td) / "best.json"
+            rc = waugen_main(
+                [
+                    "fit-config",
+                    "--program-file",
+                    "CWs/stress/mesh_stress.cw",
+                    "--device",
+                    "intel_de0_nano",
+                    "--max-grid",
+                    "2x4",
+                    "--out-report",
+                    str(report_path),
+                    "--out-config",
+                    str(out_config),
+                    "--emit",
+                    "efficient",
+                ]
+            )
+            self.assertEqual(rc, 0)
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report["schema"], "wau_fit_search_v1")
+            self.assertIsNotNone(report["efficient_candidate"])
+            # The emitted config must round-trip through the real validate path.
+            emitted = json.loads(out_config.read_text())
+            self.assertIn("device", emitted)
+            self.assertGreaterEqual(len(emitted["flows"]), 1)
+            vrc = waugen_main(["validate", "--config", str(out_config)])
+            self.assertEqual(vrc, 0)
+
+    def test_cli_config_input_quick_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rc = waugen_main(
+                [
+                    "fit-config",
+                    "--config",
+                    str(CW_CONFIG),
+                    "--max-grid",
+                    "2x4",
+                    "--quick",
+                    "--out-report",
+                    str(Path(td) / "r.json"),
+                ]
+            )
+            self.assertEqual(rc, 0)
 
 
 class ArchSearchCliTests(unittest.TestCase):

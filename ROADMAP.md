@@ -13,6 +13,52 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-07-07)
+Implemented this cycle (DE0-NANO real-board testing support):
+- **Grid-scaling fit search** (`waugen fit-config` + `waugen.arch_search.run_fit_search`):
+  addresses the 2026-07-03 follow-up "widen the disposition axis beyond
+  same-core-count reshapes (scaled grids bounded by device capacity)". Unlike
+  `arch-search` (which reshapes a *fixed* core count), the fit finder sweeps
+  every grid shape from `1x1` up to a device budget (`--max-grid`, default
+  `2x4` — the empirical DE0-NANO CW ceiling), compiles+schedules each through
+  the real `compile_project -> build_schedule` simulator, filters to the ones
+  that fit (`fits_device`, `--lut-budget`, `--max-utilization`), and recommends
+  both a **best-performance** config and an **efficient/knee** config (fewest
+  cores within `--tolerance` of the best makespan) so users synthesize only as
+  many cores as the workload needs. On `mesh_stress.cw` it recommends a `2x2`
+  efficient grid, matching the empirically validated board ceiling. Emits a
+  ready-to-build config and the exact `build_cw_stress.ps1` command. Additive:
+  `run_arch_search` is unchanged and byte-identical. Convenience entry point:
+  `scripts/find_best_wau_config.py`.
+- **Ad-hoc hardware-stress kernel** `CWs/stress/mesh_stress.cw`: a lean but
+  genuine Conv2D+bias+residual+ReLU kernel purpose-built to saturate the mesh
+  on small grids (8 lanes, recurrence hint pinned to its 32 cap, all
+  data-movement paths active, throughput-optimized pragmas). Lowers to a
+  47-node flow (vs the compiler-oriented `example-program.cw`'s 17 at lane 2)
+  and executes at `exec_latency_cycles_avg=179.25` with
+  `scoreboard_pass_ratio=1.0`. It is now the default kernel for the board
+  CW-stress workflow (`build_cw_stress.ps1`) and has its own tracked simulator
+  benchmark via `scripts/run_cw_stress_benchmark.sh`
+  (`benchmarks/mesh_stress_benchmark.txt`). `example-program.cw` remains the
+  compiler-oriented reference and keeps the CI-gated
+  `benchmarks/example_pogram_benchmark.txt` (still `68.00`, scoreboard 1.0).
+- **Real dataset for data-exchange testing**: `scripts/fetch_dataset.py`
+  (+ `.ps1`) downloads MNIST on demand from the CVDF mirror into a git-ignored
+  `datasets/` directory (skip-if-present, magic-number/count verified). The
+  DE0-NANO CW stress runner (`run_cw_stress_benchmark.py`) gained an optional
+  `--mnist-images` operand source so live board runs can stream real,
+  spatially-correlated pixel operands instead of only random data; correctness
+  is still checked against `waugen.cw_reference`.
+- **`.cw` consolidation**: every real `.cw` program moved under a top-level
+  `CWs/` folder (`CWs/example-program.cw`, `CWs/basic_arithmetic.cw`,
+  `CWs/samples/{nn,types}/*.cw`, `CWs/stress/mesh_stress.cw`); tests, docs,
+  scripts, and the demo updated. Historical board reports and dated ROADMAP
+  entries keep their original paths as run-time records.
+- Follow-ups: co-sweep `lane_parallelism`/`coordinator.max_in_flight` inside
+  `fit-config` (currently fixed by the compiled flow); calibrate the fit
+  resource model against real DE0-NANO synthesis so the LUT budget maps to
+  measured LEs; feed board-measured stress-kernel scores back into the ranking.
+
 ## Progress Update (2026-07-06)
 Implemented this cycle:
 - First 3D waterfall-generator slice: `device.grid.z` is now a validated

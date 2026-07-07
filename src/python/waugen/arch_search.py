@@ -566,6 +566,343 @@ def _evaluate_candidate(
     )
 
 
+FIT_SCHEMA_VERSION = "wau_fit_search_v1"
+
+_DEFAULT_FIT_MAX_UTILIZATION = 0.9
+_DEFAULT_FIT_TOLERANCE = 0.10
+
+
+@dataclass(frozen=True)
+class FitBudget:
+    """Physical envelope a candidate architecture must fit inside."""
+
+    max_grid_x: int
+    max_grid_y: int
+    max_grid_z: int
+    max_cores: int
+    lut_budget: int
+    max_utilization: float
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "max_grid_x": self.max_grid_x,
+            "max_grid_y": self.max_grid_y,
+            "max_grid_z": self.max_grid_z,
+            "max_cores": self.max_cores,
+            "lut_budget": self.lut_budget,
+            "max_utilization": self.max_utilization,
+        }
+
+
+@dataclass
+class FitReport:
+    base_config_path: str
+    project_name: str
+    device_preset: str
+    device_part: str
+    budget: FitBudget
+    workload: dict[str, Any]
+    candidates: list[CandidateResult]
+    best_id: str | None
+    efficient_id: str | None
+    tolerance: float
+
+    def _eligible(self) -> list[CandidateResult]:
+        return [c for c in self.candidates if _fits_budget(c, self.budget)]
+
+    def to_json(self) -> dict[str, Any]:
+        eligible = self._eligible()
+        return {
+            "schema": FIT_SCHEMA_VERSION,
+            "resource_model": RESOURCE_MODEL_VERSION,
+            "dram_model": DRAM_MODEL_VERSION,
+            "ranking": RANKING_VERSION,
+            "base_config": self.base_config_path,
+            "project": self.project_name,
+            "device_preset": self.device_preset,
+            "device_part": self.device_part,
+            "budget": self.budget.to_json(),
+            "tolerance": self.tolerance,
+            "workload": self.workload,
+            "candidate_count": len(self.candidates),
+            "eligible_count": len(eligible),
+            "best_candidate": self.best_id,
+            "efficient_candidate": self.efficient_id,
+            "placement": "re-derived per candidate (base placement pins stripped)",
+            "candidates": [
+                {**cand.to_json(), "fits_budget": _fits_budget(cand, self.budget)}
+                for cand in self.candidates
+            ],
+        }
+
+
+def _fit_grid_shapes(budget: FitBudget) -> list[tuple[int, int, int]]:
+    """Every (x, y, z) sub-grid inside the budget box, ordered by growing size.
+
+    Unlike ``_grid_shapes`` (which reshapes a *fixed* core count), this sweeps
+    core counts from 1 up to the budget so the finder can pick just as many
+    cores as the workload needs.
+    """
+    shapes: list[tuple[int, int, int]] = []
+    for z in range(1, budget.max_grid_z + 1):
+        for y in range(1, budget.max_grid_y + 1):
+            for x in range(1, budget.max_grid_x + 1):
+                if x * y * z <= budget.max_cores:
+                    shapes.append((x, y, z))
+    shapes.sort(key=lambda s: (s[0] * s[1] * s[2], max(s) - min(s), s[2], s[0], s[1]))
+    return shapes
+
+
+def _fits_budget(cand: CandidateResult, budget: FitBudget) -> bool:
+    if not cand.feasible or not cand.resources:
+        return False
+    core_count = cand.knobs.grid_x * cand.knobs.grid_y * cand.knobs.grid_z
+    if core_count > budget.max_cores:
+        return False
+    if cand.resources.get("luts", 10**12) > budget.lut_budget:
+        return False
+    if cand.resources.get("utilization_max", 10**6) > budget.max_utilization:
+        return False
+    return True
+
+
+def _core_count(cand: CandidateResult) -> int:
+    return cand.knobs.grid_x * cand.knobs.grid_y * cand.knobs.grid_z
+
+
+def run_fit_search(
+    base_config_path: Path,
+    *,
+    budget: FitBudget,
+    device_preset: str | None = None,
+    memory_splits: tuple[str, ...] = MEMORY_SPLITS,
+    op_distributions: tuple[str, ...] = OP_DISTRIBUTIONS,
+    tolerance: float = _DEFAULT_FIT_TOLERANCE,
+    max_candidates: int | None = None,
+) -> FitReport:
+    """Sweep grid shapes up to ``budget`` and rank the ones that fit.
+
+    Every candidate is compiled and scheduled through the real
+    ``compile_project`` -> ``build_schedule`` pipeline (the simulator), so the
+    makespan/hop numbers used for ranking are the generator's own predicted
+    behaviour for that program on that architecture.
+    """
+    try:
+        base_payload = json.loads(base_config_path.read_text())
+    except FileNotFoundError as exc:
+        raise ArchSearchError(f"Config file not found: {base_config_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ArchSearchError(f"Invalid JSON in {base_config_path}: {exc}") from exc
+    if not isinstance(base_payload, dict):
+        raise ArchSearchError("Root JSON object expected")
+
+    if device_preset is not None:
+        base_payload.setdefault("device", {})["preset"] = device_preset
+
+    try:
+        base_config = load_config_obj(copy.deepcopy(base_payload))
+    except ConfigError as exc:
+        raise ArchSearchError(f"Base config invalid: {exc}") from exc
+
+    preset = get_device_preset(
+        str(base_payload.get("device", {}).get("preset", "intel_de0_nano"))
+    )
+    heavy_ops, light_ops = _heavy_op_names(base_payload)
+
+    base_local = base_config.device.local_ram_depth
+    base_global = base_config.device.global_ram_depth
+    base_cache_entries = base_config.compiler.station_cache.entries
+
+    effective_op_distributions = (
+        op_distributions if heavy_ops and light_ops else ("uniform",)
+    )
+
+    candidates: list[CandidateResult] = []
+    for grid_x, grid_y, grid_z in _fit_grid_shapes(budget):
+        for op_distribution in effective_op_distributions:
+            for memory_split in memory_splits:
+                if max_candidates is not None and len(candidates) >= max_candidates:
+                    break
+                local_depth, global_depth, cache_entries = _memory_split_knobs(
+                    memory_split,
+                    base_local=base_local,
+                    base_global=base_global,
+                    base_cache_entries=base_cache_entries,
+                )
+                knobs = CandidateKnobs(
+                    grid_x=grid_x,
+                    grid_y=grid_y,
+                    grid_z=grid_z,
+                    op_distribution=op_distribution,
+                    memory_split=memory_split,
+                    local_ram_depth=local_depth,
+                    global_ram_depth=global_depth,
+                    station_cache_entries=cache_entries,
+                )
+                candidates.append(
+                    _evaluate_candidate(
+                        base_payload, knobs, preset, heavy_ops=heavy_ops, light_ops=light_ops
+                    )
+                )
+            if max_candidates is not None and len(candidates) >= max_candidates:
+                break
+        if max_candidates is not None and len(candidates) >= max_candidates:
+            break
+
+    candidates.sort(key=_rank_key)
+    for rank, cand in enumerate(candidates, start=1):
+        cand.rank = rank
+
+    eligible = [c for c in candidates if _fits_budget(c, budget)]
+    best = eligible[0] if eligible else None
+
+    efficient: CandidateResult | None = None
+    if best is not None:
+        best_makespan = best.metrics.get("makespan_cycles", 0)
+        threshold = best_makespan * (1.0 + tolerance)
+        near_best = [
+            c for c in eligible if c.metrics.get("makespan_cycles", 10**12) <= threshold
+        ]
+        efficient = min(
+            near_best,
+            key=lambda c: (
+                _core_count(c),
+                c.resources.get("luts", 10**12),
+                c.knobs.candidate_id,
+            ),
+        )
+
+    workload = {
+        "flows": len(base_config.flows),
+        "nodes": sum(
+            len(flow.nodes) if flow.nodes else len(flow.stages)
+            for flow in base_config.flows
+        ),
+        "programs": len(base_config.programs),
+        "operations": len(base_config.operations),
+        "heavy_operations": heavy_ops,
+    }
+
+    return FitReport(
+        base_config_path=str(base_config_path),
+        project_name=base_config.project_name,
+        device_preset=preset.name,
+        device_part=preset.part,
+        budget=budget,
+        workload=workload,
+        candidates=candidates,
+        best_id=best.knobs.candidate_id if best is not None else None,
+        efficient_id=efficient.knobs.candidate_id if efficient is not None else None,
+        tolerance=tolerance,
+    )
+
+
+def emit_fit_config(
+    base_config_path: Path,
+    candidate_id: str,
+    *,
+    device_preset: str | None = None,
+) -> dict[str, Any]:
+    """Rebuild the concrete, buildable config payload for one fit candidate."""
+    base_payload = json.loads(base_config_path.read_text())
+    if device_preset is not None:
+        base_payload.setdefault("device", {})["preset"] = device_preset
+    heavy_ops, light_ops = _heavy_op_names(base_payload)
+
+    knobs = _knobs_from_candidate_id(base_payload, candidate_id)
+    return build_candidate_payload(
+        base_payload, knobs, heavy_ops=heavy_ops, light_ops=light_ops
+    )
+
+
+def _knobs_from_candidate_id(base_payload: dict[str, Any], candidate_id: str) -> CandidateKnobs:
+    """Parse a ``g{X}x{Y}x{Z}_{op}_{mem}`` candidate id back into knobs."""
+    try:
+        grid_part, rest = candidate_id.split("_", 1)
+        gx, gy, gz = (int(v) for v in grid_part.lstrip("g").split("x"))
+        for op_dist in OP_DISTRIBUTIONS:
+            if rest.startswith(op_dist + "_"):
+                op_distribution = op_dist
+                memory_split = rest[len(op_dist) + 1:]
+                break
+        else:
+            raise ValueError(f"unknown op distribution in '{candidate_id}'")
+        if memory_split not in MEMORY_SPLITS:
+            raise ValueError(f"unknown memory split in '{candidate_id}'")
+    except (ValueError, IndexError) as exc:
+        raise ArchSearchError(f"Invalid fit candidate id '{candidate_id}': {exc}") from exc
+
+    base_config = load_config_obj(copy.deepcopy(base_payload))
+    local_depth, global_depth, cache_entries = _memory_split_knobs(
+        memory_split,
+        base_local=base_config.device.local_ram_depth,
+        base_global=base_config.device.global_ram_depth,
+        base_cache_entries=base_config.compiler.station_cache.entries,
+    )
+    return CandidateKnobs(
+        grid_x=gx,
+        grid_y=gy,
+        grid_z=gz,
+        op_distribution=op_distribution,
+        memory_split=memory_split,
+        local_ram_depth=local_depth,
+        global_ram_depth=global_depth,
+        station_cache_entries=cache_entries,
+    )
+
+
+def format_fit_report_text(report: FitReport, *, top: int = 12) -> str:
+    budget = report.budget
+    lines = [
+        f"fit-config report ({FIT_SCHEMA_VERSION}, ranking {RANKING_VERSION})",
+        f"project: {report.project_name}  device: {report.device_preset} ({report.device_part})",
+        f"budget: <= {budget.max_grid_x}x{budget.max_grid_y}x{budget.max_grid_z} grid, "
+        f"<= {budget.max_cores} cores, <= {budget.lut_budget} LUTs, "
+        f"<= {budget.max_utilization:.0%} utilization",
+        f"candidates: {len(report.candidates)}  "
+        f"(fit budget: {sum(1 for c in report.candidates if _fits_budget(c, budget))})",
+        "",
+        f"{'rank':>4}  {'candidate':<30} {'cores':>5} {'makespan':>8} {'hops':>5} "
+        f"{'util':>6} {'luts':>7}  fits",
+    ]
+    for cand in report.candidates[:top]:
+        fits = _fits_budget(cand, budget)
+        tag = ""
+        if cand.knobs.candidate_id == report.best_id:
+            tag = "  <- best"
+        elif cand.knobs.candidate_id == report.efficient_id:
+            tag = "  <- efficient"
+        lines.append(
+            f"{cand.rank:>4}  {cand.knobs.candidate_id:<30} "
+            f"{_core_count(cand):>5} "
+            f"{cand.metrics.get('makespan_cycles', '-'):>8} "
+            f"{cand.metrics.get('estimated_transfer_hops_total', '-'):>5} "
+            f"{cand.resources.get('utilization_max', '-'):>6} "
+            f"{cand.resources.get('luts', '-'):>7}  "
+            f"{'yes' if fits else 'no'}{tag}"
+        )
+
+    lines.append("")
+    if report.best_id is None:
+        lines.append(
+            "No candidate fits the budget. Loosen --max-grid / --lut-budget / "
+            "--max-utilization, or reduce the workload."
+        )
+    else:
+        best = next(c for c in report.candidates if c.knobs.candidate_id == report.best_id)
+        eff = next(c for c in report.candidates if c.knobs.candidate_id == report.efficient_id)
+        lines.append(
+            f"best performance : {best.knobs.candidate_id} "
+            f"({_core_count(best)} cores, makespan {best.metrics.get('makespan_cycles')})"
+        )
+        lines.append(
+            f"efficient (knee) : {eff.knobs.candidate_id} "
+            f"({_core_count(eff)} cores, makespan {eff.metrics.get('makespan_cycles')}, "
+            f"within {report.tolerance:.0%} of best) -- fewest cores for near-best speed"
+        )
+    return "\n".join(lines)
+
+
 def format_report_text(report: ArchSearchReport, *, top: int = 10) -> str:
     lines = [
         f"arch-search report ({SCHEMA_VERSION}, ranking {RANKING_VERSION})",
