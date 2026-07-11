@@ -82,13 +82,20 @@ class CandidateKnobs:
     global_ram_depth: int
     station_cache_entries: int
     grid_z: int = 1
+    # Coordinator in-flight depth to force on the candidate. ``None`` leaves
+    # the base config's ``coordinator.max_in_flight`` untouched so `arch-search`
+    # (which never sweeps it) stays byte-identical; the fit finder co-sweeps it.
+    max_in_flight: int | None = None
 
     @property
     def candidate_id(self) -> str:
-        return (
+        base = (
             f"g{self.grid_x}x{self.grid_y}x{self.grid_z}_"
             f"{self.op_distribution}_{self.memory_split}"
         )
+        if self.max_in_flight is not None:
+            base += f"_mif{self.max_in_flight}"
+        return base
 
 
 @dataclass
@@ -102,21 +109,25 @@ class CandidateResult:
     rank: int = 0
 
     def to_json(self) -> dict[str, Any]:
+        knobs: dict[str, Any] = {
+            "grid_x": self.knobs.grid_x,
+            "grid_y": self.knobs.grid_y,
+            "grid_z": self.knobs.grid_z,
+            "op_distribution": self.knobs.op_distribution,
+            "memory_split": self.knobs.memory_split,
+            "local_ram_depth": self.knobs.local_ram_depth,
+            "global_ram_depth": self.knobs.global_ram_depth,
+            "station_cache_entries": self.knobs.station_cache_entries,
+        }
+        # Only surfaced when swept, so `arch-search` reports stay byte-identical.
+        if self.knobs.max_in_flight is not None:
+            knobs["max_in_flight"] = self.knobs.max_in_flight
         return {
             "candidate_id": self.knobs.candidate_id,
             "rank": self.rank,
             "feasible": self.feasible,
             "infeasible_reason": self.infeasible_reason,
-            "knobs": {
-                "grid_x": self.knobs.grid_x,
-                "grid_y": self.knobs.grid_y,
-                "grid_z": self.knobs.grid_z,
-                "op_distribution": self.knobs.op_distribution,
-                "memory_split": self.knobs.memory_split,
-                "local_ram_depth": self.knobs.local_ram_depth,
-                "global_ram_depth": self.knobs.global_ram_depth,
-                "station_cache_entries": self.knobs.station_cache_entries,
-            },
+            "knobs": knobs,
             "metrics": self.metrics,
             "resources": self.resources,
             "dram": self.dram,
@@ -260,6 +271,9 @@ def build_candidate_payload(
     )
     station_cache = compiler.setdefault("station_cache", {})
     station_cache["entries"] = knobs.station_cache_entries
+
+    if knobs.max_in_flight is not None:
+        payload.setdefault("coordinator", {})["max_in_flight"] = knobs.max_in_flight
 
     _strip_placements(payload, grid_x=knobs.grid_x, grid_y=knobs.grid_y, grid_z=knobs.grid_z)
     return payload
@@ -570,6 +584,26 @@ FIT_SCHEMA_VERSION = "wau_fit_search_v1"
 
 _DEFAULT_FIT_MAX_UTILIZATION = 0.9
 _DEFAULT_FIT_TOLERANCE = 0.10
+_COORD_MAX_IN_FLIGHT = 16  # schema ceiling for coordinator.max_in_flight
+
+
+def _fit_max_in_flight_values(base_mif: int, num_flows: int) -> tuple[int, ...]:
+    """Coordinator in-flight depths worth trying for a workload.
+
+    More in-flight slots only help makespan when independent flows can overlap,
+    but every slot costs LUTs (``wau_resource_model_v1`` charges per slot). So
+    the finder co-sweeps ``1`` (cheapest, cycle-identical for a single flow),
+    powers of two, the base config's value, and the concurrency ceiling
+    (bounded by the number of flows and the schema max), letting the ranker keep
+    the cheapest depth that does not cost makespan.
+    """
+    cap = min(_COORD_MAX_IN_FLIGHT, max(1, num_flows))
+    values = {1, cap, max(1, min(base_mif, cap))}
+    v = 2
+    while v < cap:
+        values.add(v)
+        v *= 2
+    return tuple(sorted(values))
 
 
 @dataclass(frozen=True)
@@ -606,6 +640,7 @@ class FitReport:
     best_id: str | None
     efficient_id: str | None
     tolerance: float
+    max_in_flight_swept: tuple[int, ...] = ()
 
     def _eligible(self) -> list[CandidateResult]:
         return [c for c in self.candidates if _fits_budget(c, self.budget)]
@@ -623,6 +658,7 @@ class FitReport:
             "device_part": self.device_part,
             "budget": self.budget.to_json(),
             "tolerance": self.tolerance,
+            "max_in_flight_swept": list(self.max_in_flight_swept),
             "workload": self.workload,
             "candidate_count": len(self.candidates),
             "eligible_count": len(eligible),
@@ -678,6 +714,7 @@ def run_fit_search(
     memory_splits: tuple[str, ...] = MEMORY_SPLITS,
     op_distributions: tuple[str, ...] = OP_DISTRIBUTIONS,
     tolerance: float = _DEFAULT_FIT_TOLERANCE,
+    max_in_flight_values: tuple[int, ...] | None = None,
     max_candidates: int | None = None,
 ) -> FitReport:
     """Sweep grid shapes up to ``budget`` and rank the ones that fit.
@@ -686,6 +723,12 @@ def run_fit_search(
     ``compile_project`` -> ``build_schedule`` pipeline (the simulator), so the
     makespan/hop numbers used for ranking are the generator's own predicted
     behaviour for that program on that architecture.
+
+    Alongside grid shape / op distribution / memory split, the finder co-sweeps
+    ``coordinator.max_in_flight``: passing ``max_in_flight_values`` forces the
+    depths to try, otherwise they are derived from the workload's flow count via
+    ``_fit_max_in_flight_values`` (single-flow workloads collapse to ``1``,
+    reclaiming the LUTs unused in-flight slots would cost).
     """
     try:
         base_payload = json.loads(base_config_path.read_text())
@@ -717,11 +760,23 @@ def run_fit_search(
         op_distributions if heavy_ops and light_ops else ("uniform",)
     )
 
+    if max_in_flight_values is None:
+        mif_values = _fit_max_in_flight_values(
+            base_config.coordinator.max_in_flight, len(base_config.flows)
+        )
+    else:
+        mif_values = tuple(sorted(set(max_in_flight_values)))
+
     candidates: list[CandidateResult] = []
+    capped = False
     for grid_x, grid_y, grid_z in _fit_grid_shapes(budget):
+        if capped:
+            break
         for op_distribution in effective_op_distributions:
+            if capped:
+                break
             for memory_split in memory_splits:
-                if max_candidates is not None and len(candidates) >= max_candidates:
+                if capped:
                     break
                 local_depth, global_depth, cache_entries = _memory_split_knobs(
                     memory_split,
@@ -729,25 +784,26 @@ def run_fit_search(
                     base_global=base_global,
                     base_cache_entries=base_cache_entries,
                 )
-                knobs = CandidateKnobs(
-                    grid_x=grid_x,
-                    grid_y=grid_y,
-                    grid_z=grid_z,
-                    op_distribution=op_distribution,
-                    memory_split=memory_split,
-                    local_ram_depth=local_depth,
-                    global_ram_depth=global_depth,
-                    station_cache_entries=cache_entries,
-                )
-                candidates.append(
-                    _evaluate_candidate(
-                        base_payload, knobs, preset, heavy_ops=heavy_ops, light_ops=light_ops
+                for mif in mif_values:
+                    if max_candidates is not None and len(candidates) >= max_candidates:
+                        capped = True
+                        break
+                    knobs = CandidateKnobs(
+                        grid_x=grid_x,
+                        grid_y=grid_y,
+                        grid_z=grid_z,
+                        op_distribution=op_distribution,
+                        memory_split=memory_split,
+                        local_ram_depth=local_depth,
+                        global_ram_depth=global_depth,
+                        station_cache_entries=cache_entries,
+                        max_in_flight=mif,
                     )
-                )
-            if max_candidates is not None and len(candidates) >= max_candidates:
-                break
-        if max_candidates is not None and len(candidates) >= max_candidates:
-            break
+                    candidates.append(
+                        _evaluate_candidate(
+                            base_payload, knobs, preset, heavy_ops=heavy_ops, light_ops=light_ops
+                        )
+                    )
 
     candidates.sort(key=_rank_key)
     for rank, cand in enumerate(candidates, start=1):
@@ -794,6 +850,7 @@ def run_fit_search(
         best_id=best.knobs.candidate_id if best is not None else None,
         efficient_id=efficient.knobs.candidate_id if efficient is not None else None,
         tolerance=tolerance,
+        max_in_flight_swept=mif_values,
     )
 
 
@@ -816,10 +873,14 @@ def emit_fit_config(
 
 
 def _knobs_from_candidate_id(base_payload: dict[str, Any], candidate_id: str) -> CandidateKnobs:
-    """Parse a ``g{X}x{Y}x{Z}_{op}_{mem}`` candidate id back into knobs."""
+    """Parse a ``g{X}x{Y}x{Z}_{op}_{mem}[_mif{N}]`` candidate id back into knobs."""
     try:
         grid_part, rest = candidate_id.split("_", 1)
         gx, gy, gz = (int(v) for v in grid_part.lstrip("g").split("x"))
+        max_in_flight: int | None = None
+        if "_mif" in rest:
+            rest, mif_part = rest.rsplit("_mif", 1)
+            max_in_flight = int(mif_part)
         for op_dist in OP_DISTRIBUTIONS:
             if rest.startswith(op_dist + "_"):
                 op_distribution = op_dist
@@ -848,6 +909,7 @@ def _knobs_from_candidate_id(base_payload: dict[str, Any], candidate_id: str) ->
         local_ram_depth=local_depth,
         global_ram_depth=global_depth,
         station_cache_entries=cache_entries,
+        max_in_flight=max_in_flight,
     )
 
 
@@ -861,8 +923,9 @@ def format_fit_report_text(report: FitReport, *, top: int = 12) -> str:
         f"<= {budget.max_utilization:.0%} utilization",
         f"candidates: {len(report.candidates)}  "
         f"(fit budget: {sum(1 for c in report.candidates if _fits_budget(c, budget))})",
+        f"max_in_flight swept: {', '.join(str(v) for v in report.max_in_flight_swept)}",
         "",
-        f"{'rank':>4}  {'candidate':<30} {'cores':>5} {'makespan':>8} {'hops':>5} "
+        f"{'rank':>4}  {'candidate':<34} {'cores':>5} {'makespan':>8} {'hops':>5} "
         f"{'util':>6} {'luts':>7}  fits",
     ]
     for cand in report.candidates[:top]:
@@ -873,7 +936,7 @@ def format_fit_report_text(report: FitReport, *, top: int = 12) -> str:
         elif cand.knobs.candidate_id == report.efficient_id:
             tag = "  <- efficient"
         lines.append(
-            f"{cand.rank:>4}  {cand.knobs.candidate_id:<30} "
+            f"{cand.rank:>4}  {cand.knobs.candidate_id:<34} "
             f"{_core_count(cand):>5} "
             f"{cand.metrics.get('makespan_cycles', '-'):>8} "
             f"{cand.metrics.get('estimated_transfer_hops_total', '-'):>5} "

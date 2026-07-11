@@ -180,6 +180,15 @@ ceiling. `fit-config` is additive; `arch-search` (fixed-core-count reshapes) is
 unchanged. Use `--quick` for a grid-only sweep, `--lut-budget` /
 `--max-utilization` / `--tolerance` to tune the envelope.
 
+Alongside grid shape, op distribution, and memory split, `fit-config` also
+co-sweeps `coordinator.max_in_flight`: every in-flight slot costs LUTs, but the
+depth only buys makespan when independent flows overlap, so the finder tries the
+workload-appropriate depths (a single-flow program collapses to `1`, reclaiming
+those LUTs; multi-flow workloads try `1`, powers of two, and the flow-count
+ceiling) and the ranker keeps the cheapest depth that doesn't cost makespan.
+Override the depths with `--max-in-flight 1,2,4`; the swept set is reported as
+`max_in_flight_swept` and encoded in each candidate id as a `_mif<N>` suffix.
+
 ### Datasets for data-exchange testing
 
 Real operand streams (instead of random data) make the mesh/JTAG throughput
