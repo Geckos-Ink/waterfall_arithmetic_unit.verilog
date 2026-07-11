@@ -21,7 +21,9 @@ import unittest
 from waugen.arch_search import (
     CandidateKnobs,
     FitBudget,
+    _fit_max_in_flight_values,
     _fits_budget,
+    _knobs_from_candidate_id,
     _rank_key,
     build_candidate_payload,
     emit_fit_config,
@@ -77,6 +79,15 @@ class ArchSearchReportTests(unittest.TestCase):
         )
         self.assertGreater(cand.resources["luts"], 0)
         self.assertGreater(cand.resources["bram_kbits"], 0)
+
+    def test_arch_search_never_sweeps_max_in_flight(self) -> None:
+        # arch-search reshapes a fixed core count and must stay byte-identical:
+        # it never co-sweeps coordinator.max_in_flight, so no candidate id may
+        # carry the fit-only `_mif` suffix nor expose it in the knobs JSON.
+        for cand in self.report.candidates:
+            self.assertIsNone(cand.knobs.max_in_flight)
+            self.assertNotIn("_mif", cand.knobs.candidate_id)
+            self.assertNotIn("max_in_flight", cand.to_json()["knobs"])
 
     def test_grid_shapes_preserve_core_count(self) -> None:
         core_count = self.report.base_grid_x * self.report.base_grid_y * self.report.base_grid_z
@@ -280,6 +291,72 @@ class FitSearchTests(unittest.TestCase):
         self.assertEqual(payload["device"]["grid"]["y"], eff.knobs.grid_y)
 
 
+class FitMaxInFlightSweepTests(unittest.TestCase):
+    """The fit finder co-sweeps coordinator.max_in_flight so it can keep the
+    cheapest in-flight depth that does not cost makespan (unused slots cost
+    LUTs), while never dragging a workload above its concurrency ceiling."""
+
+    def test_depth_values_bounded_by_flow_count(self) -> None:
+        # A single-flow workload gets a single, cheapest depth: mif=1 is
+        # cycle-identical there, so higher depths would only burn LUTs.
+        self.assertEqual(_fit_max_in_flight_values(base_mif=4, num_flows=1), (1,))
+        # More flows unlock more concurrency; base value + powers of two + the
+        # cap are all offered, deduplicated and sorted.
+        self.assertEqual(_fit_max_in_flight_values(base_mif=4, num_flows=4), (1, 2, 4))
+        self.assertEqual(_fit_max_in_flight_values(base_mif=2, num_flows=3), (1, 2, 3))
+        # Never exceed the schema ceiling of 16.
+        self.assertEqual(max(_fit_max_in_flight_values(base_mif=16, num_flows=64)), 16)
+
+    def test_report_records_swept_depths(self) -> None:
+        # CW_CONFIG has 4 flows, so the auto sweep spans {1, 2, 4}.
+        report = run_fit_search(CW_CONFIG, budget=_de0_budget())
+        self.assertEqual(report.max_in_flight_swept, (1, 2, 4))
+        self.assertEqual(report.to_json()["max_in_flight_swept"], [1, 2, 4])
+        depths = {c.knobs.max_in_flight for c in report.candidates}
+        self.assertEqual(depths, {1, 2, 4})
+        # Every fit candidate id carries its depth and round-trips.
+        for cand in report.candidates:
+            self.assertIn(f"_mif{cand.knobs.max_in_flight}", cand.knobs.candidate_id)
+
+    def test_lower_depth_never_costs_more_luts(self) -> None:
+        # For a fixed grid/op/memory shape, a smaller in-flight depth must
+        # estimate no more LUTs than a larger one (the reclaim the sweep buys).
+        report = run_fit_search(CW_CONFIG, budget=_de0_budget())
+        by_shape: dict[str, dict[int, int]] = {}
+        for cand in report.candidates:
+            k = cand.knobs
+            shape = f"g{k.grid_x}x{k.grid_y}x{k.grid_z}_{k.op_distribution}_{k.memory_split}"
+            by_shape.setdefault(shape, {})[k.max_in_flight] = cand.resources["luts"]
+        checked = 0
+        for depths in by_shape.values():
+            for depth, luts in depths.items():
+                for other, other_luts in depths.items():
+                    if depth < other:
+                        self.assertLessEqual(luts, other_luts)
+                        checked += 1
+        self.assertGreater(checked, 0)
+
+    def test_explicit_override_respected(self) -> None:
+        report = run_fit_search(
+            CW_CONFIG, budget=_de0_budget(), max_in_flight_values=(1, 8)
+        )
+        self.assertEqual(report.max_in_flight_swept, (1, 8))
+        self.assertEqual({c.knobs.max_in_flight for c in report.candidates}, {1, 8})
+
+    def test_emit_fit_config_applies_swept_depth(self) -> None:
+        report = run_fit_search(CW_CONFIG, budget=_de0_budget())
+        eff = _candidate_by_id(report, report.efficient_id)
+        payload = emit_fit_config(CW_CONFIG, report.efficient_id)
+        self.assertEqual(
+            payload["coordinator"]["max_in_flight"], eff.knobs.max_in_flight
+        )
+        # And the id parser recovers the depth from the id alone.
+        parsed = _knobs_from_candidate_id(
+            json.loads(CW_CONFIG.read_text()), report.efficient_id
+        )
+        self.assertEqual(parsed.max_in_flight, eff.knobs.max_in_flight)
+
+
 class FitConfigCliTests(unittest.TestCase):
     def test_cli_fits_cw_program_and_emits_buildable_config(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -328,6 +405,42 @@ class FitConfigCliTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(rc, 0)
+
+    def test_cli_max_in_flight_override(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            report_path = Path(td) / "r.json"
+            rc = waugen_main(
+                [
+                    "fit-config",
+                    "--config",
+                    str(CW_CONFIG),
+                    "--max-grid",
+                    "2x4",
+                    "--quick",
+                    "--max-in-flight",
+                    "1,3",
+                    "--out-report",
+                    str(report_path),
+                ]
+            )
+            self.assertEqual(rc, 0)
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report["max_in_flight_swept"], [1, 3])
+
+    def test_cli_rejects_invalid_max_in_flight(self) -> None:
+        rc = waugen_main(
+            [
+                "fit-config",
+                "--config",
+                str(CW_CONFIG),
+                "--max-grid",
+                "1x1",
+                "--quick",
+                "--max-in-flight",
+                "two",
+            ]
+        )
+        self.assertEqual(rc, 2)
 
 
 class ArchSearchCliTests(unittest.TestCase):

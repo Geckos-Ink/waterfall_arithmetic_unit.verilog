@@ -343,6 +343,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only sweep grid shapes at balanced memory + uniform ops (faster)",
     )
     fit.add_argument(
+        "--max-in-flight",
+        default=None,
+        help=(
+            "Comma-separated coordinator.max_in_flight depths to co-sweep "
+            "(default: auto from the workload's flow count; single-flow "
+            "workloads collapse to 1 to reclaim unused in-flight-slot LUTs)"
+        ),
+    )
+    fit.add_argument(
         "--base-config",
         type=Path,
         default=Path("src/python/configs/wau_cw_fit_base.json"),
@@ -737,11 +746,29 @@ def _run_fit_config(args) -> int:
     memory_splits = ("balanced",) if args.quick else None
     op_distributions = ("uniform",) if args.quick else None
 
+    max_in_flight_values: tuple[int, ...] | None = None
+    if args.max_in_flight is not None:
+        try:
+            max_in_flight_values = tuple(
+                int(v) for v in str(args.max_in_flight).split(",") if v.strip()
+            )
+        except ValueError:
+            print(
+                f"Invalid --max-in-flight value: {args.max_in_flight!r} "
+                "(expected comma-separated integers)",
+                file=sys.stderr,
+            )
+            return 2
+        if not max_in_flight_values:
+            max_in_flight_values = None
+
     kwargs: dict = {"budget": budget, "device_preset": args.device}
     if memory_splits is not None:
         kwargs["memory_splits"] = memory_splits
     if op_distributions is not None:
         kwargs["op_distributions"] = op_distributions
+    if max_in_flight_values is not None:
+        kwargs["max_in_flight_values"] = max_in_flight_values
     kwargs["tolerance"] = args.tolerance
 
     try:

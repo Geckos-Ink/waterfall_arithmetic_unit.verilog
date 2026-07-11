@@ -13,6 +13,37 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-07-11)
+Implemented this cycle:
+- **`fit-config` co-sweeps `coordinator.max_in_flight`** (2026-07-07 follow-up
+  "co-sweep `coordinator.max_in_flight` inside `fit-config`, currently fixed by
+  the compiled flow"). The fit finder now varies the coordinator in-flight depth
+  as a fourth candidate axis alongside grid shape / op distribution / memory
+  split. Every in-flight slot costs LUTs in `wau_resource_model_v1`, but the
+  depth only buys makespan when independent flows overlap, so the swept depths
+  are workload-bounded (`_fit_max_in_flight_values`): a **single-flow** workload
+  collapses to depth `1` (cycle-identical there, so higher depths would only
+  burn LUTs), while multi-flow workloads try `1`, powers of two, the base value,
+  and the flow-count ceiling (clamped to the `[1,16]` schema range). Because the
+  ranker's LUT tiebreaker follows makespan/hops, it keeps the cheapest depth
+  that doesn't cost makespan — e.g. on the 4-flow `wau_example_pogram_compiled`
+  workload the `mif1` variants outrank the equal-makespan `mif2`/`mif4` variants
+  by ~2% fewer estimated LUTs. `--max-in-flight 1,2,4` forces the set; the swept
+  depths are reported as `max_in_flight_swept` and encoded per candidate as a
+  `_mif<N>` id suffix (round-tripped by `emit_fit_config`).
+  - Kept **additive**: `CandidateKnobs.max_in_flight` defaults to `None`
+    (leaves `coordinator.max_in_flight` untouched, no `_mif` suffix, no knobs
+    key), so `arch-search` reports stay byte-identical — verified against the
+    pre-change output and guarded by
+    `tests/python/test_arch_search.py::ArchSearchReportTests.test_arch_search_never_sweeps_max_in_flight`.
+    On `mesh_stress.cw` the efficient recommendation is unchanged (`2x2`, the
+    empirically validated board ceiling) and the candidate count is identical
+    (single flow ⇒ one depth).
+  - New coverage: `FitMaxInFlightSweepTests` (depth bounds, reported swept set,
+    lower-depth-never-costs-more-LUTs monotonicity, explicit override, emit
+    round-trip) plus two CLI tests (`--max-in-flight` override + invalid-value
+    rejection). Full Python suite: 112 tests pass (was 104).
+
 ## Progress Update (2026-07-07)
 Implemented this cycle (DE0-NANO real-board testing support):
 - **Grid-scaling fit search** (`waugen fit-config` + `waugen.arch_search.run_fit_search`):
@@ -68,10 +99,11 @@ Implemented this cycle (DE0-NANO real-board testing support):
   `CWs/samples/{nn,types}/*.cw`, `CWs/stress/mesh_stress.cw`); tests, docs,
   scripts, and the demo updated. Historical board reports and dated ROADMAP
   entries keep their original paths as run-time records.
-- Follow-ups: co-sweep `lane_parallelism`/`coordinator.max_in_flight` inside
-  `fit-config` (currently fixed by the compiled flow); calibrate the fit
-  resource model against real DE0-NANO synthesis so the LUT budget maps to
-  measured LEs; feed board-measured stress-kernel scores back into the ranking.
+- Follow-ups: co-sweep `lane_parallelism` inside `fit-config` (still fixed by
+  the compiled flow — `coordinator.max_in_flight` co-sweep landed 2026-07-11,
+  see below); calibrate the fit resource model against real DE0-NANO synthesis
+  so the LUT budget maps to measured LEs; feed board-measured stress-kernel
+  scores back into the ranking.
 
 ## Progress Update (2026-07-06)
 Implemented this cycle:
