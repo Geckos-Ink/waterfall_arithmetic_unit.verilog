@@ -1,0 +1,649 @@
+{
+  "project": "wau_de0_nano_cw_stress",
+  "output_module_name": "wau_top",
+  "abstraction": {
+    "language": "wau_flow_ir",
+    "version": 1
+  },
+  "device": {
+    "preset": "intel_de0_nano",
+    "grid": {
+      "x": 2,
+      "y": 4,
+      "z": 1
+    },
+    "coordinator_mode": "direct",
+    "enable_runtime_auto_adapt": true,
+    "data_width": 32,
+    "flow_id_width": 12,
+    "opcode_width": 8,
+    "data_types": [
+      "float32"
+    ],
+    "local_ram_depth": 32,
+    "global_ram_depth": 128
+  },
+  "operations": {
+    "library": [
+      "add",
+      "mul",
+      "max"
+    ],
+    "overrides": {
+      "mul": {
+        "latency": 3,
+        "pipelined": true
+      }
+    }
+  },
+  "compiler": {
+    "routing": "serpentine",
+    "allow_adaptive_reroute": true,
+    "allow_cycle_recurrence": true,
+    "fallback_radius": 2,
+    "core_capabilities": [
+      {
+        "core": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "operations": [
+          "add",
+          "mul",
+          "max"
+        ]
+      },
+      {
+        "core": {
+          "x": 1,
+          "y": 0,
+          "z": 0
+        },
+        "operations": [
+          "add"
+        ]
+      },
+      {
+        "core": {
+          "x": 0,
+          "y": 1,
+          "z": 0
+        },
+        "operations": [
+          "add"
+        ]
+      },
+      {
+        "core": {
+          "x": 1,
+          "y": 1,
+          "z": 0
+        },
+        "operations": [
+          "max"
+        ]
+      },
+      {
+        "core": {
+          "x": 0,
+          "y": 2,
+          "z": 0
+        },
+        "operations": [
+          "add"
+        ]
+      },
+      {
+        "core": {
+          "x": 1,
+          "y": 2,
+          "z": 0
+        },
+        "operations": [
+          "add",
+          "mul",
+          "max"
+        ]
+      },
+      {
+        "core": {
+          "x": 0,
+          "y": 3,
+          "z": 0
+        },
+        "operations": [
+          "add"
+        ]
+      },
+      {
+        "core": {
+          "x": 1,
+          "y": 3,
+          "z": 0
+        },
+        "operations": [
+          "add"
+        ]
+      }
+    ],
+    "station_cache": {
+      "entries": 4
+    }
+  },
+  "scheduler": {
+    "strategy": "dependency_aware",
+    "program_policy": "weighted_fair",
+    "emit_timeline": true,
+    "locality_bias": 1.0
+  },
+  "flows": [
+    {
+      "id": 90,
+      "name": "cw_stress_flow_2x4",
+      "entry": {
+        "x": 0,
+        "y": 0
+      },
+      "max_in_flight": 1,
+      "nodes": [
+        {
+          "id": "load_ifmap",
+          "op": "add",
+          "dtype": "float32",
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 0,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "load_weights",
+          "op": "add",
+          "dtype": "float32",
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 1
+              },
+              {
+                "x": 0,
+                "y": 2
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "prefetch_next_ifmap",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 3
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "load_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 3
+              },
+              {
+                "x": 1,
+                "y": 3
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane0_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane0_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane0_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 3
+              },
+              {
+                "x": 1,
+                "y": 3
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane0_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane0_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 3
+              },
+              {
+                "x": 1,
+                "y": 3
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane0_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane0_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 2
+              },
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 3
+              },
+              {
+                "x": 1,
+                "y": 3
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane0_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane0_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 2
+              },
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane1_mul",
+          "op": "mul",
+          "dtype": "float32",
+          "deps": [
+            "load_ifmap",
+            "load_weights"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane1_acc",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane1_mul"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 3
+              },
+              {
+                "x": 1,
+                "y": 3
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 0,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane1_bias",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane1_acc",
+            "load_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 3
+              },
+              {
+                "x": 1,
+                "y": 3
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 0,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane1_residual",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane1_bias"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 3
+              },
+              {
+                "x": 1,
+                "y": 3
+              },
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 0,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "lane1_relu",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "lane1_residual"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "store_tile",
+          "op": "add",
+          "dtype": "float32",
+          "deps": [
+            "lane0_relu",
+            "lane1_relu",
+            "prefetch_next_ifmap"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 0
+              },
+              {
+                "x": 1,
+                "y": 0
+              },
+              {
+                "x": 0,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        },
+        {
+          "id": "tile_counter",
+          "op": "add",
+          "dtype": "float32",
+          "immediate_b": 1,
+          "deps": [
+            "store_tile"
+          ],
+          "recurrent": true,
+          "max_iterations": 32,
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "directive": "manual",
+            "fixed": true
+          }
+        },
+        {
+          "id": "tile_done_gate",
+          "op": "max",
+          "dtype": "float32",
+          "immediate_b": 0,
+          "deps": [
+            "tile_counter"
+          ],
+          "placement": {
+            "candidate_cores": [
+              {
+                "x": 1,
+                "y": 1
+              }
+            ],
+            "directive": "prefer_balance"
+          }
+        }
+      ],
+      "cw_hints": {
+        "kernel_name": "conv2d_residual_kernel",
+        "kernel_size": 3,
+        "tile_h": 16,
+        "tile_w": 16,
+        "cin_block": 16,
+        "cout_block": 8,
+        "worker_count_declared": 8,
+        "lane_parallelism_preferred": 4,
+        "lane_parallelism_compiled": 2,
+        "lane_parallelism_source": "cli",
+        "max_in_flight_preferred": 4,
+        "max_in_flight_compiled": 1,
+        "max_in_flight_source": "cli",
+        "double_buffering": true,
+        "prefetch": true,
+        "residual": true,
+        "relu": true,
+        "preferred_dtype": "float32",
+        "dtype": "float32",
+        "dtype_compiled": "float32",
+        "dtype_source": "pragma",
+        "placement_policy_preferred": "locality",
+        "placement_policy_compiled": "balance",
+        "lowering_profile_preferred": "latency_optimized",
+        "lowering_profile_compiled": "throughput_optimized",
+        "capability_filter_active": true,
+        "capability_restricted_cores": [
+          "0,0",
+          "0,1",
+          "0,2",
+          "0,3",
+          "1,0",
+          "1,1",
+          "1,2",
+          "1,3"
+        ],
+        "program_priority_preferred": 4,
+        "program_priority_compiled": 4,
+        "program_load_balance_preferred": "least_busy",
+        "program_load_balance_compiled": "least_busy"
+      }
+    }
+  ],
+  "programs": [
+    {
+      "id": 90,
+      "name": "cw_stress_program_2x4",
+      "flows": [
+        90
+      ],
+      "priority": 4,
+      "replicas": 2,
+      "max_parallel_flows": 1,
+      "load_balance": "least_busy",
+      "allow_async": true,
+      "allow_out_of_order": true
+    }
+  ],
+  "coordinator": {
+    "max_in_flight": 1
+  }
+}

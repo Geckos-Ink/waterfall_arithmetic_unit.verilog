@@ -175,4 +175,53 @@ Original raw captures :
   demo/de0-nano/basic-example/build/cw_stress_live_2x2_golden_20260706.json
   demo/de0-nano/basic-example/build/cw_stress_live_2x4_golden_20260706.json
 
+------------------------------------------------------------------------------
+8. Repaired program-profiled 2x4 image (2026-07-13)
+------------------------------------------------------------------------------
+The 2026-07-06 timeout is retained above as failure telemetry, but it is no
+longer the board ceiling. A new `fit-config` profiled candidate inferred each
+core's exact scheduled operation set, and the emitter made those rows structural
+ALU constraints. The board wrapper runs WAU/JTAG from CLOCK_50 / 16 (3.125 MHz)
+while elastic router cuts are pending.
+
+Tools used for build  : Quartus Prime Lite 25.1std.0 Build 1129
+Candidate             : g2x4x1_profiled_balanced_mif1
+Grid                  : 2 x 4 (8 cores)
+Logic elements        : 21 478 / 22 320 (96 %)
+Registers             : 8 217
+Multiplier elements   : 12 / 132 (9-bit)
+Memory bits           : 0 / 608 256
+Worst slow-85 slack   : +62.108 ns (WAU_CLK)
+Quartus caveat        : combinational router loop still reported
+
+RTL simulator preflight:
+  outputs / cycles     : 8 / 8, 557 cycles
+  observed core ops   : c0 add,mul,max; c1 add; c2 add; c3 max;
+                        c4 idle spare; c5 add,max; c6 add; c7 add
+
+Live board benchmark:
+  golden / random     : 8 / 1024
+  scoreboard          : 1032 / 1032 (1.0)
+  throughput          : 95.4 ops/s
+  p50 / p95           : 15.00 / 16.00 ms
+  hops / stalls       : 82 560 / 0
+  forwards / delivered: 47 472 / 35 088
+  cache hits / lookups: 8 / 17 544
+
+Machine-readable report:
+  benchmarks/de0_nano_cw_stress_2x4_profiled_20260713.json
+
+The live harness now aborts on the first watchdog expiry, records
+`execution_status=circuit_hang`, and returns exit code 3. It never continues a
+broken circuit to produce timeout-limited throughput.
+
+Separate ad-hoc prediction for `CWs/stress/mesh_stress.cw` recommends
+`g2x3x1_profiled_balanced_mif1` (6 cores, 43-cycle makespan). Generated RTL
+completed 8/8 simulator cases in 867 cycles. Its Quartus 25.1 fit was stopped
+after an unusually long active placement search; no silicon result is claimed.
+
+The DE0-Nano has 32 MB external ISSI SDRAM, not SRAM. It is currently inactive
+and not counted as cache. Active station caches are register-based (1..32
+entries per core); an SDRAM controller/cache remains future work.
+
 ==============================================================================

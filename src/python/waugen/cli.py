@@ -378,6 +378,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Which recommendation to write to --out-config (default: efficient)",
     )
     fit.add_argument(
+        "--candidate-id",
+        default=None,
+        help=(
+            "Emit this exact evaluated candidate to --out-config instead of "
+            "the best/efficient recommendation (useful for hardware grid sweeps)"
+        ),
+    )
+    fit.add_argument(
         "--top", type=int, default=12, help="Number of ranked candidates to print (default: 12)"
     )
 
@@ -786,7 +794,15 @@ def _run_fit_config(args) -> int:
             args.out_summary.write_text(summary + "\n")
             print(f"Wrote fit-config summary: {args.out_summary}")
 
-        chosen_id = report.efficient_id if args.emit == "efficient" else report.best_id
+        chosen_id = args.candidate_id or (
+            report.efficient_id if args.emit == "efficient" else report.best_id
+        )
+        if args.candidate_id is not None and args.candidate_id not in {
+            candidate.knobs.candidate_id for candidate in report.candidates
+        }:
+            raise ArchSearchError(
+                f"Requested --candidate-id was not evaluated: {args.candidate_id}"
+            )
         if args.out_config is not None:
             if chosen_id is None:
                 print(
@@ -798,7 +814,8 @@ def _run_fit_config(args) -> int:
             args.out_config.parent.mkdir(parents=True, exist_ok=True)
             args.out_config.write_text(json.dumps(payload, indent=2) + "\n")
             grid = payload.get("device", {}).get("grid", {})
-            print(f"Wrote recommended ({args.emit}) config: {args.out_config}")
+            label = f"candidate {chosen_id}" if args.candidate_id else f"recommended ({args.emit})"
+            print(f"Wrote {label} config: {args.out_config}")
             print(
                 "Build this grid on the DE0-Nano (uses the board's lean base) with:\n"
                 f"  demo/de0-nano/basic-example/scripts/build_cw_stress.ps1 "

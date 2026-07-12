@@ -61,6 +61,7 @@ DRAM_MODEL_VERSION = "dram_model_v1"
 RANKING_VERSION = "arch_search_rank_v1"
 
 OP_DISTRIBUTIONS = ("uniform", "heavy_column", "heavy_half")
+FIT_OP_DISTRIBUTIONS = OP_DISTRIBUTIONS + ("profiled",)
 MEMORY_SPLITS = ("balanced", "local_heavy", "shared_heavy", "dram_offload")
 
 _MIN_LOCAL_RAM_DEPTH = 16
@@ -221,7 +222,7 @@ def _capability_entries(
     knobs: CandidateKnobs, *, heavy_ops: list[str], light_ops: list[str]
 ) -> list[dict[str, Any]]:
     """Capability rows restricting non-specialized cores to light ops only."""
-    if knobs.op_distribution == "uniform" or not heavy_ops or not light_ops:
+    if knobs.op_distribution in ("uniform", "profiled") or not heavy_ops or not light_ops:
         return []
 
     if knobs.op_distribution == "heavy_column":
@@ -276,7 +277,62 @@ def build_candidate_payload(
         payload.setdefault("coordinator", {})["max_in_flight"] = knobs.max_in_flight
 
     _strip_placements(payload, grid_x=knobs.grid_x, grid_y=knobs.grid_y, grid_z=knobs.grid_z)
+    if knobs.op_distribution == "profiled":
+        compiler["core_capabilities"] = _profiled_capability_entries(payload, knobs)
     return payload
+
+
+def _profiled_capability_entries(
+    payload: dict[str, Any], knobs: CandidateKnobs
+) -> list[dict[str, Any]]:
+    """Infer the smallest per-core ALU mix exercised by the real scheduler.
+
+    The first pass is unrestricted.  Its scheduled dispatches are then turned
+    into exact core capability rows and compiled once more, which proves that
+    the specialized component set can still execute the workload.  Idle cores
+    retain only the cheapest operation, rather than silently instantiating the
+    complete ALU.
+    """
+    probe = copy.deepcopy(payload)
+    probe.setdefault("compiler", {})["core_capabilities"] = []
+    config = load_config_obj(probe)
+    schedule = build_schedule(compile_project(config))
+    all_ops = [op.name for op in config.operations]
+    cheapest = min(
+        config.operations,
+        key=lambda op: (_op_lut_cost(op.verilog_expr, config.device.data_width)[0], op.name),
+    ).name
+    per_core: dict[int, set[str]] = {
+        idx: set()
+        for idx in range(knobs.grid_x * knobs.grid_y * knobs.grid_z)
+    }
+    for instruction in schedule.instructions:
+        per_core[instruction.core_index].add(instruction.op_name)
+
+    entries: list[dict[str, Any]] = []
+    layer_size = knobs.grid_x * knobs.grid_y
+    for index, used in per_core.items():
+        z, rem = divmod(index, layer_size)
+        y, x = divmod(rem, knobs.grid_x)
+        operations = sorted(used or {cheapest}, key=all_ops.index)
+        entries.append(
+            {
+                "core": {"x": x, "y": y, "z": z},
+                "operations": operations,
+            }
+        )
+
+    verified = copy.deepcopy(probe)
+    verified["compiler"]["core_capabilities"] = entries
+    verified_schedule = build_schedule(compile_project(load_config_obj(verified)))
+    allowed = {idx: set(row["operations"]) for idx, row in enumerate(entries)}
+    for instruction in verified_schedule.instructions:
+        if instruction.op_name not in allowed[instruction.core_index]:
+            raise ArchSearchError(
+                "profiled core capabilities changed scheduler compatibility: "
+                f"core {instruction.core_index} dispatched {instruction.op_name}"
+            )
+    return entries
 
 
 def _memory_split_knobs(
@@ -712,7 +768,7 @@ def run_fit_search(
     budget: FitBudget,
     device_preset: str | None = None,
     memory_splits: tuple[str, ...] = MEMORY_SPLITS,
-    op_distributions: tuple[str, ...] = OP_DISTRIBUTIONS,
+    op_distributions: tuple[str, ...] = FIT_OP_DISTRIBUTIONS,
     tolerance: float = _DEFAULT_FIT_TOLERANCE,
     max_in_flight_values: tuple[int, ...] | None = None,
     max_candidates: int | None = None,
@@ -881,7 +937,7 @@ def _knobs_from_candidate_id(base_payload: dict[str, Any], candidate_id: str) ->
         if "_mif" in rest:
             rest, mif_part = rest.rsplit("_mif", 1)
             max_in_flight = int(mif_part)
-        for op_dist in OP_DISTRIBUTIONS:
+        for op_dist in FIT_OP_DISTRIBUTIONS:
             if rest.startswith(op_dist + "_"):
                 op_distribution = op_dist
                 memory_split = rest[len(op_dist) + 1:]

@@ -9,7 +9,8 @@ module wau_core_station #(
     parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
     parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH,
     parameter CACHE_ENTRIES = `WAU_STATION_CACHE_ENTRIES,
-    parameter CACHE_LRU_ENABLED = 0
+    parameter CACHE_LRU_ENABLED = 0,
+    parameter integer CORE_INDEX = 0
 ) (
     input wire clk,
     input wire rst_n,
@@ -97,7 +98,8 @@ module wau_core_station #(
 
     wau_operation_alu #(
         .DATA_WIDTH(DATA_WIDTH),
-        .OPCODE_WIDTH(OPCODE_WIDTH)
+        .OPCODE_WIDTH(OPCODE_WIDTH),
+        .CORE_INDEX(CORE_INDEX)
     ) alu_u (
         .clk(clk),
         .rst_n(rst_n),

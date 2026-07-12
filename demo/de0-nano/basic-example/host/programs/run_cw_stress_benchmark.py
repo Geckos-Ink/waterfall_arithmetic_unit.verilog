@@ -189,6 +189,7 @@ def main() -> int:
 
     latencies_s: list[float] = []
     failures: list[dict[str, int | str | None | bool]] = []
+    aborted_on_timeout = False
     pass_count = 0
     pass_by_kind: Counter[str] = Counter()
     total_by_kind: Counter[str] = Counter(kind for _case_id, _a, _b, kind in cases)
@@ -200,6 +201,7 @@ def main() -> int:
         try:
             result = wau.execute(args.flow_id, a, b, timeout_s=args.timeout_s)
         except TimeoutError:
+            aborted_on_timeout = True
             if len(failures) < 24:
                 failures.append(
                     {
@@ -213,7 +215,21 @@ def main() -> int:
                         "timeout": True,
                     }
                 )
-            continue
+            # A synthesized WAU must finish a fixed schedule in microseconds.
+            # Treat the watchdog as a circuit/configuration fault and stop at
+            # the first hang; continuing would turn a broken image into a
+            # misleadingly slow benchmark.
+            status_at_timeout = wau.status()
+            obs_at_timeout = wau.observability()
+            print(
+                f"CIRCUIT HANG: case {case_id} exceeded {args.timeout_s:.3f}s; "
+                f"STATUS=0x{status_at_timeout:08X}, "
+                f"hops={obs_at_timeout.hops}, stalls={obs_at_timeout.stalls}, "
+                f"delivered={obs_at_timeout.local_delivered}",
+                file=sys.stderr,
+                flush=True,
+            )
+            break
         latencies_s.append(result.latency_s)
 
         if len(sample_outputs) < 16:
@@ -303,6 +319,10 @@ def main() -> int:
             "total_cases": len(cases),
             "pass_count": pass_count,
             "pass_ratio": (pass_count / len(cases)) if cases else 0.0,
+            "execution_status": "circuit_hang" if aborted_on_timeout else (
+                "pass" if pass_count == len(cases) else "scoreboard_failure"
+            ),
+            "aborted_on_timeout": aborted_on_timeout,
             "pass_by_kind": dict(pass_by_kind),
             "total_by_kind": dict(total_by_kind),
             "throughput_ops_per_s": throughput,
@@ -324,7 +344,7 @@ def main() -> int:
         print(f"\nreport: {args.report}")
 
     client.close()
-    return 0 if pass_count == len(cases) else 1
+    return 0 if pass_count == len(cases) else (3 if aborted_on_timeout else 1)
 
 
 if __name__ == "__main__":

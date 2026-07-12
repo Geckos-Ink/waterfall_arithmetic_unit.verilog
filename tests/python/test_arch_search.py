@@ -31,6 +31,10 @@ from waugen.arch_search import (
     run_fit_search,
 )
 from waugen.cli import main as waugen_main
+from waugen.compiler import compile_project
+from waugen.config import load_config_obj
+from waugen.scheduler import build_schedule
+from waugen.verilog_emit import emit_verilog
 
 DEMO_CONFIG = Path("src/python/configs/wau_2d_multiprogram_demo.json")
 CW_CONFIG = Path("src/python/configs/wau_example_pogram_compiled.json")
@@ -188,6 +192,27 @@ class CandidatePayloadTests(unittest.TestCase):
         )
         for entry in entries:
             self.assertEqual(sorted(entry["operations"]), sorted(DEMO_LIGHT))
+
+    def test_profiled_distribution_emits_exact_per_core_alus(self) -> None:
+        knobs = self._knobs(op_distribution="profiled")
+        payload = build_candidate_payload(
+            self.base_payload, knobs, heavy_ops=DEMO_HEAVY, light_ops=DEMO_LIGHT
+        )
+        entries = payload["compiler"]["core_capabilities"]
+        self.assertEqual(len(entries), knobs.grid_x * knobs.grid_y * knobs.grid_z)
+        self.assertTrue(all(entry["operations"] for entry in entries))
+
+        config = load_config_obj(payload)
+        project = compile_project(config)
+        schedule = build_schedule(project)
+        with tempfile.TemporaryDirectory() as td:
+            emit_verilog(project, schedule, Path(td))
+            alu = (Path(td) / "wau_operation_alu.v").read_text()
+            core = (Path(td) / "wau_core.v").read_text()
+        self.assertIn("parameter integer CORE_INDEX", alu)
+        self.assertIn("CORE_INDEX < 0", alu)
+        self.assertIn("CORE_INDEX ==", alu)
+        self.assertIn(".CORE_INDEX(CORE_INDEX)", core)
 
     def test_manual_routing_downgraded_to_waterfall(self) -> None:
         payload = copy.deepcopy(self.base_payload)
@@ -426,6 +451,22 @@ class FitConfigCliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             report = json.loads(report_path.read_text())
             self.assertEqual(report["max_in_flight_swept"], [1, 3])
+
+    def test_cli_emits_exact_candidate_for_hardware_sweep(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out_config = Path(td) / "exact.json"
+            candidate = "g2x4x1_profiled_balanced_mif1"
+            rc = waugen_main(
+                [
+                    "fit-config", "--config", str(CW_CONFIG),
+                    "--max-grid", "2x4", "--candidate-id", candidate,
+                    "--out-config", str(out_config),
+                ]
+            )
+            self.assertEqual(rc, 0)
+            emitted = json.loads(out_config.read_text())
+            self.assertEqual(emitted["device"]["grid"], {"x": 2, "y": 4, "z": 1})
+            self.assertEqual(len(emitted["compiler"]["core_capabilities"]), 8)
 
     def test_cli_rejects_invalid_max_in_flight(self) -> None:
         rc = waugen_main(

@@ -7,9 +7,10 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .tb_generator import render_testbench, write_stimulus_hex
+from .trace_parser import parse_trace
 
 
 REQUIRED_RTL_MODULES = (
@@ -30,6 +31,28 @@ class SimulationResult:
     trace_path: Path
     vvp_stdout: str
     vvp_stderr: str
+
+
+def profile_core_operations(
+    result: SimulationResult, opcode_names: Mapping[int, str]
+) -> dict[int, tuple[str, ...]]:
+    """Return the RTL-observed operation component set for every core.
+
+    This is deliberately derived from actual dispatch handshakes in the vvp
+    trace, not from placement metadata, so architecture specialization can be
+    checked against what the emitted coordinator really sends to each core.
+    """
+    trace = parse_trace(result.trace_path)
+    observed: dict[int, set[str]] = {
+        index: set() for index in range(trace.meta.core_count)
+    }
+    for cycle in trace.cycles:
+        for core in cycle.cores:
+            if core.dispatched and core.disp_op is not None:
+                observed[core.core_index].add(
+                    opcode_names.get(core.disp_op, f"opcode_{core.disp_op}")
+                )
+    return {index: tuple(sorted(names)) for index, names in observed.items()}
 
 
 class IverilogRunner:

@@ -8,6 +8,7 @@ module wau_core #(
     parameter CORE_X = 0,
     parameter CORE_Y = 0,
     parameter CORE_Z = 0,
+    parameter integer CORE_INDEX = 0,
     parameter DATA_WIDTH = `WAU_DATA_WIDTH,
     parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
     parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH
@@ -39,7 +40,8 @@ module wau_core #(
     wau_core_station #(
         .DATA_WIDTH(DATA_WIDTH),
         .FLOW_ID_WIDTH(FLOW_ID_WIDTH),
-        .OPCODE_WIDTH(OPCODE_WIDTH)
+        .OPCODE_WIDTH(OPCODE_WIDTH),
+        .CORE_INDEX(CORE_INDEX)
     ) station_u (
         .clk(clk),
         .rst_n(rst_n),

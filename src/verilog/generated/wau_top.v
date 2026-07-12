@@ -286,6 +286,7 @@ module wau_top #(
                     .CORE_X(gx),
                     .CORE_Y(gy),
                     .CORE_Z(gz),
+                    .CORE_INDEX(CORE_INDEX),
                     .DATA_WIDTH(DATA_WIDTH),
                     .FLOW_ID_WIDTH(FLOW_ID_WIDTH),
                     .OPCODE_WIDTH(OPCODE_WIDTH)

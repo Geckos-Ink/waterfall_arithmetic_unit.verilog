@@ -13,6 +13,7 @@ iverilog-driven trace when the toolchain is available.
 from __future__ import annotations
 
 import shutil
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -57,6 +58,21 @@ class DataTraceParserTests(unittest.TestCase):
         self.assertFalse(core1.data_delivered)
         self.assertTrue(core1.dispatched)
 
+    def test_profiles_operations_from_real_dispatch_records(self) -> None:
+        import tempfile
+
+        from wau_viewer.simulator import SimulationResult, profile_core_operations
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "trace.log"
+            p.write_text(_SYNTHETIC_TRACE)
+            result = SimulationResult(Path(td), p, "", "")
+            profile = profile_core_operations(result, {3: "mul"})
+
+        self.assertEqual(profile[0], ())
+        self.assertEqual(profile[1], ("mul",))
+        self.assertEqual(profile[5], ())
+
 
 class DataTraceEndToEndTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -69,8 +85,11 @@ class DataTraceEndToEndTests(unittest.TestCase):
     def test_data_movement_is_captured_from_real_rtl(self) -> None:
         from wau_viewer.simulator import IverilogRunner
 
+        program = json.loads((self.rtl_dir / "wau_program.json").read_text())
+        flow_ids = [int(flow["flow_id"]) for flow in program["flows"][:2]]
+        self.assertEqual(len(flow_ids), 2)
         runner = IverilogRunner(self.rtl_dir)
-        res = runner.run([1, 2], [10, 9], [4, 3], max_cycles=400)
+        res = runner.run(flow_ids, [10, 9], [4, 3], max_cycles=400)
         trace = parse_trace(res.trace_path)
 
         deliveries = [

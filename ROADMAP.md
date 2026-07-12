@@ -13,6 +13,31 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-07-13)
+Implemented this cycle:
+- Added a fit-only `profiled` operation distribution that derives the exact
+  operation set scheduled onto every core. Generated RTL now passes `CORE_INDEX`
+  through core/station/ALU and constant-gates opcode implementations, allowing
+  Quartus to remove unused per-core arithmetic components. `--candidate-id`
+  emits any evaluated candidate for controlled physical sweeps; legacy
+  `arch-search` output remains unchanged.
+- Rebuilt the formerly failing `CWs/example-program.cw` 2x4 image with Quartus
+  Lite 25.1: 21,478/22,320 LEs (96%), 12/132 multiplier elements, positive
+  constrained-clock setup slack, and 1032/1032 live cases at 95.4 ops/s with
+  zero stalls. The runner now aborts on the first watchdog expiry and labels it
+  `circuit_hang`; timeouts are never benchmark throughput.
+- Added a conservative /16 WAU/JTAG clock profile (3.125 MHz) while the mesh has
+  long combinational ready paths. Quartus still reports a combinational router
+  loop; registered/elastic links are the next circuit fix and are required
+  before restoring a faster clock.
+- Simulator fit for `mesh_stress.cw` recommends a profiled 2x3 architecture
+  (43-cycle makespan); RTL simulation passed 8/8. Its Quartus fit was stopped
+  after an unusually long active placement search, so it is not claimed as a
+  board result.
+- The DE0-Nano's 32 MB external SDRAM remains inactive, not an implemented
+  cache. Future work is an SDRAM controller plus measured cache hierarchy;
+  current station caches are 1..32 register entries.
+
 ## Progress Update (2026-07-11)
 Implemented this cycle:
 - **`fit-config` co-sweeps `coordinator.max_in_flight`** (2026-07-07 follow-up

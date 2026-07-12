@@ -79,12 +79,11 @@ demo/de0-nano/basic-example/
 
 ## Prerequisites
 
-* Quartus Standard 25.1 at `C:\altera_standard\25.1std`
+* Quartus Lite 25.1 at `C:\altera_lite\25.1std`
   (pass `-QuartusRoot` if your install lives elsewhere; the bundled
   `quartus_sh`, `quartus_pgm`, and `quartus_stp` are all used)
-* If the local 25.1 Standard install cannot compile because its evaluation has
-  expired, use `-QuartusRoot C:\intelFPGA_lite\23.1std` for build/program/server.
-  The tracked 2026-07-06 Iris board report in this repo was produced that way.
+* Pass `-QuartusRoot` when installed elsewhere. The historical 2026-07-06 Iris
+  report used Lite 23.1; the passing profiled 2x4 run used Lite 25.1.
 * DE0-Nano connected via USB (USB-Blaster driver visible in Device Manager)
 * Python 3.10+ on PATH
 
@@ -266,13 +265,13 @@ reference kernel instead. The generated board flow keeps the tuned CW knobs
 `placement=balance`, `lowering_profile=throughput_optimized`) and validates
 every board result against `waugen.cw_reference`.
 
-The 2026-07-06 tracked board result (measured with `CWs/example-program.cw`)
-is:
+The latest tracked board result (measured 2026-07-13 with
+`CWs/example-program.cw`) is:
 
 * `2x2` grid: `1032/1032` pass (`8` golden + `1024` seeded random), `88.3` ops/s,
   `15/16 ms` p50/p95 latency, `72,240` mesh hops total
-* `2x4` grid: fits at `22,166 / 22,320` logic elements (99%) but times out all
-  `8/8` golden cases on hardware
+* profiled `2x4` grid: `21,478 / 22,320` LEs (96%), `12 / 132` multipliers,
+  positive constrained-clock setup slack, and `1032/1032` pass at 95.4 ops/s
 * `4x4` and `2x5`: fail fit on EP4CE22
 
 The tracked report for that exploration is
@@ -357,7 +356,8 @@ The Cyclone IV E EP4CE22F17C6 has ~22k LEs, 594 Kb of M9K block memory, and
 132 multiplier blocks. The current 3×2 WAU plus the vJTAG bridge fits with
 plenty of headroom; the 32 MB external SDRAM (ISSI IS42S16160G) is NOT used
 by this design — it is pinned to safe levels in the QSF to keep the Fitter
-happy. Reusing those pins for a memory controller is the natural next step
+happy. This is SDRAM, not SRAM, and it must not be counted as active cache.
+Reusing those pins for a memory controller is the natural next step
 once the WAU outgrows on-chip BRAM.
 
 vJTAG round-trip latency is dominated by USB-Blaster traffic (~15–30 ms per

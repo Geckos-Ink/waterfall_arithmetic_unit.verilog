@@ -16,6 +16,10 @@
 `timescale 1ns/1ps
 `include "wau_defs.vh"
 
+`ifndef WAU_BOARD_CLOCK_DIVIDE_LOG2
+`define WAU_BOARD_CLOCK_DIVIDE_LOG2 4
+`endif
+
 module wau_jtag_top (
     input  wire        CLOCK_50,
     input  wire [1:0]  KEY,
@@ -52,6 +56,17 @@ module wau_jtag_top (
     output wire        ADC_SCLK,
     input  wire        ADC_SDAT
 );
+    // The generated mesh has long combinational ready paths.  The former
+    // 50 MHz board image violated timing badly as the grid grew and could
+    // hang despite fitting.  Run the complete WAU/JTAG domain from a divided
+    // board clock until elastic router timing cuts land.  /16 = 3.125 MHz;
+    // fixed CW work still finishes far below the host watchdog interval.
+    reg [7:0] wau_clock_divider = 8'd0;
+    always @(posedge CLOCK_50 or negedge KEY[0]) begin
+        if (!KEY[0]) wau_clock_divider <= 8'd0;
+        else wau_clock_divider <= wau_clock_divider + 8'd1;
+    end
+    wire wau_clk = wau_clock_divider[`WAU_BOARD_CLOCK_DIVIDE_LOG2-1];
     localparam integer DATA_WIDTH = `WAU_DATA_WIDTH;
     localparam integer FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH;
     localparam integer MMIO_ADDR_WIDTH = 8;
@@ -87,7 +102,7 @@ module wau_jtag_top (
     reg [3:0] rst_stretch;
     reg       rst_n_reg;
 
-    always @(posedge CLOCK_50) begin
+    always @(posedge wau_clk) begin
         if (!KEY[0]) begin
             rst_stretch <= 4'd0;
             rst_n_reg   <= 1'b0;
@@ -123,7 +138,7 @@ module wau_jtag_top (
         .ADDR_WIDTH(MMIO_ADDR_WIDTH),
         .DATA_WIDTH(32)
     ) bridge_u (
-        .clk(CLOCK_50),
+        .clk(wau_clk),
         .rst_n(rst_n_reg),
         .mmio_read(bridge_mmio_read),
         .mmio_write(bridge_mmio_write),
@@ -151,7 +166,7 @@ module wau_jtag_top (
         .FLOW_ID_WIDTH(FLOW_ID_WIDTH),
         .ADDR_WIDTH(MMIO_ADDR_WIDTH)
     ) mmio_u (
-        .clk(CLOCK_50),
+        .clk(wau_clk),
         .rst_n(rst_n_reg),
         .mmio_read(bridge_mmio_read),
         .mmio_write(bridge_mmio_write),
@@ -182,7 +197,7 @@ module wau_jtag_top (
     // host_out_valid + readdatavalid handshake — for a more faithful surface
     // we mirror it by latching here too.
     reg output_pending_reg;
-    always @(posedge CLOCK_50 or negedge rst_n_reg) begin
+    always @(posedge wau_clk or negedge rst_n_reg) begin
         if (!rst_n_reg)            output_pending_reg <= 1'b0;
         else if (host_out_valid)   output_pending_reg <= 1'b1;
         else if (bridge_mmio_read && bridge_mmio_address == 8'h11)
@@ -191,7 +206,7 @@ module wau_jtag_top (
     assign output_pending_w = output_pending_reg;
 
     wau_top wau_u (
-        .clk(CLOCK_50),
+        .clk(wau_clk),
         .rst_n(core_rst_n),
         .host_in_valid(host_in_valid),
         .host_in_ready(host_in_ready),
@@ -223,7 +238,7 @@ module wau_jtag_top (
     //   LED[7] low bit of obs_total_hop_count (traffic LED)
     // ------------------------------------------------------------------
     reg [23:0] heartbeat;
-    always @(posedge CLOCK_50 or negedge rst_n_reg) begin
+    always @(posedge wau_clk or negedge rst_n_reg) begin
         if (!rst_n_reg) heartbeat <= 24'd0;
         else            heartbeat <= heartbeat + 24'd1;
     end

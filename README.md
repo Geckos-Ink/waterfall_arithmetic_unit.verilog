@@ -174,10 +174,12 @@ python3 scripts/find_best_wau_config.py CWs/stress/mesh_stress.cw
 ```
 
 It prints a ranked table plus the exact `build_cw_stress.ps1` command for the
-recommended grid, and writes a ready-to-build config. On `mesh_stress.cw` the
-efficient pick is a `2x2` grid — matching the board's empirically validated
-ceiling. `fit-config` is additive; `arch-search` (fixed-core-count reshapes) is
-unchanged. Use `--quick` for a grid-only sweep, `--lut-budget` /
+recommended grid, and writes a ready-to-build config. The fit-only `profiled`
+distribution derives the exact operations dispatched to each core, and the RTL
+emitter makes those capabilities structural so synthesis can remove unused ALU
+components. `--candidate-id <id>` emits an exact evaluated candidate for a
+physical grid sweep. `fit-config` is additive; `arch-search` remains unchanged.
+Use `--quick` for a grid-only sweep, `--lut-budget` /
 `--max-utilization` / `--tolerance` to tune the envelope.
 
 Alongside grid shape, op distribution, and memory split, `fit-config` also
@@ -359,6 +361,7 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `src/python/configs/wau_2d_multiprogram_demo.json`: advanced DAG + multi-program example
 - `src/python/configs/wau_3d_demo.json`: minimal layered-3D example using `grid.z` and vertical core placement
 - `src/python/configs/wau_cw_fit_base.json`: minimal DE0-Nano base used by `fit-config` (compiling a raw `.cw`) and by `run_cw_stress_benchmark.sh`
+- `src/python/configs/wau_de0_nano_example_2x4_profiled.json`: exact reproducible config for the Quartus Lite 25.1 profiled 2x4 silicon benchmark
 - `CWs/`: all real `.cw` programs — `example-program.cw` (compiler-oriented Conv2D reference), `stress/mesh_stress.cw` (ad-hoc mesh/hardware-stress kernel), `basic_arithmetic.cw`, and `samples/{nn,types}/*.cw`
 - `datasets/`: git-ignored, populated on demand by `scripts/fetch_dataset.py` (MNIST)
 - `src/verilog/generated/`: generated output artifacts
@@ -381,9 +384,10 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `benchmarks/mesh_stress_benchmark.txt`: tracked simulator benchmark for the ad-hoc `CWs/stress/mesh_stress.cw` kernel (heavier 47-node flow; `scoreboard_pass_ratio=1.0`)
 - `benchmarks/de0_nano_basic_benchmark.txt`: silicon-verified reference run on the DE0-Nano (resource fit, per-corner Fmax, 795/795 scoreboard pass, live observability counters)
 - `benchmarks/de0_nano_iris_stats_benchmark.txt`: real-data DE0-Nano benchmark for the 2D WAU using 150 Iris samples, live board measurements, and tracked JSON sidecars
-- `benchmarks/de0_nano_cw_stress_benchmark.txt`: live DE0-Nano benchmark for `CWs/example-program.cw`, including the passing 2x2 image and the measured larger-grid failure ceiling
+- `benchmarks/de0_nano_cw_stress_benchmark.txt`: live DE0-Nano benchmark for `CWs/example-program.cw`, including the historical failed 2x4 and repaired profiled 2x4 runs
 - `benchmarks/de0_nano_cw_stress_benchmark_latest.json`: machine-readable passing 2x2 stress run (`1032/1032`)
 - `benchmarks/de0_nano_cw_stress_2x4_timeout.json`: machine-readable failure capture for the largest fitting (`2x4`) image
+- `benchmarks/de0_nano_cw_stress_2x4_profiled_20260713.json`: machine-readable passing profiled 2x4 run (`1032/1032`)
 - `benchmarks/de0_nano_mesh_stress_benchmark.txt`: live DE0-Nano run of the ad-hoc `CWs/stress/mesh_stress.cw` kernel at 2x2 (`1032/1032` random + `520/520` MNIST, ~1.7x the example's per-case mesh traffic), with `*_random.json` / `*_mnist.json` sidecars
 - `demo/de0-nano/basic-example/`: end-to-end physical deployment — Quartus 25.1 project + reusable vJTAG MMIO bridge RTL + reusable Python/TCL host stack + automation scripts; produces the artifact above
 
@@ -499,7 +503,8 @@ non-MMIO integrations.
 This is a robust **basis**, not final silicon architecture:
 - Control-plane dispatch and data-plane results now traverse explicit neighbor-linked highway meshes with valid/ready backpressure.
 - `grid.z > 1` emits layered 3D core indexing and vertical `up/down` mesh links; this path is currently verified with `iverilog` (`tb_wau_highway_mesh_3d`) and has not yet been calibrated on the DE0-NANO board flow.
-- A 2026-07-06 Quartus 23.1std compile of the regenerated 2D DE0-NANO demo fits, was programmed onto the board, and completed both a real-data Iris benchmark (`150/150` per run) and a heavier `CWs/example-program.cw` stress benchmark (`1032/1032` at `2x2`). The same session also established the current heavier-workload ceiling on EP4CE22: `2x4` fits at `99%` logic but times out all `8/8` golden cases on hardware, while `4x4` and `2x5` fail fit. TimeQuest still does not close the 50 MHz board clock on either tracked 23.1 image, so treat the board results as empirical room-temperature validation and treat registered/elastic mesh timing cuts or a slower board-clock profile as the next hardware-closing slice.
+- The historical 2026-07-06 generic 2x4 image fit at 99% but violated timing and timed out. On 2026-07-13, Quartus Lite 25.1 built a program-profiled 2x4 image with a /16 timing-safe WAU clock: `21,478 / 22,320` LEs (96%), `12 / 132` multiplier elements, positive setup slack at every reported corner, and `1032/1032` live scoreboard pass at `95.4` ops/s. Watchdog expiry is now a fail-fast circuit/configuration fault, never a throughput sample. Quartus still reports a combinational router loop, so registered/elastic router links remain required before restoring a fast mesh clock.
+- The DE0-Nano's 32 MB external SDRAM is currently held inactive and is not counted as WAU cache. Active station caches remain on-chip register structures (1..32 entries per core); an SDRAM controller/cache hierarchy remains future work.
 - On 2026-07-07 the ad-hoc `CWs/stress/mesh_stress.cw` kernel was synthesized (Quartus Lite 23.1; Standard 25.1's eval is still expired) and run at 2x2 — a 27-node flow at `10,268 / 22,320` LEs (46%) passing `1032/1032` random and `520/520` real-MNIST triggers at ~1.7x the example's per-case mesh traffic and zero stalls. A build-script bug (`$ErrorActionPreference=Stop` turning Quartus 25.1's benign `TBBmalloc` stderr into a fatal error) was fixed so 25.1 runs can proceed once licensed.
 - Runtime adaptation is implemented as primary/fallback/candidate core selection per node, constrained by per-core capability metadata.
 - Compiler and scheduler outputs are designed so an external compiler/scheduler stack can replace or augment coordinator behavior.
@@ -602,7 +607,8 @@ The passing board image used the tuned CW knobs already proven in `iverilog`
 |------|:-------:|-------|
 | `4x4` | no fit | `61,564 / 22,320` logic elements (`276%`), `96 / 132` multipliers |
 | `2x5` | no fit | `39,747 / 22,320` logic elements (`178%`), `60 / 132` multipliers |
-| `2x4` | fit, fails live | `22,166 / 22,320` logic elements (`99%`); `0/8` golden cases passed, all timed out |
+| `2x4` generic (2026-07-06) | fit, fails live | `22,166 / 22,320` logic elements (`99%`); timing-violating image, `0/8` golden |
+| `2x4` profiled (2026-07-13) | **fit, passes live** | Quartus Lite 25.1, `21,478 / 22,320` LEs (`96%`), `12 / 132` multipliers; `1032/1032` pass |
 | `2x2` | fit, passes live | `10,372 / 22,320` logic elements (`46%`); `1032/1032` pass (`8` golden + `1024` seeded random) |
 
 The validated `2x2` live run used random inputs in `[-1023, 1023]` with seed
@@ -618,11 +624,11 @@ Observability counters stayed coherent on the passing image:
 heavier CW flow drove about `70` hops, `36` forwards, and `34` local
 deliveries per case.
 
-The failing `2x4` image is useful precisely because it bounds the board:
-although it still fits, TimeQuest slack falls to `-167.709 ns` at the slow
-0 C setup corner and `-101.518 ns` at the fast 0 C setup corner, and the live
-board run times out every golden case. For this workload on EP4CE22, `2x2`
-is therefore the largest empirically validated image today.
+The repaired profiled `2x4` image runs the WAU/JTAG domain at 3.125 MHz until
+elastic router timing cuts are implemented. TimeQuest reports +62.108 ns WAU
+setup slack at slow 85 C; the full live run passed `1032/1032` at `95.4` ops/s
+with `82,560` hops, zero stalls, `47,472` forwards, and `35,088` deliveries.
+The older timeout remains tracked as failure telemetry, not a benchmark score.
 
 ### Ad-hoc mesh-stress kernel — live board run (2026-07-07)
 The ad-hoc [`CWs/stress/mesh_stress.cw`](CWs/stress/mesh_stress.cw) kernel — built

@@ -9,6 +9,12 @@
 
 create_clock -name CLOCK_50 -period 20.000 [get_ports {CLOCK_50}]
 
+# The WAU/JTAG logic uses bit 3 of a board-clock divider (/16, 3.125 MHz).
+# Constrain the actual sequential domain instead of pretending the large mesh
+# closes at 50 MHz; hardware benchmarks reject any watchdog expiry as a fault.
+create_generated_clock -name WAU_CLK -source [get_ports {CLOCK_50}] -divide_by 16 \
+    [get_registers {*wau_clock_divider[3]}]
+
 # vJTAG / sld_virtual_jtag adds its own JTAG clock + altera_reserved_tck.
 # Pull it in as a constrained 10 MHz clock if the auto-derivation misses it.
 derive_pll_clocks

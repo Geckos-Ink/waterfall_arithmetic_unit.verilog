@@ -75,9 +75,32 @@ def _render_defs(project: CompiledProject) -> str:
 
 
 def _render_operation_alu(project: CompiledProject) -> str:
+    cfg = project.config
+    core_count = cfg.device.grid_x * cfg.device.grid_y * cfg.device.grid_z
+    explicit_caps = {
+        core_index(
+            cap.core.x,
+            cap.core.y,
+            cfg.device.grid_x,
+            cap.core.z,
+            cfg.device.grid_y,
+        ): set(cap.operations)
+        for cap in cfg.compiler.core_capabilities
+        if cap.operations
+    }
     case_lines = []
     for op in project.config.operations:
-        case_lines.append(f"      `WAU_OPCODE_{_op_macro(op.name)}: result_comb = {op.verilog_expr};")
+        allowed = [
+            idx for idx in range(core_count)
+            if idx not in explicit_caps or op.name in explicit_caps[idx]
+        ]
+        core_condition = " || ".join(f"(CORE_INDEX == {idx})" for idx in allowed) or "1'b0"
+        condition = f"(CORE_INDEX < 0) || {core_condition}"
+        case_lines.append(
+            f"      `WAU_OPCODE_{_op_macro(op.name)}: begin\n"
+            f"          if ({condition}) result_comb = {op.verilog_expr};\n"
+            "      end"
+        )
     case_blob = "\n".join(case_lines)
 
     return f"""`timescale 1ns/1ps
@@ -85,7 +108,8 @@ def _render_operation_alu(project: CompiledProject) -> str:
 
 module wau_operation_alu #(
     parameter DATA_WIDTH = `WAU_DATA_WIDTH,
-    parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH
+    parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH,
+    parameter integer CORE_INDEX = -1
 ) (
     input wire clk,
     input wire rst_n,
@@ -139,7 +163,8 @@ module wau_core_station #(
     parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
     parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH,
     parameter CACHE_ENTRIES = `WAU_STATION_CACHE_ENTRIES,
-    parameter CACHE_LRU_ENABLED = {lru_enabled}
+    parameter CACHE_LRU_ENABLED = {lru_enabled},
+    parameter integer CORE_INDEX = 0
 ) (
     input wire clk,
     input wire rst_n,
@@ -223,7 +248,8 @@ module wau_core_station #(
 
     wau_operation_alu #(
         .DATA_WIDTH(DATA_WIDTH),
-        .OPCODE_WIDTH(OPCODE_WIDTH)
+        .OPCODE_WIDTH(OPCODE_WIDTH),
+        .CORE_INDEX(CORE_INDEX)
     ) alu_u (
         .clk(clk),
         .rst_n(rst_n),
@@ -409,6 +435,7 @@ module wau_core #(
     parameter CORE_X = 0,
     parameter CORE_Y = 0,
     parameter CORE_Z = 0,
+    parameter integer CORE_INDEX = 0,
     parameter DATA_WIDTH = `WAU_DATA_WIDTH,
     parameter FLOW_ID_WIDTH = `WAU_FLOW_ID_WIDTH,
     parameter OPCODE_WIDTH = `WAU_OPCODE_WIDTH
@@ -440,7 +467,8 @@ module wau_core #(
     wau_core_station #(
         .DATA_WIDTH(DATA_WIDTH),
         .FLOW_ID_WIDTH(FLOW_ID_WIDTH),
-        .OPCODE_WIDTH(OPCODE_WIDTH)
+        .OPCODE_WIDTH(OPCODE_WIDTH),
+        .CORE_INDEX(CORE_INDEX)
     ) station_u (
         .clk(clk),
         .rst_n(rst_n),
@@ -1811,6 +1839,7 @@ module __WAU_TOP_MODULE__ #(
                     .CORE_X(gx),
                     .CORE_Y(gy),
                     .CORE_Z(gz),
+                    .CORE_INDEX(CORE_INDEX),
                     .DATA_WIDTH(DATA_WIDTH),
                     .FLOW_ID_WIDTH(FLOW_ID_WIDTH),
                     .OPCODE_WIDTH(OPCODE_WIDTH)
