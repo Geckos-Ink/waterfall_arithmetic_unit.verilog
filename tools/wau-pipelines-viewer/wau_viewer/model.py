@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -145,3 +146,56 @@ def derive_auto_stimulus(model: WauModel) -> List[Tuple[int, int, int]]:
         used.add(stage.flow_id)
         seen.append((stage.flow_id, 10 + stage.flow_id, 3 + stage.flow_id))
     return seen or [(1, 10, 4)]
+
+
+def derive_stress_stimulus(
+    model: WauModel,
+    count: int,
+    seed: int = 7,
+    value_min: int = 1,
+    value_max: int = 99,
+) -> List[Tuple[int, int, int]]:
+    """Build a seeded stress stimulus of ``count`` packets across all flows.
+
+    Flow ids are interleaved round-robin so consecutive packets target
+    *different* flows whenever more than one flow exists: the multi-issue
+    coordinator blocks a second in-flight copy of the same flow id, so
+    interleaving is what actually exercises cross-flow concurrency on the mesh.
+    Operand values are drawn from a deterministic RNG so runs are reproducible.
+    """
+    if count <= 0:
+        raise ValueError("stress stimulus count must be positive")
+    flow_ids = sorted({stage.flow_id for stage in model.flows}) or [1]
+    rng = random.Random(seed)
+    out: List[Tuple[int, int, int]] = []
+    for i in range(count):
+        flow_id = flow_ids[i % len(flow_ids)]
+        out.append((
+            flow_id,
+            rng.randint(value_min, value_max),
+            rng.randint(value_min, value_max),
+        ))
+    return out
+
+
+def manhattan_route(grid_x: int, grid_y: int, src: int, dst: int) -> List[int]:
+    """Reconstruct the dimension-order (X-first, then Y) mesh route.
+
+    Mirrors the generated ``wau_highway_router``'s ``route_dir`` priority
+    (EAST/WEST before SOUTH/NORTH), so animated packets travel the same
+    intermediate routers the RTL actually forwards them through. Returns the
+    inclusive list of core indices from ``src`` to ``dst``.
+    """
+    def xy(idx: int) -> Tuple[int, int]:
+        return idx % grid_x, (idx // grid_x) % grid_y
+
+    x, y = xy(src)
+    dx, dy = xy(dst)
+    route = [src]
+    while x != dx:
+        x += 1 if dx > x else -1
+        route.append(y * grid_x + x)
+    while y != dy:
+        y += 1 if dy > y else -1
+        route.append(y * grid_x + x)
+    return route

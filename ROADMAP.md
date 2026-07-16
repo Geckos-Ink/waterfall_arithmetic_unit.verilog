@@ -13,6 +13,47 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-07-16)
+Implemented this cycle (pipelines-viewer simulator + visualization slice):
+- **Ad-hoc circuit preparation inside the viewer** (`wau_viewer/prepare.py`):
+  `--config <config.json>` or `--cw <kernel.cw>` now compiles the program and
+  emits fresh RTL through subprocess calls to the real
+  `waugen compile-cw`/`waugen generate` chain (never re-implementing lowering),
+  then simulates that exact circuit with iverilog. Default `.cw` base config is
+  the demo-independent `wau_cw_fit_base.json`; artifacts land in git-ignored
+  `.build/viewer/<name>/`. The simulator also discovers extra generated
+  `wau_*.v` modules dynamically (board wrappers/MMIO glue excluded) so future
+  emitted module variants simulate without a viewer manifest update.
+- **Stress stimulus for concurrency** (`--stress N --stress-seed S`):
+  seeded random operand packets with round-robin-interleaved flow ids —
+  consecutive packets always target different flows, which is what lets the
+  multi-issue coordinator keep several flows in flight so mesh-level
+  concurrency is actually exercised and visible.
+- **Phased slow-motion animation** (closes the 2026-06-01 viewer follow-ups
+  "per-router hop-by-hop path animation" and "overlaying the operation applied
+  at each transform"): each cycle renders as dispatch → execute → result
+  phases; operand/result packets travel hop-by-hop along the same
+  dimension-order (X-first) route as the generated `wau_highway_router`
+  (mirrored by `model.manhattan_route`, unit-tested against neighbor steps),
+  the applied operation flashes on the core (`mul(62, #3)`), results pop where
+  they land, host outputs drop toward a host lane, and concurrent packets ride
+  offset parallel lanes. Playback is paced in seconds-per-cycle (0.2–4 s) by a
+  deterministic `advance(t)` progress clock, so slowing down stretches the
+  motion instead of freezing frames, and headless recordings replay the exact
+  same frames as live playback.
+- **Concurrency HUD** in-scene (busy cores, packets in flight, peak parallel
+  ops, mesh hops/stalls) so recordings/GIFs show how efficiently a program
+  uses the fabric.
+- **GIF export** with ffmpeg-palette or pure-Pillow fallback; the README demo
+  GIF was regenerated from a `--config examples/wau_3x3_demo.json --stress 6`
+  run (56 traced cycles, 21 data-plane deliveries animated).
+- New Qt-free coverage in `tests/python/test_viewer_sim_prep.py` (route
+  reconstruction, stress-stimulus determinism/interleaving, RTL source
+  discovery, end-to-end config→RTL preparation).
+- Still open: per-router queue/backpressure occupancy visualization, 3D
+  (`grid.z`) layer rendering in the viewer, and GUI rendering remains
+  unverified in CI (no PySide6 in the headless environment).
+
 ## Progress Update (2026-07-13)
 Implemented this cycle:
 - Added a fit-only `profiled` operation distribution that derives the exact
@@ -639,17 +680,19 @@ Possible work:
   flight concurrently; still open: concurrent same-flow-id replicas via a
   dispatch tag, and intra-flow DAG-branch concurrency for non-linear flows.)
 - Adaptive reroute policy beyond primary/fallback (N candidates).
-- Viewer/observability follow-up (in progress 2026-06-01): the pipelines viewer
-  now traces **per-core data-plane deliveries** (`ddeliv=...`: a result packet
+- Viewer/observability follow-up (updated 2026-07-16): the pipelines viewer
+  traces **per-core data-plane deliveries** (`ddeliv=...`: a result packet
   arriving at a core over the data mesh, with src core + value + flow/stage),
-  closing the "no data-in-motion trace" gap. `graph_view` renders animated
-  rounded-square `DataPacketItem`s — operands easing from the coordinator to the
-  compute core, and results easing back over the mesh with an elaboration "pop"
-  where they land. `tests/python/test_viewer_data_trace.py` covers the parser
-  and a full iverilog-driven capture. Still open: per-router hop-by-hop path
-  animation (intermediate routers, not just src→dst endpoints), and overlaying
-  the operation applied at each transform; GUI rendering is currently
-  unverified in CI (no PySide6 in the headless environment).
+  closing the "no data-in-motion trace" gap, and `graph_view` renders animated
+  rounded-square `DataPacketItem`s. The 2026-07-16 slice added **hop-by-hop
+  path animation through intermediate routers** (dimension-order route
+  mirrored from `wau_highway_router`), **operation overlays at each
+  transform**, phased slow-motion playback, a concurrency HUD, stress
+  stimulus, and in-viewer ad-hoc circuit preparation (`--config`/`--cw`).
+  `tests/python/test_viewer_data_trace.py` and `test_viewer_sim_prep.py` cover
+  the Qt-free layers. Still open: per-router queue/backpressure occupancy
+  visualization, 3D layer rendering; GUI rendering is currently unverified in
+  CI (no PySide6 in the headless environment).
 - Quantitative area/timing analysis scripts per device preset.
 - Automatic design-space exploration for FPGA synthesis candidates:
   - core disposition / grid reshaping, (first slice supported: `arch-search` 2D/3D factor reshapes)

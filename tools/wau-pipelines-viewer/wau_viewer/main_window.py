@@ -1,11 +1,18 @@
-"""Main application window: transport controls + dock layout + recording."""
+"""Main application window: transport controls + dock layout + recording.
+
+Playback is paced in *seconds per cycle* rather than frames per second: each
+simulated cycle plays as a phased mini-animation (operands travel → operation
+flashes → results travel back), so slowing playback stretches the animation
+instead of just holding a static frame longer. A ~30 fps animation clock
+drives ``WauScene.advance(t)``; single-step plays exactly one cycle animation.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,7 +25,6 @@ from PySide6.QtWidgets import (
     QSlider,
     QSplitter,
     QStatusBar,
-    QToolBar,
     QVBoxLayout,
     QWidget,
 )
@@ -30,9 +36,14 @@ from .stats_panel import StatsPanel
 from .timeline_view import TimelineScene, TimelineView
 from .trace_parser import ParsedTrace
 
+ANIM_TICK_MS = 33  # ~30 fps animation clock
+DEFAULT_CYCLE_MS = 1400
+
 
 class ViewerWindow(QMainWindow):
-    def __init__(self, model: WauModel, trace: ParsedTrace) -> None:
+    def __init__(
+        self, model: WauModel, trace: ParsedTrace, cycle_ms: int = DEFAULT_CYCLE_MS
+    ) -> None:
         super().__init__()
         self.model = model
         self.trace = trace
@@ -41,9 +52,13 @@ class ViewerWindow(QMainWindow):
 
         self._recorder: Optional[FrameRecorder] = None
         self._cycle_idx = 0
+        self._progress = 1.0
+        self._playing = False
         self._output_count_at = self._precompute_output_counts()
 
         self.scene = WauScene(model)
+        if trace.cycles:
+            self.scene.set_total_cycles(trace.cycles[-1].cycle)
         self.graph_view = WauGraphView(self.scene)
 
         total_cycles = max(trace.meta.total_cycles, model.makespan_cycles, len(trace.cycles))
@@ -79,14 +94,16 @@ class ViewerWindow(QMainWindow):
         self.slider.setRange(0, max(0, len(trace.cycles) - 1))
         cl.addWidget(self.slider, 1)
 
-        cl.addWidget(QLabel("speed"))
+        # cycle-time slider: how long one simulated cycle plays on screen.
+        cl.addWidget(QLabel("cycle time"))
         self.speed = QSlider(Qt.Horizontal)
-        self.speed.setRange(1, 60)
-        self.speed.setValue(8)
+        self.speed.setRange(2, 40)  # 0.2 s .. 4.0 s per cycle
+        self.speed.setValue(max(2, min(40, round(cycle_ms / 100))))
         self.speed.setFixedWidth(160)
         cl.addWidget(self.speed)
-        self.lbl_speed = QLabel("8 fps")
+        self.lbl_speed = QLabel("")
         cl.addWidget(self.lbl_speed)
+        self._on_speed_changed(self.speed.value())
 
         # layout: center = graph; right dock = stats; bottom = timeline
         center = QWidget()
@@ -114,9 +131,11 @@ class ViewerWindow(QMainWindow):
             f"cycles={len(trace.cycles)}  outputs={trace.meta.outputs_seen}"
         )
 
-        # timer
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._on_tick)
+        # animation clock
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(ANIM_TICK_MS)
+        self._anim_timer.timeout.connect(self._on_anim_tick)
+        self._elapsed = QElapsedTimer()
 
         # signals
         self.btn_play.clicked.connect(self._play)
@@ -142,7 +161,7 @@ class ViewerWindow(QMainWindow):
             act.triggered.connect(fn)
             self.addAction(act)
 
-        self._apply_cycle(0)
+        self._apply_cycle(0, animate=False)
 
     # ----- helpers -----
 
@@ -156,13 +175,17 @@ class ViewerWindow(QMainWindow):
             counts.append(running)
         return counts
 
-    def _apply_cycle(self, idx: int) -> None:
+    def _cycle_period_ms(self) -> int:
+        return self.speed.value() * 100
+
+    def _apply_cycle(self, idx: int, animate: bool = True) -> None:
         if not self.trace.cycles:
             return
         idx = max(0, min(idx, len(self.trace.cycles) - 1))
         self._cycle_idx = idx
         snap = self.trace.cycles[idx]
-        self.scene.set_step_interval(int(1000 / max(1, self.speed.value())))
+        if idx == 0:
+            self.scene.reset_peaks()
         self.scene.apply_cycle(snap)
         self.timeline_scene.set_cycle(snap.cycle)
         self.stats.apply_cycle(snap, self._output_count_at[idx])
@@ -171,47 +194,79 @@ class ViewerWindow(QMainWindow):
             blocker = self.slider.blockSignals(True)
             self.slider.setValue(idx)
             self.slider.blockSignals(blocker)
+        if animate:
+            self._progress = 0.0
+            self.scene.advance(0.0)
+            self._elapsed.restart()
+            if not self._anim_timer.isActive():
+                self._anim_timer.start()
+        else:
+            self._progress = 1.0
+            self.scene.advance(1.0)
+            self._grab_frame()
+
+    def _grab_frame(self) -> None:
         if self._recorder is not None and self._recorder.active:
             self._recorder.grab(self.centralWidget())
+
+    # ----- animation clock -----
+
+    def _on_anim_tick(self) -> None:
+        dt = self._elapsed.restart()
+        self._progress += dt / max(100.0, float(self._cycle_period_ms()))
+        if self._progress < 1.0:
+            self.scene.advance(self._progress)
+            self._grab_frame()
+            return
+        self.scene.advance(1.0)
+        self._grab_frame()
+        if self._playing and self._cycle_idx + 1 < len(self.trace.cycles):
+            self._apply_cycle(self._cycle_idx + 1, animate=True)
+        else:
+            self._playing = False
+            self._anim_timer.stop()
 
     # ----- transport -----
 
     def _play(self) -> None:
-        interval_ms = max(16, int(1000 / max(1, self.speed.value())))
-        self._timer.start(interval_ms)
+        self._playing = True
+        if self._progress >= 1.0:
+            nxt = self._cycle_idx + 1
+            if nxt >= len(self.trace.cycles):
+                nxt = 0
+            self._apply_cycle(nxt, animate=True)
+        elif not self._anim_timer.isActive():
+            self._elapsed.restart()
+            self._anim_timer.start()
 
     def _pause(self) -> None:
-        self._timer.stop()
+        self._playing = False
+        self._anim_timer.stop()
 
     def _toggle_play_pause(self) -> None:
-        if self._timer.isActive():
+        if self._playing:
             self._pause()
         else:
             self._play()
 
     def _step_forward(self) -> None:
-        self._apply_cycle(self._cycle_idx + 1)
+        self._playing = False
+        self._apply_cycle(self._cycle_idx + 1, animate=True)
 
     def _step_back(self) -> None:
-        self._apply_cycle(self._cycle_idx - 1)
+        self._playing = False
+        self._apply_cycle(self._cycle_idx - 1, animate=True)
 
     def _reset(self) -> None:
         self._pause()
-        self._apply_cycle(0)
-
-    def _on_tick(self) -> None:
-        if self._cycle_idx + 1 >= len(self.trace.cycles):
-            self._timer.stop()
-            return
-        self._apply_cycle(self._cycle_idx + 1)
+        self._apply_cycle(0, animate=False)
 
     def _on_slider(self, v: int) -> None:
-        self._apply_cycle(v)
+        self._playing = False
+        self._apply_cycle(v, animate=False)
 
     def _on_speed_changed(self, v: int) -> None:
-        self.lbl_speed.setText(f"{v} fps")
-        if self._timer.isActive():
-            self._play()
+        self.lbl_speed.setText(f"{v / 10:.1f} s/cycle")
 
     # ----- recording -----
 
@@ -219,7 +274,8 @@ class ViewerWindow(QMainWindow):
         if self._recorder is not None and self._recorder.active:
             try:
                 path, _ = QFileDialog.getSaveFileName(
-                    self, "Save MP4 recording", "wau_demo.mp4", "MP4 (*.mp4)"
+                    self, "Save recording", "wau_demo.mp4",
+                    "MP4 (*.mp4);;GIF (*.gif)"
                 )
                 if not path:
                     self._recorder = None
@@ -233,11 +289,11 @@ class ViewerWindow(QMainWindow):
             self.btn_record.setText("● Record")
         else:
             try:
-                self._recorder = FrameRecorder(framerate=self.speed.value())
+                # live capture happens at the animation clock rate
+                self._recorder = FrameRecorder(framerate=round(1000 / ANIM_TICK_MS))
                 self._recorder.start()
                 self.btn_record.setText("■ Stop")
-                # grab the current frame so the video starts from cycle 0
-                self._recorder.grab(self.centralWidget())
+                self._grab_frame()
             except Exception as exc:
                 QMessageBox.critical(self, "Recording failed to start", str(exc))
                 self._recorder = None
@@ -247,19 +303,36 @@ def run_headless_recording(
     model: WauModel,
     trace: ParsedTrace,
     out_path: Path,
-    framerate: int = 8,
+    framerate: int = 10,
+    frames_per_cycle: int = 8,
+    cycle_ms: int = DEFAULT_CYCLE_MS,
+    max_cycles: Optional[int] = None,
 ) -> Path:
-    """Render the full trace off-screen and mux to MP4. No window is shown."""
+    """Render the full trace off-screen and encode it. No window is shown.
+
+    Every cycle is rendered as ``frames_per_cycle`` deterministic sub-frames of
+    the phased packet animation, so the exported video/GIF shows the same data
+    movement the interactive viewer plays. Wall-clock pacing of the output is
+    ``frames_per_cycle / framerate`` seconds per simulated cycle.
+    """
     app = QApplication.instance() or QApplication([])  # noqa: F841
-    win = ViewerWindow(model, trace)
+    win = ViewerWindow(model, trace, cycle_ms=cycle_ms)
     win.resize(1500, 950)
     # render off-screen by attaching to a hidden window
     win.show()
     win.hide()
+    # the constructor fitted the view before the final widget geometry existed
+    QApplication.processEvents()
+    win.graph_view.fit_to_scene()
     rec = FrameRecorder(framerate=framerate)
     rec.start()
-    for i in range(len(trace.cycles)):
-        win._apply_cycle(i)
-        QApplication.processEvents()
-        rec.grab(win.centralWidget())
+    cycle_count = len(trace.cycles)
+    if max_cycles is not None:
+        cycle_count = min(cycle_count, max_cycles)
+    for i in range(cycle_count):
+        win._apply_cycle(i, animate=False)
+        for f in range(frames_per_cycle):
+            win.scene.advance((f + 1) / frames_per_cycle)
+            QApplication.processEvents()
+            rec.grab(win.centralWidget())
     return rec.stop_and_encode(out_path)

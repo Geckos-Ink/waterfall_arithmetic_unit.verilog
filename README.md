@@ -10,6 +10,14 @@ Typical uses: experimenting with small FPGA-side math accelerators, teaching dat
 
 ![](https://github.com/Geckos-Ink/waterfall_arithmetic_unit.verilog/blob/main/tools/wau-pipelines-viewer/examples/wau_3x3_demo.gif?raw=true)
 
+*Above: the [wau-pipelines-viewer](tools/wau-pipelines-viewer) replaying a real
+iverilog simulation of a 3x3 WAU under a randomized multi-flow stress stream.
+Each cycle plays as a slow-motion scene: operand packets travel hop-by-hop from
+the coordinator, the applied operation flashes on the core, and result data
+flows back over the mesh — with a HUD tracking busy cores, packets in flight,
+and peak parallel operations. The viewer can also compile a `.cw` program or a
+config into a fresh ad-hoc circuit itself (`--config`/`--cw` + `--stress N`).*
+
 This repository now contains a working foundation for:
 - device-aware WAU configuration (real FPGA presets included),
 - flow compilation (flow stages -> core assignments with fallback cores),

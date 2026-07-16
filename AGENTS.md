@@ -56,6 +56,12 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
     - `./scripts/run_cw_stress_benchmark.sh` (writes `benchmarks/mesh_stress_benchmark.txt`)
 15. To fetch a real dataset for data-exchange testing (git-ignored, skip-if-present):
     - `python3 scripts/fetch_dataset.py` (MNIST into `datasets/mnist/`)
+16. To visually stress-simulate a program on an ad-hoc circuit (compile + generate +
+    iverilog + animated replay in one command) or refresh the README demo GIF, use
+    the pipelines viewer from `tools/wau-pipelines-viewer/` (needs PySide6):
+    - `python3 -m wau_viewer --config examples/wau_3x3_demo.json --stress 6`
+    - `python3 -m wau_viewer --cw ../../CWs/example-program.cw --stress 8`
+    - GIF refresh: add `--record examples/wau_3x3_demo.gif --framerate 10 --frames-per-cycle 6 --headless`
 
 ## Ownership Boundaries
 - `config.py`: schema and validation only (includes `compiler.station_cache`, `compiler.core_capabilities`, `scheduler.locality_bias`, and `coordinator.max_in_flight` schema).
@@ -75,6 +81,7 @@ Always keep the **compiler -> scheduler -> Verilog emission** chain coherent.
 - `scheduler.py`: multi-program dependency-aware timing model and encoded schedule outputs. Also owns routing-aware core selection: `scheduler.locality_bias` (default `0.0`, off) weights candidate cores by 2D/3D Manhattan hop distance to their dependencies' placed cores as a tiebreaker after earliest-free-cycle, so it cannot regress makespan/latency.
 - `verilog_emit.py`: WAU-specific RTL text rendering only; no scheduling decisions should live here. It structurally applies `compiler.core_capabilities` to per-core ALU elaboration via `CORE_INDEX`, so synthesis can remove unsupported operations, and also owns mesh, observability, MMIO, and coordinator emission.
 - `thirds/veribuilder/`: externalizable Python library for dynamic Verilog project construction, feature-gated file manifests, lightweight template rendering, and deterministic file emission. Keep it independent from WAU config/compiler/scheduler types so it can be published as a standalone repository.
+- `tools/wau-pipelines-viewer/`: iverilog-driven visual simulator (PySide6). `prepare.py` shells out to `waugen compile-cw`/`generate` for ad-hoc circuit prep and must never re-implement lowering/emission; `model.py` owns the seeded stress-stimulus generator and the dimension-order route reconstruction (must mirror `wau_highway_router`'s X-then-Y priority); `graph_view.py` owns the phased packet animation and concurrency HUD; `recorder.py` owns MP4/GIF encoding (Pillow fallback for GIF). Qt-free helpers are covered by `tests/python/test_viewer_sim_prep.py` and `test_viewer_data_trace.py`; GUI rendering stays CI-unverified (no PySide6 in CI).
 - Generated files under `src/verilog/generated/` are build outputs and may be overwritten.
 - `.github/workflows/ci.yml`: CI matrix (python tests, randomized stress, iverilog tests, CW benchmark) — keep aligned with the local Core Workflow steps.
 

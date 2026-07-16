@@ -24,6 +24,43 @@ REQUIRED_RTL_MODULES = (
     "wau_top.v",
 )
 
+# Generated files that must never be fed to the viewer testbench build:
+# board wrappers reference physical pins/PLLs, and MMIO glue sits between the
+# board wrapper and wau_top (the viewer drives wau_top's ports directly).
+EXCLUDED_RTL_PATTERNS = ("de0_nano", "board", "mmio")
+
+
+def collect_rtl_sources(rtl_dir: Path) -> list[Path]:
+    """Return the RTL files to compile for the viewer testbench.
+
+    The required core module set must exist; any additional generated
+    ``wau_*.v`` (e.g. new mesh/router variants emitted by future waugen
+    versions) is picked up automatically so ad-hoc circuits simulate without
+    the viewer needing a hardcoded manifest update, while board wrappers and
+    host-bus glue are excluded.
+    """
+    rtl_dir = Path(rtl_dir)
+    missing = [m for m in REQUIRED_RTL_MODULES if not (rtl_dir / m).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"missing generated RTL file(s) in {rtl_dir}: {', '.join(missing)} — "
+            "regenerate with `waugen generate`"
+        )
+    sources = [rtl_dir / m for m in REQUIRED_RTL_MODULES]
+    known = set(REQUIRED_RTL_MODULES)
+    for path in sorted(rtl_dir.glob("wau_*.v")):
+        if path.name in known:
+            continue
+        if any(pat in path.name for pat in EXCLUDED_RTL_PATTERNS):
+            continue
+        sources.append(path)
+    return sources
+
+
+def _tail(text: str, lines: int = 12) -> str:
+    chunks = text.strip().splitlines()
+    return "\n".join(chunks[-lines:])
+
 
 @dataclass
 class SimulationResult:
@@ -62,12 +99,7 @@ class IverilogRunner:
         self.rtl_dir = Path(rtl_dir).resolve()
         if not self.rtl_dir.exists():
             raise FileNotFoundError(f"RTL directory not found: {self.rtl_dir}")
-        for module in REQUIRED_RTL_MODULES:
-            if not (self.rtl_dir / module).exists():
-                raise FileNotFoundError(
-                    f"missing generated RTL file: {self.rtl_dir / module} — "
-                    "regenerate with `waugen generate`"
-                )
+        self.rtl_sources = collect_rtl_sources(self.rtl_dir)
         if shutil.which("iverilog") is None:
             raise RuntimeError("iverilog not found on PATH")
         if shutil.which("vvp") is None:
@@ -93,7 +125,7 @@ class IverilogRunner:
             "-I", str(self.rtl_dir),
             "-s", "tb_wau_viewer",
             "-o", str(sim_bin),
-            *[str(self.rtl_dir / m) for m in REQUIRED_RTL_MODULES],
+            *[str(p) for p in self.rtl_sources],
             str(tb_path),
         ]
         cp = subprocess.run(compile_cmd, capture_output=True, text=True)
@@ -114,13 +146,18 @@ class IverilogRunner:
         if rp.returncode != 0:
             raise RuntimeError(
                 "vvp simulation failed:\n"
-                f"  stdout: {rp.stdout}\n"
-                f"  stderr: {rp.stderr}\n"
+                f"  stdout tail: {_tail(rp.stdout)}\n"
+                f"  stderr tail: {_tail(rp.stderr)}\n"
+                f"  workdir kept for inspection: {workdir}\n"
             )
 
         trace_path = workdir / "trace.log"
         if not trace_path.exists():
-            raise RuntimeError("vvp finished but trace.log was not produced")
+            raise RuntimeError(
+                "vvp finished but trace.log was not produced\n"
+                f"  stdout tail: {_tail(rp.stdout)}\n"
+                f"  workdir kept for inspection: {workdir}\n"
+            )
 
         return SimulationResult(
             workdir=workdir,
