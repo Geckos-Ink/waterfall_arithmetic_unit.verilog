@@ -163,12 +163,12 @@ repository root is produced this way:
 python3 -m wau_viewer \
   --config examples/wau_3x3_demo.json --stress 6 \
   --record examples/wau_3x3_demo.gif \
-  --framerate 10 --frames-per-cycle 6 --headless
+  --framerate 10 --frames-per-cycle 6 --gif-width 1500 --headless
 ```
 
 (`frames_per_cycle / framerate` = seconds of video per simulated cycle; the
 example plays each cycle over 0.6 s.) `--record-max-cycles N` trims long
-traces. MP4 output requires `ffmpeg`; GIF output uses ffmpeg's palette
+traces, `--gif-width` caps the GIF resolution (default 1000 px). MP4 output requires `ffmpeg`; GIF output uses ffmpeg's palette
 pipeline when available and falls back to a pure-Pillow encoder otherwise.
 
 In headless mode the GUI is never shown — frames are rendered off-screen by

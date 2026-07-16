@@ -307,6 +307,7 @@ def run_headless_recording(
     frames_per_cycle: int = 8,
     cycle_ms: int = DEFAULT_CYCLE_MS,
     max_cycles: Optional[int] = None,
+    gif_max_width: Optional[int] = None,
 ) -> Path:
     """Render the full trace off-screen and encode it. No window is shown.
 
@@ -324,7 +325,8 @@ def run_headless_recording(
     # the constructor fitted the view before the final widget geometry existed
     QApplication.processEvents()
     win.graph_view.fit_to_scene()
-    rec = FrameRecorder(framerate=framerate)
+    rec_kwargs = {} if gif_max_width is None else {"gif_max_width": gif_max_width}
+    rec = FrameRecorder(framerate=framerate, **rec_kwargs)
     rec.start()
     cycle_count = len(trace.cycles)
     if max_cycles is not None:

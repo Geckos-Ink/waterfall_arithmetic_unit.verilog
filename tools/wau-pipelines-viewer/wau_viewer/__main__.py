@@ -83,6 +83,9 @@ def main(argv=None) -> int:
                           "headless recordings (higher = smoother/slower)")
     out.add_argument("--record-max-cycles", type=int, default=None,
                      help="only record the first N trace cycles")
+    out.add_argument("--gif-width", type=int, default=None,
+                     help="max GIF width in pixels (default 1000); frames are "
+                          "downscaled to this before quantization")
     out.add_argument("--cycle-ms", type=int, default=1400,
                      help="initial playback pace in ms per simulated cycle")
     out.add_argument("--headless", action="store_true",
@@ -171,6 +174,7 @@ def main(argv=None) -> int:
             frames_per_cycle=args.frames_per_cycle,
             cycle_ms=args.cycle_ms,
             max_cycles=args.record_max_cycles,
+            gif_max_width=args.gif_width,
         )
         print(f"[wau-viewer] wrote {out_path}")
         return 0

@@ -22,8 +22,9 @@ GIF_COLORS = 96
 
 
 class FrameRecorder:
-    def __init__(self, framerate: int = 10) -> None:
+    def __init__(self, framerate: int = 10, gif_max_width: int = GIF_MAX_WIDTH) -> None:
         self.framerate = max(1, int(framerate))
+        self.gif_max_width = max(100, int(gif_max_width))
         self._tmpdir: Optional[Path] = None
         self._frame_idx = 0
         self._active = False
@@ -92,7 +93,7 @@ class FrameRecorder:
     def _encode_ffmpeg_gif(self, out_path: Path) -> bool:
         """Two-pass palette GIF via ffmpeg. Returns False to allow fallback."""
         vf = (
-            f"scale='min({GIF_MAX_WIDTH},iw)':-1:flags=lanczos,"
+            f"scale='min({self.gif_max_width},iw)':-1:flags=lanczos,"
             "split[s0][s1];[s0]palettegen=stats_mode=diff[p];"
             "[s1][p]paletteuse=dither=bayer:bayer_scale=3"
         )
@@ -116,7 +117,7 @@ class FrameRecorder:
 
         frame_paths = sorted(self._tmpdir.glob("*.png"))
         first = Image.open(frame_paths[0])
-        scale = min(1.0, GIF_MAX_WIDTH / first.width)
+        scale = min(1.0, self.gif_max_width / first.width)
         size = (round(first.width * scale), round(first.height * scale))
 
         def _prep(p: Path) -> "Image.Image":
