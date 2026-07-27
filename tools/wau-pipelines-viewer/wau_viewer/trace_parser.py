@@ -62,6 +62,9 @@ class CoreState:
     ddeliv_value: Optional[int] = None
     ddeliv_flow_id: Optional[int] = None
     ddeliv_stage_id: Optional[int] = None
+    # Set when the delivery left the fabric at a highway line's hub rather than
+    # at this core's local port (the default `lines` topology).
+    ddeliv_line: Optional[int] = None
     # Highway contract bus. `highway_request` is the core wanting the data
     # highway at all; `highway_call` is that request landing on the core's own
     # offered slot -- the cycle it actually calls the highway; `highway_holder`
@@ -82,23 +85,61 @@ class ObsState:
 
 
 @dataclass
-class HighwayState:
-    """Contract-bus state of the data highway for one cycle.
+class LineHighwayState:
+    """Contract-bus state of ONE highway line for one cycle.
 
-    ``slot`` is the core the bus is offering this clock; ``grant_valid`` /
-    ``grant_core`` say who currently owns the highway outright, ``grant_mode``
-    which kind of contract they posted, and ``grant_remaining`` how many beats
-    of it are still to run.
+    Each line arbitrates independently, so every line has its own slot cursor
+    and its own holder. ``slot`` and ``grant_core`` are line-local ids
+    (``0..line_size-1``); ``line_base`` converts them to global core indices.
+
+    ``grant_valid`` / ``grant_core`` say who owns this line outright,
+    ``grant_mode`` which kind of contract they posted, and ``grant_remaining``
+    how many beats of it are still to run.
     """
 
+    line: int = 0
+    line_base: int = 0
     slot: int = 0
     grant_valid: bool = False
     grant_core: int = 0
     grant_mode: int = 0
     grant_remaining: int = 0
+
+    @property
+    def slot_core(self) -> int:
+        """The global core index of the slot being offered."""
+        return self.line_base + self.slot
+
+    @property
+    def grant_core_index(self) -> int:
+        """The global core index of the contract holder."""
+        return self.line_base + self.grant_core
+
+
+@dataclass
+class HighwayState:
+    """Contract-bus state of the whole data highway fabric for one cycle.
+
+    ``lines`` holds one record per independent highway. The counters are
+    fabric-wide totals across every line.
+    """
+
+    lines: List[LineHighwayState] = field(default_factory=list)
     grant_count: int = 0
     hold_cycles: int = 0
     defer_count: int = 0
+
+    @property
+    def any_granted(self) -> bool:
+        return any(line.grant_valid for line in self.lines)
+
+    def line_for_core(self, core_index: int, line_size: int) -> "LineHighwayState":
+        """The line record governing ``core_index``."""
+        idx = core_index // line_size if line_size else 0
+        for line in self.lines:
+            if line.line == idx:
+                return line
+        return LineHighwayState(line=idx, line_base=idx * line_size)
 
 
 @dataclass
@@ -119,6 +160,10 @@ class TraceMeta:
     stim_count: int = 0
     total_cycles: int = 0
     outputs_seen: int = 0
+    # Highway geometry: how many independent highways, and how many cores share
+    # one. Under the default `lines` topology that is one highway per grid row.
+    line_count: int = 1
+    line_size: int = 0
 
 
 @dataclass
@@ -150,6 +195,8 @@ def parse_trace(path: Path) -> ParsedTrace:
                 meta.grid_y = int(kv.get("grid_y", 0))
                 meta.core_count = int(kv.get("core_count", 0))
                 meta.stim_count = int(kv.get("stim_count", 0))
+                meta.line_count = int(kv.get("line_count", 1)) or 1
+                meta.line_size = int(kv.get("line_size", 0)) or meta.core_count
             elif head == "@CYCLE":
                 if current is not None:
                     cycles.append(current)
@@ -204,6 +251,8 @@ def parse_trace(path: Path) -> ParsedTrace:
                     cs.ddeliv_value = _to_int(kv.get("ddeliv_val", "0"))
                     cs.ddeliv_flow_id = _to_int(kv.get("ddeliv_flow", "0"))
                     cs.ddeliv_stage_id = _to_int(kv.get("ddeliv_stage", "0"))
+                    if "ddeliv_line" in kv:
+                        cs.ddeliv_line = _to_int(kv["ddeliv_line"])
                 cs.highway_request = kv.get("hwy_req") == "1"
                 cs.highway_call = kv.get("hwy_call") == "1"
                 cs.highway_holder = kv.get("hwy_hold") == "1"
@@ -220,16 +269,21 @@ def parse_trace(path: Path) -> ParsedTrace:
                 )
             elif head == "HWY" and current is not None:
                 kv = _parse_kv(tokens)
-                current.highway = HighwayState(
+                line_index = _to_int(kv.get("line", "0"))
+                line_size = meta.line_size or 1
+                current.highway.lines.append(LineHighwayState(
+                    line=line_index,
+                    line_base=line_index * line_size,
                     slot=_to_int(kv.get("slot", "0")),
                     grant_valid=kv.get("grant") == "1",
                     grant_core=_to_int(kv.get("gcore", "0")),
                     grant_mode=_to_int(kv.get("gmode", "0")),
                     grant_remaining=_to_int(kv.get("grem", "0")),
-                    grant_count=_to_int(kv.get("grants", "0")),
-                    hold_cycles=_to_int(kv.get("hold", "0")),
-                    defer_count=_to_int(kv.get("defer", "0")),
-                )
+                ))
+                # Fabric-wide totals are repeated on every line record.
+                current.highway.grant_count = _to_int(kv.get("grants", "0"))
+                current.highway.hold_cycles = _to_int(kv.get("hold", "0"))
+                current.highway.defer_count = _to_int(kv.get("defer", "0"))
 
     if current is not None:
         cycles.append(current)
@@ -264,7 +318,7 @@ def derive_bottlenecks(trace: ParsedTrace) -> Dict[str, object]:
                 highway_calls[c.core_index] += 1
         if snap.host_in.valid and not snap.host_in.ready:
             backpressure += 1
-        if snap.highway.grant_valid:
+        if snap.highway.any_granted:
             highway_held_cycles += 1
 
     busy_ratio = [b / n for b in busy]

@@ -19,7 +19,7 @@
     "scheduler_program_policy_requested": "auto"
   },
   "metrics": {
-    "benchmark_ranking_score": 179296012.0,
+    "benchmark_ranking_score": 179295596.0,
     "busiest_core_busy_cycles": 37,
     "busiest_core_index": 4,
     "busiest_core_issue_count": 37,
@@ -40,7 +40,7 @@
     "scoreboard_matches": 8,
     "scoreboard_pass_ratio": 1.0,
     "scoreboard_total": 8,
-    "total_ms": 3012
+    "total_ms": 2596
   },
   "paths": {
     "benchmark_text": "benchmarks/mesh_stress_benchmark.txt",
@@ -80,16 +80,16 @@
     ]
   },
   "run_profile": "mesh_stress",
-  "run_utc": "2026-07-27T18:18:02Z",
+  "run_utc": "2026-07-27T23:09:16Z",
   "timing_ms": {
-    "compile_cw_ms": 431,
-    "generate_ms": 408,
-    "iverilog_tests_ms": 1341,
-    "total_ms": 3012,
-    "validate_ms": 398
+    "compile_cw_ms": 378,
+    "generate_ms": 446,
+    "iverilog_tests_ms": 977,
+    "total_ms": 2596,
+    "validate_ms": 397
   },
   "tool_versions": {
-    "git_commit": "03fc5cd",
+    "git_commit": "88c0acb",
     "git_tree_state": "dirty",
     "iverilog_version": "Icarus Verilog version 12.0 (stable) ()",
     "python_version": "Python 3.13.9"

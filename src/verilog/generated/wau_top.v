@@ -46,6 +46,14 @@ module wau_top #(
     localparam integer CONTRACT_WORD_WIDTH = `WAU_HIGHWAY_CONTRACT_WORD_WIDTH;
     localparam integer CONTRACT_BUS_ENABLE = 1;
 
+    // Highway geometry: how many independent highways the fabric has and how
+    // many cores share one. `lines` gives a highway per row; chain/matrix have
+    // a single highway spanning the whole grid.
+    localparam integer HIGHWAY_LINE_COUNT = `WAU_HIGHWAY_LINE_COUNT;
+    localparam integer HIGHWAY_LINE_SIZE = `WAU_HIGHWAY_LINE_SIZE;
+    // Reserved destination meaning "leave this line" (see wau_highway_router).
+    localparam [CORE_ID_WIDTH-1:0] HUB_DST = {CORE_ID_WIDTH{1'b1}};
+
     localparam integer CTRL_STAGE_LSB = 0;
     localparam integer CTRL_IMM_LSB = CTRL_STAGE_LSB + 8;
     localparam integer CTRL_USE_IMM_LSB = CTRL_IMM_LSB + DATA_WIDTH;
@@ -154,28 +162,18 @@ module wau_top #(
         .core_busy(core_busy)
     );
 
+    // Per-line fabric binding. Every core uses its own local port for both
+    // planes, and the coordinator sits on the hubs -- one per highway line --
+    // rather than sharing core 0's port. Dispatch is steered to the hub that
+    // owns the destination core, and results arrive back from whichever line
+    // produced them.
     genvar core_i;
     generate
         for (core_i = 0; core_i < CORE_COUNT; core_i = core_i + 1) begin : gen_local_binding
-            if (core_i == COORDINATOR_CORE_INDEX) begin : gen_ctrl_ingress
-                assign ctrl_local_in_valid[core_i] = coord_dispatch_valid;
-                assign coord_dispatch_ready = ctrl_local_in_ready[core_i];
-                assign ctrl_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = coord_dispatch_dst_core;
-                assign ctrl_local_in_payload[(core_i*CTRL_PAYLOAD_WIDTH) +: CTRL_PAYLOAD_WIDTH] = {
-                    coord_dispatch_flow_id,
-                    coord_dispatch_opcode,
-                    coord_dispatch_a,
-                    coord_dispatch_b,
-                    coord_dispatch_use_immediate,
-                    coord_dispatch_immediate_b,
-                    coord_dispatch_stage_id
-                };
-            end else begin : gen_ctrl_ingress_zero
-                assign ctrl_local_in_valid[core_i] = 1'b0;
-                assign ctrl_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
-                assign ctrl_local_in_payload[(core_i*CTRL_PAYLOAD_WIDTH) +: CTRL_PAYLOAD_WIDTH] = {CTRL_PAYLOAD_WIDTH{1'b0}};
-            end
-
+            // Nothing injects control packets at a core; the coordinator hub does.
+            assign ctrl_local_in_valid[core_i] = 1'b0;
+            assign ctrl_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+            assign ctrl_local_in_payload[(core_i*CTRL_PAYLOAD_WIDTH) +: CTRL_PAYLOAD_WIDTH] = {CTRL_PAYLOAD_WIDTH{1'b0}};
             assign core_dispatch_valid[core_i] = ctrl_local_out_valid[core_i];
             assign ctrl_local_out_ready[core_i] = core_dispatch_ready[core_i];
             assign core_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH] =
@@ -195,30 +193,111 @@ module wau_top #(
 
             assign data_local_in_valid[core_i] = core_result_valid[core_i];
             assign core_result_ready[core_i] = data_local_in_ready[core_i];
-            assign data_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
             assign data_local_in_payload[(core_i*DATA_PAYLOAD_WIDTH) +: DATA_PAYLOAD_WIDTH] = {
                 core_i[CORE_ID_WIDTH-1:0],
                 core_result_value[(core_i*DATA_WIDTH) +: DATA_WIDTH],
                 core_result_stage_id[(core_i*8) +: 8],
                 core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]
             };
+            // Results are addressed to the reserved off-line id, so each one
+            // walks west along its own line and leaves through that line's hub.
+            assign data_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = HUB_DST;
 
-            if (core_i == COORDINATOR_CORE_INDEX) begin : gen_data_egress
-                assign coord_result_valid = data_local_out_valid[core_i];
-                assign data_local_out_ready[core_i] = coord_result_ready;
-                assign coord_result_src_core =
-                    data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_SRC_CORE_LSB +: CORE_ID_WIDTH];
-                assign coord_result_value =
-                    data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_VALUE_LSB +: DATA_WIDTH];
-                assign coord_result_stage_id =
-                    data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_STAGE_LSB +: 8];
-                assign coord_result_flow_id =
-                    data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH];
-            end else begin : gen_data_egress_drop
-                assign data_local_out_ready[core_i] = 1'b1;
-            end
+            // No data packet is ever delivered *to* a core.
+            assign data_local_out_ready[core_i] = 1'b1;
         end
     endgenerate
+
+    // Dispatch demux: send the packet to the hub of the line holding the
+    // destination core. Line bounds are elaboration-time constants, so this is
+    // one comparator pair per line and no divider.
+    genvar hub_i;
+    generate
+        for (hub_i = 0; hub_i < HIGHWAY_LINE_COUNT; hub_i = hub_i + 1) begin : gen_ctrl_hub
+            localparam integer LINE_LO = hub_i * HIGHWAY_LINE_SIZE;
+            localparam integer LINE_HI = LINE_LO + HIGHWAY_LINE_SIZE - 1;
+
+            assign ctrl_hub_in_valid[hub_i] = coord_dispatch_valid
+                && (coord_dispatch_dst_core >= LINE_LO[CORE_ID_WIDTH-1:0])
+                && (coord_dispatch_dst_core <= LINE_HI[CORE_ID_WIDTH-1:0]);
+            assign ctrl_hub_in_dst[(hub_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = coord_dispatch_dst_core;
+            assign ctrl_hub_in_payload[(hub_i*CTRL_PAYLOAD_WIDTH) +: CTRL_PAYLOAD_WIDTH] = {
+                coord_dispatch_flow_id,
+                coord_dispatch_opcode,
+                coord_dispatch_a,
+                coord_dispatch_b,
+                coord_dispatch_use_immediate,
+                coord_dispatch_immediate_b,
+                coord_dispatch_stage_id
+            };
+
+            // Nothing is injected into the data plane from the host side, and
+            // a control packet should never come back out of a hub.
+            assign data_hub_in_valid[hub_i] = 1'b0;
+            assign data_hub_in_dst[(hub_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
+            assign data_hub_in_payload[(hub_i*DATA_PAYLOAD_WIDTH) +: DATA_PAYLOAD_WIDTH] = {DATA_PAYLOAD_WIDTH{1'b0}};
+            assign ctrl_hub_out_ready[hub_i] = 1'b1;
+        end
+    endgenerate
+
+    // An out-of-range destination is accepted and dropped rather than wedging
+    // the coordinator, matching how unknown flow ids are handled.
+    wire coord_dispatch_unmapped =
+        coord_dispatch_valid && (coord_dispatch_dst_core >= CORE_COUNT[CORE_ID_WIDTH-1:0]);
+    assign coord_dispatch_ready =
+        (|(ctrl_hub_in_valid & ctrl_hub_in_ready)) || coord_dispatch_unmapped;
+
+    // Result arbiter: every line can present a result in the same cycle, so
+    // pick one round-robin. Fixed priority would let the first line starve the
+    // rest exactly when the fabric is busiest.
+    reg [CORE_ID_WIDTH-1:0] hub_rr_ptr;
+    reg [CORE_ID_WIDTH-1:0] hub_sel;
+    reg hub_sel_valid;
+    integer arb_i;
+    integer arb_cand;
+    always @(*) begin
+        hub_sel_valid = 1'b0;
+        hub_sel = {CORE_ID_WIDTH{1'b0}};
+        for (arb_i = 0; arb_i < HIGHWAY_LINE_COUNT; arb_i = arb_i + 1) begin
+            arb_cand = hub_rr_ptr + arb_i;
+            if (arb_cand >= HIGHWAY_LINE_COUNT) begin
+                arb_cand = arb_cand - HIGHWAY_LINE_COUNT;
+            end
+            if (!hub_sel_valid && data_hub_out_valid[arb_cand]) begin
+                hub_sel_valid = 1'b1;
+                hub_sel = arb_cand[CORE_ID_WIDTH-1:0];
+            end
+        end
+    end
+
+    genvar grant_i;
+    generate
+        for (grant_i = 0; grant_i < HIGHWAY_LINE_COUNT; grant_i = grant_i + 1) begin : gen_hub_grant
+            assign data_hub_out_ready[grant_i] =
+                hub_sel_valid && (hub_sel == grant_i[CORE_ID_WIDTH-1:0]) && coord_result_ready;
+        end
+    endgenerate
+
+    assign coord_result_valid = hub_sel_valid;
+    assign coord_result_src_core =
+        data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_SRC_CORE_LSB +: CORE_ID_WIDTH];
+    assign coord_result_value =
+        data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_VALUE_LSB +: DATA_WIDTH];
+    assign coord_result_stage_id =
+        data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_STAGE_LSB +: 8];
+    assign coord_result_flow_id =
+        data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH];
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            hub_rr_ptr <= {CORE_ID_WIDTH{1'b0}};
+        end else if (hub_sel_valid && coord_result_ready) begin
+            hub_rr_ptr <= (hub_sel == (HIGHWAY_LINE_COUNT - 1))
+                ? {CORE_ID_WIDTH{1'b0}}
+                : hub_sel + 1'b1;
+        end
+    end
+
 
     wire [CORE_COUNT*32-1:0] ctrl_router_hop_count;
     wire [CORE_COUNT*32-1:0] ctrl_router_stall_count;
@@ -242,24 +321,43 @@ module wau_top #(
     wire [CORE_COUNT-1:0] data_contract_req;
     wire [CORE_COUNT*CONTRACT_WORD_WIDTH-1:0] data_contract_word;
     wire [CORE_COUNT-1:0] data_contract_call;
-    wire [CORE_ID_WIDTH-1:0] data_contract_slot;
-    wire data_contract_grant_valid;
-    wire [CORE_ID_WIDTH-1:0] data_contract_grant_core;
-    wire [1:0] data_contract_grant_mode;
-    wire [15:0] data_contract_grant_remaining;
+    wire [HIGHWAY_LINE_COUNT*CORE_ID_WIDTH-1:0] data_contract_slot;
+    wire [HIGHWAY_LINE_COUNT-1:0] data_contract_grant_valid;
+    wire [HIGHWAY_LINE_COUNT*CORE_ID_WIDTH-1:0] data_contract_grant_core;
+    wire [HIGHWAY_LINE_COUNT*2-1:0] data_contract_grant_mode;
+    wire [HIGHWAY_LINE_COUNT*16-1:0] data_contract_grant_remaining;
     wire [31:0] data_contract_grant_count;
     wire [31:0] data_contract_hold_cycles;
     wire [31:0] data_contract_defer_count;
 
     wire [CORE_COUNT-1:0] ctrl_contract_call;
-    wire [CORE_ID_WIDTH-1:0] ctrl_contract_slot;
-    wire ctrl_contract_grant_valid;
-    wire [CORE_ID_WIDTH-1:0] ctrl_contract_grant_core;
-    wire [1:0] ctrl_contract_grant_mode;
-    wire [15:0] ctrl_contract_grant_remaining;
+    wire [HIGHWAY_LINE_COUNT*CORE_ID_WIDTH-1:0] ctrl_contract_slot;
+    wire [HIGHWAY_LINE_COUNT-1:0] ctrl_contract_grant_valid;
+    wire [HIGHWAY_LINE_COUNT*CORE_ID_WIDTH-1:0] ctrl_contract_grant_core;
+    wire [HIGHWAY_LINE_COUNT*2-1:0] ctrl_contract_grant_mode;
+    wire [HIGHWAY_LINE_COUNT*16-1:0] ctrl_contract_grant_remaining;
     wire [31:0] ctrl_contract_grant_count;
     wire [31:0] ctrl_contract_hold_cycles;
     wire [31:0] ctrl_contract_defer_count;
+
+    // Coordinator hub channels, one per highway line, for each plane.
+    wire [HIGHWAY_LINE_COUNT-1:0] ctrl_hub_in_valid;
+    wire [HIGHWAY_LINE_COUNT-1:0] ctrl_hub_in_ready;
+    wire [HIGHWAY_LINE_COUNT*CORE_ID_WIDTH-1:0] ctrl_hub_in_dst;
+    wire [HIGHWAY_LINE_COUNT*CTRL_PAYLOAD_WIDTH-1:0] ctrl_hub_in_payload;
+    wire [HIGHWAY_LINE_COUNT-1:0] ctrl_hub_out_valid;
+    wire [HIGHWAY_LINE_COUNT-1:0] ctrl_hub_out_ready;
+    wire [HIGHWAY_LINE_COUNT*CORE_ID_WIDTH-1:0] ctrl_hub_out_dst;
+    wire [HIGHWAY_LINE_COUNT*CTRL_PAYLOAD_WIDTH-1:0] ctrl_hub_out_payload;
+
+    wire [HIGHWAY_LINE_COUNT-1:0] data_hub_in_valid;
+    wire [HIGHWAY_LINE_COUNT-1:0] data_hub_in_ready;
+    wire [HIGHWAY_LINE_COUNT*CORE_ID_WIDTH-1:0] data_hub_in_dst;
+    wire [HIGHWAY_LINE_COUNT*DATA_PAYLOAD_WIDTH-1:0] data_hub_in_payload;
+    wire [HIGHWAY_LINE_COUNT-1:0] data_hub_out_valid;
+    wire [HIGHWAY_LINE_COUNT-1:0] data_hub_out_ready;
+    wire [HIGHWAY_LINE_COUNT*CORE_ID_WIDTH-1:0] data_hub_out_dst;
+    wire [HIGHWAY_LINE_COUNT*DATA_PAYLOAD_WIDTH-1:0] data_hub_out_payload;
 
     assign data_contract_req = core_result_valid;
 
@@ -277,7 +375,9 @@ module wau_top #(
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH),
-        .CONTRACT_BUS_ENABLE(0)
+        .CONTRACT_BUS_ENABLE(0),
+        .LINE_COUNT(HIGHWAY_LINE_COUNT),
+        .LINE_SIZE(HIGHWAY_LINE_SIZE)
     ) control_plane_mesh_u (
         .clk(clk),
         .rst_n(rst_n),
@@ -291,6 +391,14 @@ module wau_top #(
         .local_out_payload(ctrl_local_out_payload),
         .contract_req({CORE_COUNT{1'b0}}),
         .contract_word({(CORE_COUNT*CONTRACT_WORD_WIDTH){1'b0}}),
+        .hub_in_valid(ctrl_hub_in_valid),
+        .hub_in_ready(ctrl_hub_in_ready),
+        .hub_in_dst(ctrl_hub_in_dst),
+        .hub_in_payload(ctrl_hub_in_payload),
+        .hub_out_valid(ctrl_hub_out_valid),
+        .hub_out_ready(ctrl_hub_out_ready),
+        .hub_out_dst(ctrl_hub_out_dst),
+        .hub_out_payload(ctrl_hub_out_payload),
         .contract_call(ctrl_contract_call),
         .contract_slot(ctrl_contract_slot),
         .contract_grant_valid(ctrl_contract_grant_valid),
@@ -313,7 +421,9 @@ module wau_top #(
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
         .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH),
-        .CONTRACT_BUS_ENABLE(CONTRACT_BUS_ENABLE)
+        .CONTRACT_BUS_ENABLE(CONTRACT_BUS_ENABLE),
+        .LINE_COUNT(HIGHWAY_LINE_COUNT),
+        .LINE_SIZE(HIGHWAY_LINE_SIZE)
     ) data_plane_mesh_u (
         .clk(clk),
         .rst_n(rst_n),
@@ -327,6 +437,14 @@ module wau_top #(
         .local_out_payload(data_local_out_payload),
         .contract_req(data_contract_req),
         .contract_word(data_contract_word),
+        .hub_in_valid(data_hub_in_valid),
+        .hub_in_ready(data_hub_in_ready),
+        .hub_in_dst(data_hub_in_dst),
+        .hub_in_payload(data_hub_in_payload),
+        .hub_out_valid(data_hub_out_valid),
+        .hub_out_ready(data_hub_out_ready),
+        .hub_out_dst(data_hub_out_dst),
+        .hub_out_payload(data_hub_out_payload),
         .contract_call(data_contract_call),
         .contract_slot(data_contract_slot),
         .contract_grant_valid(data_contract_grant_valid),

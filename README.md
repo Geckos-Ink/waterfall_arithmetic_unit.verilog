@@ -14,9 +14,18 @@ Typical uses: experimenting with small FPGA-side math accelerators, teaching dat
 iverilog simulation of a 3x3 WAU under a randomized multi-flow stress stream.
 Each cycle plays as a slow-motion scene: operand packets travel hop-by-hop from
 the coordinator, the applied operation flashes on the core, and result data
-flows back over the mesh — with a HUD tracking busy cores, packets in flight,
-and peak parallel operations. The viewer can also compile a `.cw` program or a
-config into a fresh ad-hoc circuit itself (`--config`/`--cw` + `--stress N`).*
+flows back over the highway — with a HUD tracking busy cores, packets in flight,
+and peak parallel operations. Each row of cores has its **own
+[highway](#highway-topology)** — the default topology gives one independent
+highway per line, drawn as the rail beneath that row, ending at its own
+coordinator `hub` on the left. Every rail carries its own
+[contracting bus](#highway-contracting-bus) with its own slot numbering and its
+own marker, so the three arbitrate in parallel rather than in turn. Watch a
+core's stub go dashed when it wants its highway, amber on the cycle it calls
+from its own slot, and solid red while it holds that highway under a contract —
+and note that a contract on one row never stops another row moving. The viewer can also compile a
+`.cw` program or a config into a fresh ad-hoc circuit itself (`--config`/`--cw`
++ `--stress N`).*
 
 This repository now contains a working foundation for:
 - device-aware WAU configuration (real FPGA presets included),
@@ -30,7 +39,7 @@ This repository now contains a working foundation for:
 - a real `.cw` language front-end (`cw-lint`/`cw-eval`: lexer → AST → host-side interpreter) with **classes and magic methods** for compile-time type handling — operator overloading and type-conversion hooks (`__to_float__`/`__to_int__`/`__convert__`) the compiler can invoke to bridge precisions dynamically,
 - CW software reference model + benchmark value scoreboard (`scoreboard_pass_ratio` gate on top of latency/makespan),
 - Verilog emission for a multi-issue coordinator (keeps up to `coordinator.max_in_flight` distinct flows executing concurrently across the core mesh, so independent flows actually overlap on different cores at runtime), core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
-- selectable [highway topology](#highway-topology) via `device.highway.topology`: a **single-dimension highway per layer by default** (5-port routers, index-compare routing, no per-port divider) with the full `matrix` mesh available opt-in for traffic that needs the cross-section,
+- selectable [highway topology](#highway-topology) via `device.highway.topology`: **one independent highway per line of cores by default** (3-port routers, per-line coordinator hubs, index-compare routing, no per-port divider) so rows carry traffic in parallel, with a single-highway `chain` and the full `matrix` mesh available opt-in,
 - a [highway contracting bus](#highway-contracting-bus) (`device.highway.contract_bus`) that offers one core slot per clock and lets a core answer with either a bare request bit or a contract stating how, how much and how many times it intends to transmit — taking the highway exclusively for that transfer instead of re-arbitrating per beat, bounded by a beat count and a hard lease,
 - reusable generated-project assembly through `thirds/veribuilder`, an externalizable Python package for parameterized Verilog project manifests, feature-gated files, simple templates, headers, and deterministic file emission,
 - configurable station cache size and replacement policy (FIFO/LRU) via `compiler.station_cache`,
@@ -376,7 +385,7 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 - `CWs/`: all real `.cw` programs — `example-program.cw` (compiler-oriented Conv2D reference), `stress/mesh_stress.cw` (ad-hoc mesh/hardware-stress kernel), `basic_arithmetic.cw`, and `samples/{nn,types}/*.cw`
 - `datasets/`: git-ignored, populated on demand by `scripts/fetch_dataset.py` (MNIST)
 - `src/verilog/generated/`: generated output artifacts
-- `tests/rtl/`: SystemVerilog/Verilog testbenches (ALU, top demo, highway mesh + hop counters, single-dimension chain routing, contracting bus, MMIO register file)
+- `tests/rtl/`: SystemVerilog/Verilog testbenches (ALU, top demo, highway mesh + hop counters, per-line highway independence, chain routing, contracting bus, MMIO register file)
 - `tests/python/`: Python unit tests for compiler helpers, CW reference scoreboard, and program-level priority/replicas/policy stress matrix
 - `scripts/run_randomized_stress.py`: randomized multi-flow stress (CI input)
 - `scripts/run_iverilog_tests.sh`: iverilog test runner
@@ -404,11 +413,11 @@ iverilog -g2005-sv -I src/verilog/generated -o /tmp/wau_sim \
 
 ## Generated Artifacts
 A `generate` run emits:
-- `wau_defs.vh`: project/device/operation constants (also `WAU_STATION_CACHE_ENTRIES`, `WAU_STATION_CACHE_POLICY_{FIFO,LRU}`, `WAU_HIGHWAY_TOPOLOGY_{LINEAR,MATRIX}`, `WAU_HIGHWAY_PORT_COUNT`, and the `WAU_HIGHWAY_CONTRACT_*` field/limit macros)
+- `wau_defs.vh`: project/device/operation constants (also `WAU_STATION_CACHE_ENTRIES`, `WAU_STATION_CACHE_POLICY_{FIFO,LRU}`, `WAU_HIGHWAY_TOPOLOGY_{LINES,CHAIN,MATRIX}`, `WAU_HIGHWAY_PORT_COUNT`, `WAU_HIGHWAY_LINE_{COUNT,SIZE}`, and the `WAU_HIGHWAY_CONTRACT_*` field/limit macros)
 - `wau_operation_alu.v`: arithmetic opcode execution unit
 - `wau_neighbor_forward.v`: directional valid/ready packet forwarding link
 - `wau_highway_contract.v`: the highway contracting bus — cycling slot offer, request/contract acceptance, exclusive grant with beat and lease bounds, grant/hold/defer counters
-- `wau_highway_router.v`: per-core router with local/neighbor arbitration, plus 32-bit `hop_count`/`stall_count`/`local_delivered_count`/`forward_count` observability counters. Its port set follows `device.highway.topology`: `local`/`prev`/`next`(+`up`/`down`) for the default single-dimension highway, `north`/`south`/`east`/`west`(+`up`/`down`) for `matrix`
+- `wau_highway_router.v`: per-core router with local/neighbor arbitration, plus 32-bit `hop_count`/`stall_count`/`local_delivered_count`/`forward_count` observability counters. Its port set follows `device.highway.topology`: `local`/`prev`/`next` for the default per-line highway, the same plus `up`/`down` for `chain`, and `north`/`south`/`east`/`west`(+`up`/`down`) for `matrix`
 - `wau_highway_mesh.v`: generated highway interconnect — one index-order chain per layer by default, the full neighbour mesh under `matrix` — plus the contract bus and the per-router counter buses
 - `wau_core_station.v`: per-core station (dispatch, latency control, configurable FIFO/LRU multi-entry input/result cache, `cache_hit_count`/`cache_lookup_count`)
 - `wau_core.v`: core wrapper
@@ -430,7 +439,7 @@ Main JSON fields:
   - `data_types` (e.g. `["int32", "float16", "float32"]`)
   - `coordinator_mode`, `enable_runtime_auto_adapt`
   - `highway`: the highway fabric's shape and its contracting bus
-    - `topology` (`linear` | `matrix`, default **`linear`**): how many dimensions of highway the emitted mesh carries — see [Highway topology](#highway-topology).
+    - `topology` (`lines` | `chain` | `matrix`, default **`lines`**): how the highway is laid out over the grid — see [Highway topology](#highway-topology).
     - `contract_bus` (bool, default `true`): emit the per-highway contracting bus (`wau_highway_contract`) on the data-plane highway — see [Highway contracting bus](#highway-contracting-bus).
     - `contract_max_burst` (int `[1,255]`, default `8`): the largest run of beats a single contract may reserve. Also clamps the schedule-derived per-core contract words.
     - `contract_lease_cycles` (int `[1,65535]`, default `64`): hard upper bound on how long one contract may own the highway, so a holder that goes quiet can never wedge it.
@@ -460,42 +469,70 @@ Main JSON fields:
 
 ## Highway topology
 
-`device.highway.topology` chooses how many dimensions of highway link the
-emitted routers carry. The default is deliberately the *lighter* one.
+`device.highway.topology` chooses how the highway is laid out over the core
+grid. All three keep the highway *one-dimensional per highway*; they differ in
+how many highways there are and how those reach the coordinator. The default is
+deliberately the lightest arrangement that still parallelises.
 
-**`linear` (default) — one highway per layer.** Each layer's cores form a single
-1-D highway walked in core-index order: core `i` links to `i - 1` and `i + 1`, so
-the last core of a row is the previous hop of the first core of the next row.
-Routers keep `LOCAL`/`PREV`/`NEXT` (plus `UP`/`DOWN` when `grid.z > 1`) — 5 ports
-instead of 7 — and `route_dir` reduces to comparing the destination index
-against the router's own. In a 3D grid this means every layer gets its own
-highway, joined vertically.
+**`lines` (default) — one highway per line of cores.** A `grid.x × grid.y` grid
+gets `grid.y` **independent** highways, one per row of `grid.x` cores; a layered
+grid gets that set per layer (`grid.y * grid.z` in total). Each is a
+self-contained `PREV`/`NEXT` run whose west end opens onto **its own coordinator
+hub**, so routers keep just `LOCAL`/`PREV`/`NEXT` — 3 ports instead of 7 — and
+`route_dir` reduces to asking whether the destination lies further along *this*
+line, against elaboration-time constants.
 
-Two consequences worth calling out:
+The point of the arrangement is that the lines are genuinely independent:
 
-- It is materially cheaper. Fewer ports means a smaller crossbar per core and
-  fewer `wau_neighbor_forward` links per layer (`N-1` instead of
-  `2·N - GRID_X - GRID_Y`), leaving room on the device for other things.
-- It sidesteps the [non-power-of-two LE blow-up](#non-power-of-two-grid-blows-the-le-budget)
+- **Rows move in parallel.** Row 0's traffic shares neither wires, nor
+  back-pressure, nor arbitration with row 1's. Blocking one line's hub leaves
+  every other line running — [`tb_wau_highway_lines`](tests/rtl/tb_wau_highway_lines.v)
+  asserts exactly that, because it is what distinguishes this topology from a
+  single shared highway.
+- **Every line arbitrates on its own.** The contracting bus is instantiated per
+  line, so a contract taken out on one row cannot hold off another.
+- **It is materially cheaper.** Three router ports mean a much smaller crossbar
+  per core, and a line of `N` cores needs `N-1` links with no row-to-row joints
+  at all.
+- **It sidesteps the [non-power-of-two LE blow-up](#non-power-of-two-grid-blows-the-le-budget)**
   entirely: with no `dst_core % GRID_X` / `dst_core / GRID_X` in the router,
   there is no `LPM_DIVIDE` to infer per port, whatever the grid shape.
 
-The trade is highway cross-section: a linear highway has one path between any
-two cores, so heavy all-to-all traffic contends where a mesh would spread.
+Cores never address each other in the current execution model — all traffic is
+coordinator↔core — so per-line hubs cost no reachability. A result is addressed
+to a reserved off-line id, walks west along its own line, and leaves through
+that line's hub; `wau_top` steers dispatch to the hub owning the destination
+core and round-robins the returning lines into the coordinator.
 
-**`matrix` — the full mesh.** The previous topology: `N`/`S`/`E`/`W` (plus
-`U`/`D`) links with X-then-Y-then-Z dimension-order routing, 7 router ports.
-Opt in for kernels whose highway traffic actually needs the extra bandwidth.
+**`chain` — one highway per layer.** Each layer's cores form a *single* 1-D
+highway walked in core-index order: core `i` links to `i - 1` and `i + 1`, so the
+last core of a row is the previous hop of the first core of the next row. Routers
+keep `LOCAL`/`PREV`/`NEXT` plus `UP`/`DOWN` (5 ports), and layers are joined
+vertically. Fewest links of the three — but every packet shares one wire, so it
+serialises where `lines` would parallelise, and its row-to-row joint is a long
+wire in silicon. Opt in when link count matters more than highway throughput.
+[`src/python/configs/wau_chain_highway_demo.json`](src/python/configs/wau_chain_highway_demo.json)
+is the tracked example.
+
+```json
+"device": { "highway": { "topology": "chain" } }
+```
+
+**`matrix` — the full mesh.** The original topology: `N`/`S`/`E`/`W` (plus
+`U`/`D`) links with X-then-Y-then-Z dimension-order routing, 7 router ports. Opt
+in for kernels whose highway traffic actually needs the cross-section.
 [`src/python/configs/wau_matrix_highway_demo.json`](src/python/configs/wau_matrix_highway_demo.json)
-is the tracked example, and CI elaborates the whole fabric suite against it so
-the path never ships unexercised.
+is the tracked example.
 
 ```json
 "device": { "highway": { "topology": "matrix" } }
 ```
 
-Both topologies keep the same `wau_highway_mesh` port interface, so `wau_top`,
-the testbenches and the viewer are written once.
+CI elaborates the whole fabric suite against all three, so no path ships
+unexercised. Every topology keeps the same `wau_highway_mesh` port interface —
+per-core `local_*`, per-line `hub_*`, per-line contract bus — so `wau_top`, the
+testbenches and the viewer are written once; under `chain`/`matrix` the hub
+ports are simply inert and the coordinator keeps using core 0's local port.
 
 ## Highway contracting bus
 

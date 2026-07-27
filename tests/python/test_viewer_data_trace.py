@@ -7,9 +7,11 @@ The pipelines viewer previously captured per-core dispatch/result plus aggregate
 counters, but no per-link/per-core *data movement*. The trace TB now emits a
 ``ddeliv=...`` record whenever a result packet is delivered to a core over the
 data mesh (src core -> dst core), which the graph view animates as a moving data
-packet, and an ``HWY``/``hwy_*`` record carrying the highway contracting bus --
-which slot the bus is offering, which core is calling the highway, and who holds
-it under a contract. These tests cover the parser unconditionally and the full
+packet, and one ``HWY`` record per highway *line* carrying that line's
+contracting bus -- which slot it is offering, which core is calling the highway,
+and who holds it under a contract. Because the default topology gives every line
+its own bus, slot/grant ids are line-local and resolve to global cores through
+the line base. These tests cover the parser unconditionally and the full
 iverilog-driven trace when the toolchain is available.
 """
 from __future__ import annotations
@@ -28,7 +30,7 @@ from wau_viewer.trace_parser import derive_bottlenecks, parse_trace  # noqa: E40
 
 
 _SYNTHETIC_TRACE = """# wau-pipelines-viewer trace v1
-META grid_x=3 grid_y=2 core_count=6 stim_count=1
+META grid_x=3 grid_y=2 core_count=6 stim_count=1 line_count=2 line_size=3
 @CYCLE 5
 HOST_IN v=0 r=1 flow=0 a=0 b=0
 HOST_OUT v=0 r=1 flow=0 val=0
@@ -36,7 +38,8 @@ CORE 0 busy=0 cache_hit=0 ddeliv=1 ddeliv_src=2 ddeliv_val=38 ddeliv_flow=1 ddel
 CORE 1 busy=1 cache_hit=0 disp=1 disp_op=3 disp_a=14 disp_b=3 disp_imm=0 disp_use_imm=1 disp_stage=1 disp_flow=1 hwy_req=1 hwy_call=1 hwy_hold=0 cache_h_count=0 cache_l_count=0
 CORE 2 busy=0 cache_hit=0 hwy_req=1 hwy_call=0 hwy_hold=1 cache_h_count=0 cache_l_count=0
 OBS hops=4 stalls=0 forwards=2 deliv=1 cache_h=0 cache_l=1
-HWY slot=1 grant=1 gcore=2 gmode=2 grem=5 grants=3 hold=9 defer=4
+HWY line=0 slot=1 grant=0 gcore=0 gmode=0 grem=0 grants=3 hold=9 defer=4
+HWY line=1 slot=0 grant=1 gcore=2 gmode=2 grem=5 grants=3 hold=9 defer=4
 @END total_cycles=5 outputs_seen=1
 """
 
@@ -72,12 +75,29 @@ class DataTraceParserTests(unittest.TestCase):
 
         snap = trace.cycles[0]
         hwy = snap.highway
-        self.assertEqual(hwy.slot, 1)
-        self.assertTrue(hwy.grant_valid)
-        self.assertEqual(hwy.grant_core, 2)
-        self.assertEqual(hwy.grant_mode, 2)  # stream
-        self.assertEqual(hwy.grant_remaining, 5)
+        # One record per independent highway line.
+        self.assertEqual([line.line for line in hwy.lines], [0, 1])
         self.assertEqual((hwy.grant_count, hwy.hold_cycles, hwy.defer_count), (3, 9, 4))
+
+        # Line 0 is merely offering a slot; nobody holds it.
+        line0 = hwy.lines[0]
+        self.assertEqual(line0.slot, 1)
+        self.assertFalse(line0.grant_valid)
+        # Line-local ids resolve to global core indices through the line base.
+        self.assertEqual(line0.slot_core, 1)
+
+        # Line 1 has a holder, and its line-local id 2 is global core 5.
+        line1 = hwy.lines[1]
+        self.assertTrue(line1.grant_valid)
+        self.assertEqual(line1.grant_core, 2)
+        self.assertEqual(line1.grant_core_index, 5)
+        self.assertEqual(line1.grant_mode, 2)  # stream
+        self.assertEqual(line1.grant_remaining, 5)
+        self.assertTrue(hwy.any_granted)
+
+        # A core is governed by its own line's bus, never another's.
+        self.assertIs(hwy.line_for_core(4, line_size=3), line1)
+        self.assertIs(hwy.line_for_core(1, line_size=3), line0)
 
         by_index = {c.core_index: c for c in snap.cores}
         # Core 1 called the highway from its own offered slot...
@@ -119,8 +139,8 @@ class DataTraceParserTests(unittest.TestCase):
             p.write_text(legacy)
             trace = parse_trace(p)
 
-        self.assertFalse(trace.cycles[0].highway.grant_valid)
-        self.assertEqual(trace.cycles[0].highway.slot, 0)
+        self.assertEqual(trace.cycles[0].highway.lines, [])
+        self.assertFalse(trace.cycles[0].highway.any_granted)
 
     def test_profiles_operations_from_real_dispatch_records(self) -> None:
         import tempfile
@@ -189,9 +209,22 @@ class DataTraceEndToEndTests(unittest.TestCase):
         self.assertTrue(producing, "no core produced a result")
         self.assertTrue(producing <= requesting)
 
-        # The bus must actually cycle its slot rather than sitting on core 0.
-        offered = {snap.highway.slot for snap in trace.cycles}
-        self.assertGreater(len(offered), 1)
+        # Every line must run its own bus, and each must actually cycle its
+        # slot rather than sitting on one core.
+        self.assertEqual(
+            {len(snap.highway.lines) for snap in trace.cycles},
+            {trace.meta.line_count},
+        )
+        for line_index in range(trace.meta.line_count):
+            offered = {
+                line.slot
+                for snap in trace.cycles
+                for line in snap.highway.lines
+                if line.line == line_index
+            }
+            self.assertGreater(
+                len(offered), 1, f"line {line_index} never advanced its slot"
+            )
 
 
 if __name__ == "__main__":

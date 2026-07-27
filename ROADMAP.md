@@ -805,3 +805,31 @@ Possible work:
   vertical mesh links, and `iverilog` tests. Remaining work: synthesize and
   calibrate layered candidates on real FPGA boards, then feed measured timing
   and resource data back into `arch-search`.
+
+### 2026-07-28 — Per-line highways become the default fabric
+
+`device.highway.topology` now defaults to **`lines`**: one *independent* highway
+per line of cores (`grid.y * grid.z` of them), each a three-port `PREV`/`NEXT`
+run reaching the coordinator through its own hub. Rows no longer share wires,
+back-pressure or arbitration, so they carry traffic in parallel; the contracting
+bus is instantiated per line for the same reason.
+
+The previous single index-order chain is preserved as the opt-in `chain`
+topology, and `matrix` is unchanged. CI elaborates the fabric suite against all
+three.
+
+Planned follow-ups, none of them done:
+
+- **Measure the parallelism.** `tb_wau_highway_lines` proves the lines are
+  structurally independent (wedging one hub leaves the others running), but no
+  benchmark yet quantifies the throughput difference against `chain`.
+- **Board-calibrate the area.** The three-port router's LE saving is argued from
+  port/link counts and verified only in `iverilog`; it has not been through
+  Quartus.
+- **Teach the scheduler the topology.** `_coord_distance` and the
+  `dependency_edges_v1` metric still model Manhattan distance, which matches
+  none of the three topologies exactly. `arch-search` output is byte-frozen and
+  ranks on that metric, so correcting it needs a versioned metric bump.
+- **Core-to-core traffic.** Per-line hubs cost no reachability only because all
+  traffic is currently coordinator↔core. Introducing direct core-to-core
+  transfers would need a real inter-line path.

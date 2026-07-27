@@ -30,6 +30,12 @@ module tb_wau_viewer;
     // can decode each per-core data-plane delivery (the "data packet arriving at
     // a core" event used to animate data movement in the viewer).
     localparam integer TB_CORE_ID_WIDTH      = 8;
+    // Highway geometry, straight from the emitted defs so the trace follows
+    // whatever topology was generated.
+    localparam integer TB_LINE_COUNT         = `WAU_HIGHWAY_LINE_COUNT;
+    localparam integer TB_LINE_SIZE          = `WAU_HIGHWAY_LINE_SIZE;
+    // Mirrors wau_top's COORDINATOR_CORE_INDEX.
+    localparam integer TB_COORDINATOR_CORE   = 0;
     localparam integer TB_DATA_FLOW_ID_LSB   = 0;
     localparam integer TB_DATA_STAGE_LSB     = TB_DATA_FLOW_ID_LSB + FLOW_ID_WIDTH;
     localparam integer TB_DATA_VALUE_LSB     = TB_DATA_STAGE_LSB + 8;
@@ -97,6 +103,8 @@ module tb_wau_viewer;
     integer cycle_counter;
     integer stim_idx;
     integer core_i;
+    integer hwy_line;
+    integer deliv_line;
     integer outputs_seen;
 
     initial begin
@@ -111,8 +119,8 @@ module tb_wau_viewer;
             $finish;
         end
         $fwrite(trace_f, "# wau-pipelines-viewer trace v1\n");
-        $fwrite(trace_f, "META grid_x=%%0d grid_y=%%0d core_count=%%0d stim_count=%%0d\n",
-            GRID_X, GRID_Y, CORE_COUNT, STIM_COUNT);
+        $fwrite(trace_f, "META grid_x=%%0d grid_y=%%0d core_count=%%0d stim_count=%%0d line_count=%%0d line_size=%%0d\n",
+            GRID_X, GRID_Y, CORE_COUNT, STIM_COUNT, TB_LINE_COUNT, TB_LINE_SIZE);
     end
 
     // Per-cycle trace dump. We snapshot just before negedge so dispatch / result
@@ -156,32 +164,56 @@ module tb_wau_viewer;
                         $signed(dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_VALUE_LSB +: DATA_WIDTH]),
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH],
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8]);
+                end else if (core_i == TB_COORDINATOR_CORE) begin
+                    // With one highway per line a result leaves the fabric at
+                    // its line's hub, not at a core's local port. The result
+                    // arbiter grants a single line per cycle, so at most one
+                    // hub handshakes here; attribute it to the coordinator,
+                    // which is where the value actually lands.
+                    for (deliv_line = 0; deliv_line < TB_LINE_COUNT; deliv_line = deliv_line + 1) begin
+                        if (dut.data_hub_out_valid[deliv_line] && dut.data_hub_out_ready[deliv_line]) begin
+                            $fwrite(trace_f, " ddeliv=1 ddeliv_line=%%0d ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d",
+                                deliv_line,
+                                dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_SRC_CORE_LSB +: TB_CORE_ID_WIDTH],
+                                $signed(dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_VALUE_LSB +: DATA_WIDTH]),
+                                dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH],
+                                dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8]);
+                        end
+                    end
                 end
                 // Highway contract bus, per core: `hwy_req` is the core asking
-                // for the data highway, `hwy_call` is that ask landing on its
-                // own offered slot (the moment a core *calls* the highway), and
-                // `hwy_hold` marks the core that currently owns it.
+                // for its highway, `hwy_call` is that ask landing on its own
+                // offered slot (the moment a core *calls* the highway), and
+                // `hwy_hold` marks the core that currently owns it. Each core
+                // is arbitrated by ITS OWN line's bus, so the grant is compared
+                // against that line's state and a line-local core id.
+                hwy_line = core_i / TB_LINE_SIZE;
                 $fwrite(trace_f, " hwy_req=%%0d hwy_call=%%0d hwy_hold=%%0d",
                     dut.data_contract_req[core_i],
                     dut.data_contract_call[core_i],
-                    dut.data_contract_grant_valid
-                        && (dut.data_contract_grant_core == core_i[7:0]));
+                    dut.data_contract_grant_valid[hwy_line]
+                        && (dut.data_contract_grant_core[(hwy_line*TB_CORE_ID_WIDTH) +: TB_CORE_ID_WIDTH]
+                            == (core_i %% TB_LINE_SIZE)));
                 $fwrite(trace_f, " cache_h_count=%%0d cache_l_count=%%0d\n",
                     dut.core_cache_hit_count[(core_i*32) +: 32],
                     dut.core_cache_lookup_count[(core_i*32) +: 32]);
             end
-            // Highway-wide contract state: which slot is being offered, who
-            // holds the highway, under what contract, and how much of it is
-            // left to run.
-            $fwrite(trace_f, "HWY slot=%%0d grant=%%0d gcore=%%0d gmode=%%0d grem=%%0d grants=%%0d hold=%%0d defer=%%0d\n",
-                dut.data_contract_slot,
-                dut.data_contract_grant_valid,
-                dut.data_contract_grant_core,
-                dut.data_contract_grant_mode,
-                dut.data_contract_grant_remaining,
-                obs_total_contract_grant_count,
-                obs_total_contract_hold_cycles,
-                obs_total_contract_defer_count);
+            // Per-highway contract state: one record per LINE, since each line
+            // arbitrates independently. `slot`/`gcore` are line-local ids; the
+            // grant/hold/defer totals are fabric-wide and repeated on each
+            // record so a reader never has to join across lines.
+            for (hwy_line = 0; hwy_line < TB_LINE_COUNT; hwy_line = hwy_line + 1) begin
+                $fwrite(trace_f, "HWY line=%%0d slot=%%0d grant=%%0d gcore=%%0d gmode=%%0d grem=%%0d grants=%%0d hold=%%0d defer=%%0d\n",
+                    hwy_line,
+                    dut.data_contract_slot[(hwy_line*TB_CORE_ID_WIDTH) +: TB_CORE_ID_WIDTH],
+                    dut.data_contract_grant_valid[hwy_line],
+                    dut.data_contract_grant_core[(hwy_line*TB_CORE_ID_WIDTH) +: TB_CORE_ID_WIDTH],
+                    dut.data_contract_grant_mode[(hwy_line*2) +: 2],
+                    dut.data_contract_grant_remaining[(hwy_line*16) +: 16],
+                    obs_total_contract_grant_count,
+                    obs_total_contract_hold_cycles,
+                    obs_total_contract_defer_count);
+            end
             $fwrite(trace_f, "OBS hops=%%0d stalls=%%0d forwards=%%0d deliv=%%0d cache_h=%%0d cache_l=%%0d\n",
                 obs_total_hop_count, obs_total_stall_count, obs_total_forward_count,
                 obs_total_local_delivered_count, obs_total_cache_hit_count, obs_total_cache_lookup_count);

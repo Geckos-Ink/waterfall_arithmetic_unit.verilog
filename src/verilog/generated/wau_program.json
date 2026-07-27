@@ -20,7 +20,7 @@
       "float16"
     ],
     "highway": {
-      "topology": "linear",
+      "topology": "lines",
       "contract_bus": true,
       "contract_max_burst": 8,
       "contract_lease_cycles": 64

@@ -4,6 +4,9 @@
 module tb_wau_highway_mesh;
     localparam CORE_COUNT = 3;
     localparam CORE_ID_WIDTH = 8;
+    // Highway lines this instantiation implies; pinned so the hub port
+    // widths cannot drift from the topology under test.
+    localparam TB_LINE_COUNT = 1;
     localparam PAYLOAD_WIDTH = 16;
 
     reg clk;
@@ -22,14 +25,20 @@ module tb_wau_highway_mesh;
     // The contract bus is a highway-side feature; these meshes are elaborated
     // with it disabled so the topology tests stay about routing alone.
     wire [CORE_COUNT-1:0] contract_call;
-    wire [CORE_ID_WIDTH-1:0] contract_slot;
-    wire contract_grant_valid;
-    wire [CORE_ID_WIDTH-1:0] contract_grant_core;
-    wire [1:0] contract_grant_mode;
-    wire [15:0] contract_grant_remaining;
+    wire [TB_LINE_COUNT*CORE_ID_WIDTH-1:0] contract_slot;
+    wire [TB_LINE_COUNT-1:0] contract_grant_valid;
+    wire [TB_LINE_COUNT*CORE_ID_WIDTH-1:0] contract_grant_core;
+    wire [TB_LINE_COUNT*2-1:0] contract_grant_mode;
+    wire [TB_LINE_COUNT*16-1:0] contract_grant_remaining;
     wire [31:0] contract_grant_count;
     wire [31:0] contract_hold_cycles;
     wire [31:0] contract_defer_count;
+
+    // Hub ports: one coordinator channel per highway line.
+    wire [TB_LINE_COUNT-1:0] hub_in_ready;
+    wire [TB_LINE_COUNT-1:0] hub_out_valid;
+    wire [TB_LINE_COUNT*CORE_ID_WIDTH-1:0] hub_out_dst;
+    wire [TB_LINE_COUNT*PAYLOAD_WIDTH-1:0] hub_out_payload;
 
     wire [CORE_COUNT*32-1:0] router_hop_count;
     wire [CORE_COUNT*32-1:0] router_stall_count;
@@ -57,6 +66,14 @@ module tb_wau_highway_mesh;
         .local_out_ready(local_out_ready),
         .local_out_dst(local_out_dst),
         .local_out_payload(local_out_payload),
+        .hub_in_valid({TB_LINE_COUNT{1'b0}}),
+        .hub_in_ready(hub_in_ready),
+        .hub_in_dst({(TB_LINE_COUNT*CORE_ID_WIDTH){1'b0}}),
+        .hub_in_payload({(TB_LINE_COUNT*PAYLOAD_WIDTH){1'b0}}),
+        .hub_out_valid(hub_out_valid),
+        .hub_out_ready({TB_LINE_COUNT{1'b1}}),
+        .hub_out_dst(hub_out_dst),
+        .hub_out_payload(hub_out_payload),
         .contract_req({CORE_COUNT{1'b0}}),
         .contract_word({(CORE_COUNT*`WAU_HIGHWAY_CONTRACT_WORD_WIDTH){1'b0}}),
         .contract_call(contract_call),

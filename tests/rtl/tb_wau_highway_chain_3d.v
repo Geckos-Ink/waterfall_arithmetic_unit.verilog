@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "wau_defs.vh"
 
-// The layered case of the single-dimension highway: with grid.z > 1 each layer
+// The layered case of the chain highway: with grid.z > 1 each layer
 // carries its own index-order chain and the layers are joined only by the
 // vertical up/down links. A packet therefore has to take the vertical hop
 // first (the router resolves UP/DOWN before PREV/NEXT) and then walk the
@@ -12,10 +12,13 @@
 // on a 2x2x2 grid rather than spot-checking a route.
 //
 // Meaningful only against RTL generated with
-// device.highway.topology = "linear" (the default).
-module tb_wau_highway_linear_3d;
+// device.highway.topology = "chain".
+module tb_wau_highway_chain_3d;
     localparam CORE_COUNT = 8;   // 2 x 2 x 2
     localparam CORE_ID_WIDTH = 8;
+    // Highway lines this instantiation implies; pinned so the hub port
+    // widths cannot drift from the topology under test.
+    localparam TB_LINE_COUNT = 1;
     localparam PAYLOAD_WIDTH = 16;
     localparam CONTRACT_WORD_WIDTH = `WAU_HIGHWAY_CONTRACT_WORD_WIDTH;
 
@@ -33,14 +36,20 @@ module tb_wau_highway_linear_3d;
     wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_out_payload;
 
     wire [CORE_COUNT-1:0] contract_call;
-    wire [CORE_ID_WIDTH-1:0] contract_slot;
-    wire contract_grant_valid;
-    wire [CORE_ID_WIDTH-1:0] contract_grant_core;
-    wire [1:0] contract_grant_mode;
-    wire [15:0] contract_grant_remaining;
+    wire [TB_LINE_COUNT*CORE_ID_WIDTH-1:0] contract_slot;
+    wire [TB_LINE_COUNT-1:0] contract_grant_valid;
+    wire [TB_LINE_COUNT*CORE_ID_WIDTH-1:0] contract_grant_core;
+    wire [TB_LINE_COUNT*2-1:0] contract_grant_mode;
+    wire [TB_LINE_COUNT*16-1:0] contract_grant_remaining;
     wire [31:0] contract_grant_count;
     wire [31:0] contract_hold_cycles;
     wire [31:0] contract_defer_count;
+
+    // Hub ports: one coordinator channel per highway line.
+    wire [TB_LINE_COUNT-1:0] hub_in_ready;
+    wire [TB_LINE_COUNT-1:0] hub_out_valid;
+    wire [TB_LINE_COUNT*CORE_ID_WIDTH-1:0] hub_out_dst;
+    wire [TB_LINE_COUNT*PAYLOAD_WIDTH-1:0] hub_out_payload;
 
     wire [CORE_COUNT*32-1:0] router_hop_count;
     wire [CORE_COUNT*32-1:0] router_stall_count;
@@ -68,6 +77,14 @@ module tb_wau_highway_linear_3d;
         .local_out_ready(local_out_ready),
         .local_out_dst(local_out_dst),
         .local_out_payload(local_out_payload),
+        .hub_in_valid({TB_LINE_COUNT{1'b0}}),
+        .hub_in_ready(hub_in_ready),
+        .hub_in_dst({(TB_LINE_COUNT*CORE_ID_WIDTH){1'b0}}),
+        .hub_in_payload({(TB_LINE_COUNT*PAYLOAD_WIDTH){1'b0}}),
+        .hub_out_valid(hub_out_valid),
+        .hub_out_ready({TB_LINE_COUNT{1'b1}}),
+        .hub_out_dst(hub_out_dst),
+        .hub_out_payload(hub_out_payload),
         .contract_req({CORE_COUNT{1'b0}}),
         .contract_word({(CORE_COUNT*CONTRACT_WORD_WIDTH){1'b0}}),
         .contract_call(contract_call),
@@ -129,12 +146,12 @@ module tb_wau_highway_linear_3d;
         end
 
         if (failures != 0) begin
-            $display("FAIL: %0d unreachable/corrupt pairs on the layered linear highway",
+            $display("FAIL: %0d unreachable/corrupt pairs on the layered chain highway",
                 failures);
             $fatal(1);
         end
 
-        $display("PASS: tb_wau_highway_linear_3d (all %0d ordered pairs on 2x2x2)",
+        $display("PASS: tb_wau_highway_chain_3d (all %0d ordered pairs on 2x2x2)",
             CORE_COUNT * (CORE_COUNT - 1));
         $finish;
     end

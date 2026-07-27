@@ -25,8 +25,10 @@ from wau_viewer.model import (  # noqa: E402
     HighwayInfo,
     WauModel,
     derive_stress_stimulus,
-    linear_route,
-    linear_segments,
+    chain_route,
+    chain_segments,
+    line_route,
+    line_segments,
     manhattan_route,
     matrix_segments,
 )
@@ -64,51 +66,80 @@ def _make_model(flow_ids, highway: HighwayInfo | None = None) -> WauModel:
     )
 
 
-class LinearHighwayRouteTests(unittest.TestCase):
-    """The default single-dimension highway is one chain in core-index order.
+class LineHighwayRouteTests(unittest.TestCase):
+    """The default highway is one INDEPENDENT highway per line of cores.
 
     Mirrors the generated `wau_highway_router` under
-    `device.highway.topology = "linear"`, which routes by comparing the
-    destination index against its own -- so the reconstructed route must walk
-    consecutive indices, including across a row boundary.
+    `device.highway.topology = "lines"`: a router forwards NEXT only when the
+    destination is further along its own line, so a route never leaves the line
+    it started on -- anything addressed elsewhere walks west and leaves through
+    that line's coordinator hub.
     """
 
-    def test_route_walks_consecutive_indices(self) -> None:
-        self.assertEqual(linear_route(0, 4), [0, 1, 2, 3, 4])
+    def test_route_within_a_line_walks_consecutive_indices(self) -> None:
+        self.assertEqual(line_route(3, 0, 2), [0, 1, 2])
 
     def test_route_is_symmetric_backwards(self) -> None:
-        self.assertEqual(linear_route(4, 0), [4, 3, 2, 1, 0])
+        self.assertEqual(line_route(3, 2, 0), [2, 1, 0])
 
     def test_route_same_core_is_single_point(self) -> None:
-        self.assertEqual(linear_route(3, 3), [3])
+        self.assertEqual(line_route(3, 1, 1), [1])
 
-    def test_row_boundary_is_an_ordinary_chain_hop(self) -> None:
-        # 3x3 grid: core 2 ends row 0 and core 3 starts row 1. Under the linear
-        # highway that is one hop, not the two the mesh would need.
-        self.assertEqual(linear_route(2, 3), [2, 3])
+    def test_off_line_traffic_walks_to_its_own_hub(self) -> None:
+        # 3-core lines: core 5 is on line 1, core 0 on line 0. The highway only
+        # carries it as far as core 3 -- its line's hub end -- and the
+        # coordinator does the rest.
+        self.assertEqual(line_route(3, 5, 0), [5, 4, 3])
+        # ...and from the hub end itself that is a single point.
+        self.assertEqual(line_route(3, 3, 0), [3])
+
+    def test_a_row_boundary_is_not_a_hop(self) -> None:
+        # Core 2 ends line 0 and core 3 starts line 1. Under `lines` there is no
+        # link between them at all -- unlike `chain`, where it is one hop.
+        self.assertEqual(line_route(3, 2, 3), [2, 1, 0])
+        self.assertEqual(chain_route(2, 3), [2, 3])
 
     def test_model_dispatches_on_topology(self) -> None:
-        linear = _make_model([1])
-        self.assertEqual(linear.highway_route(0, 8), list(range(9)))
+        lines = _make_model([1])
+        self.assertEqual(lines.highway_route(0, 2), [0, 1, 2])
+        self.assertEqual(lines.line_count, 3)
+        self.assertEqual(lines.line_size, 3)
+        self.assertEqual(lines.line_of(4), 1)
+
+        chain = _make_model([1], HighwayInfo(topology="chain"))
+        self.assertEqual(chain.highway_route(0, 8), list(range(9)))
+        self.assertEqual(chain.line_count, 1)
+
         matrix = _make_model([1], HighwayInfo(topology="matrix"))
         self.assertEqual(matrix.highway_route(0, 8), [0, 1, 2, 5, 8])
 
     def test_every_hop_is_a_drawn_highway_link(self) -> None:
-        model = _make_model([1])
-        links = set(model.highway_segments())
-        for src in range(model.core_count):
-            for dst in range(model.core_count):
-                route = model.highway_route(src, dst)
-                self.assertEqual(route[0], src)
-                self.assertEqual(route[-1], dst)
-                for a, b in zip(route, route[1:]):
-                    self.assertIn((min(a, b), max(a, b)), links)
+        for highway in (HighwayInfo(), HighwayInfo(topology="chain"),
+                        HighwayInfo(topology="matrix")):
+            with self.subTest(topology=highway.topology):
+                model = _make_model([1], highway)
+                links = set(model.highway_segments())
+                for src in range(model.core_count):
+                    for dst in range(model.core_count):
+                        route = model.highway_route(src, dst)
+                        self.assertEqual(route[0], src)
+                        for a, b in zip(route, route[1:]):
+                            self.assertIn((min(a, b), max(a, b)), links)
 
 
 class HighwaySegmentTests(unittest.TestCase):
-    def test_linear_segments_form_one_chain(self) -> None:
-        self.assertEqual(linear_segments(4), [(0, 1), (1, 2), (2, 3)])
-        self.assertEqual(linear_segments(1), [])
+    def test_line_segments_never_span_two_lines(self) -> None:
+        # 3 lines of 3: the (2,3) and (5,6) row boundaries must NOT be links.
+        segments = line_segments(3, 3)
+        self.assertEqual(
+            segments, [(0, 1), (1, 2), (3, 4), (4, 5), (6, 7), (7, 8)]
+        )
+        for a, b in segments:
+            self.assertEqual(a // 3, b // 3)
+
+    def test_chain_segments_form_one_chain(self) -> None:
+        self.assertEqual(chain_segments(4), [(0, 1), (1, 2), (2, 3)])
+        self.assertEqual(chain_segments(1), [])
 
     def test_matrix_segments_are_the_neighbour_mesh(self) -> None:
         self.assertEqual(
@@ -116,9 +147,11 @@ class HighwaySegmentTests(unittest.TestCase):
             [(0, 1), (0, 2), (1, 3), (2, 3)],
         )
 
-    def test_linear_uses_fewer_links_than_the_mesh(self) -> None:
+    def test_one_dimensional_highways_use_fewer_links_than_the_mesh(self) -> None:
         # The whole point of the single-dimension default: a lighter fabric.
-        self.assertLess(len(linear_segments(9)), len(matrix_segments(3, 3)))
+        # Per-line is lighter still, since it drops the row-to-row joints too.
+        self.assertLess(len(line_segments(3, 3)), len(chain_segments(9)))
+        self.assertLess(len(chain_segments(9)), len(matrix_segments(3, 3)))
 
 
 class ManhattanRouteTests(unittest.TestCase):

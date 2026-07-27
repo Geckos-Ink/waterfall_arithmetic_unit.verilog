@@ -50,56 +50,39 @@ module wau_highway_router #(
     output wire next_out_valid,
     input wire next_out_ready,
     output wire [CORE_ID_WIDTH-1:0] next_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] next_out_payload,
-
-    input wire up_in_valid,
-    output wire up_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] up_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] up_in_payload,
-
-    output wire up_out_valid,
-    input wire up_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] up_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] up_out_payload,
-
-    input wire down_in_valid,
-    output wire down_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] down_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] down_in_payload,
-
-    output wire down_out_valid,
-    input wire down_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] down_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] down_out_payload
+    output wire [PAYLOAD_WIDTH-1:0] next_out_payload
 );
     localparam DIR_LOCAL = 3'd0;
     localparam DIR_PREV = 3'd1;
     localparam DIR_NEXT = 3'd2;
-    localparam DIR_UP = 3'd3;
-    localparam DIR_DOWN = 3'd4;
-    localparam PORT_COUNT = 5;
+    localparam PORT_COUNT = 3;
 
-    // One 1-D highway per layer, walked in core-index order: the last
-    // core of a row is the previous hop of the first core of the next
-    // row. Comparing plain indices keeps the router free of the
-    // per-port modulo/divide the matrix topology needs to recover x/y,
-    // which is what makes a non-power-of-two grid infer an LPM_DIVIDE.
-    localparam integer LAYER_CORE_COUNT = GRID_X * GRID_Y;
-    localparam [CORE_ID_WIDTH-1:0] LAYER_FIRST = CORE_Z * LAYER_CORE_COUNT;
-    localparam [CORE_ID_WIDTH-1:0] LAYER_LAST = (CORE_Z * LAYER_CORE_COUNT) + LAYER_CORE_COUNT - 1;
+    // One highway per line of cores. Everything off this line leaves
+    // through the coordinator hub hanging off the west end, so the
+    // router only has to ask: is the destination further along MY line?
+    // Both bounds are elaboration-time constants, so this costs a pair
+    // of comparators and no divider at all.
+    localparam [CORE_ID_WIDTH-1:0] LINE_LAST = (CORE_INDEX - CORE_X) + GRID_X - 1;
+
+    // Reserved destination meaning "leave this line": the grid is
+    // capped at 255 cores, so the all-ones id is never a real core and
+    // falls out of the west end into the hub under the rule below.
+    localparam [CORE_ID_WIDTH-1:0] HUB_DST = {CORE_ID_WIDTH{1'b1}};
 
     function [2:0] route_dir;
         input [CORE_ID_WIDTH-1:0] dst_core;
         begin
-            if (dst_core == CORE_INDEX[CORE_ID_WIDTH-1:0]) begin
+            if (dst_core == HUB_DST) begin
+                route_dir = DIR_PREV;
+            end else if (dst_core == CORE_INDEX[CORE_ID_WIDTH-1:0]) begin
                 route_dir = DIR_LOCAL;
-            end else if (dst_core < LAYER_FIRST) begin
-                route_dir = DIR_UP;
-            end else if (dst_core > LAYER_LAST) begin
-                route_dir = DIR_DOWN;
-            end else if (dst_core > CORE_INDEX[CORE_ID_WIDTH-1:0]) begin
+            end else if ((dst_core > CORE_INDEX[CORE_ID_WIDTH-1:0])
+                       && (dst_core <= LINE_LAST)) begin
                 route_dir = DIR_NEXT;
             end else begin
+                // Either back along this line, or off it entirely --
+                // both head west, and off-line traffic falls out of the
+                // first core's PREV port into the hub.
                 route_dir = DIR_PREV;
             end
         end
@@ -118,50 +101,34 @@ module wau_highway_router #(
     assign in_valid[DIR_LOCAL] = local_in_valid;
     assign in_valid[DIR_PREV] = prev_in_valid;
     assign in_valid[DIR_NEXT] = next_in_valid;
-    assign in_valid[DIR_UP] = up_in_valid;
-    assign in_valid[DIR_DOWN] = down_in_valid;
 
     assign in_dst[DIR_LOCAL] = local_in_dst;
     assign in_dst[DIR_PREV] = prev_in_dst;
     assign in_dst[DIR_NEXT] = next_in_dst;
-    assign in_dst[DIR_UP] = up_in_dst;
-    assign in_dst[DIR_DOWN] = down_in_dst;
 
     assign in_payload[DIR_LOCAL] = local_in_payload;
     assign in_payload[DIR_PREV] = prev_in_payload;
     assign in_payload[DIR_NEXT] = next_in_payload;
-    assign in_payload[DIR_UP] = up_in_payload;
-    assign in_payload[DIR_DOWN] = down_in_payload;
 
     assign out_ready[DIR_LOCAL] = local_out_ready;
     assign out_ready[DIR_PREV] = prev_out_ready;
     assign out_ready[DIR_NEXT] = next_out_ready;
-    assign out_ready[DIR_UP] = up_out_ready;
-    assign out_ready[DIR_DOWN] = down_out_ready;
 
     assign local_in_ready = in_ready_r[DIR_LOCAL];
     assign prev_in_ready = in_ready_r[DIR_PREV];
     assign next_in_ready = in_ready_r[DIR_NEXT];
-    assign up_in_ready = in_ready_r[DIR_UP];
-    assign down_in_ready = in_ready_r[DIR_DOWN];
 
     assign local_out_valid = out_valid_r[DIR_LOCAL];
     assign prev_out_valid = out_valid_r[DIR_PREV];
     assign next_out_valid = out_valid_r[DIR_NEXT];
-    assign up_out_valid = out_valid_r[DIR_UP];
-    assign down_out_valid = out_valid_r[DIR_DOWN];
 
     assign local_out_dst = out_dst_r[DIR_LOCAL];
     assign prev_out_dst = out_dst_r[DIR_PREV];
     assign next_out_dst = out_dst_r[DIR_NEXT];
-    assign up_out_dst = out_dst_r[DIR_UP];
-    assign down_out_dst = out_dst_r[DIR_DOWN];
 
     assign local_out_payload = out_payload_r[DIR_LOCAL];
     assign prev_out_payload = out_payload_r[DIR_PREV];
     assign next_out_payload = out_payload_r[DIR_NEXT];
-    assign up_out_payload = out_payload_r[DIR_UP];
-    assign down_out_payload = out_payload_r[DIR_DOWN];
 
     integer out_i;
     integer in_i;

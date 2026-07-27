@@ -20,14 +20,18 @@ capture all render the exact same deterministic frames. Concurrent packets are
 offset onto parallel lanes and counted in the HUD to make the mesh-level
 parallelism of a program visually evident.
 
-Underneath the grid sits the *highway scheme*: a rail standing for the highway's
-contracting bus, one numbered tick per core slot, and a stub tapping each core
-onto it. The stub is the answer to "when does a core call a highway" — dim while
-the core is quiet, dashed while it wants the highway, amber on the cycle it
-calls from its own offered slot, and solid red for as long as it owns the
-highway under a contract. The sliding marker is the slot the bus is currently
-offering, and it parks on the holder while a contract is in force. Every one of
-those states is read from the RTL trace, never inferred.
+Woven through the grid is the *highway scheme*. Everything is routed
+orthogonally and stays inside the row gutters, so the picture is as ordered as
+the fabric: the chain's row-to-row hop drops into the gutter and runs back along
+it rather than slashing across the grid, and the contracting bus is drawn as one
+branch per row joined by a spine, putting every core's slot directly beneath the
+core itself. The stub tapping each core onto its slot answers "when does a core
+call a highway" — dim while the core is quiet, dashed while it wants the
+highway, amber on the cycle it calls from its own offered slot, and solid red
+for as long as it owns the highway under a contract. The marker walks each
+branch left to right and steps down to the next, which is exactly the row-major
+order the slots are offered in, and parks on the holder while a contract is in
+force. Every one of those states is read from the RTL trace, never inferred.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QPainter,
+    QPainterPath,
     QPen,
     QWheelEvent,
 )
@@ -49,6 +54,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsLineItem,
     QGraphicsObject,
+    QGraphicsPathItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
@@ -190,19 +196,71 @@ class CoreItem(QGraphicsRectItem):
         self.flow_badge.setText(flow_badge)
 
 
-class MeshLink(QGraphicsLineItem):
+def gutter_y(row: int, fraction: float) -> float:
+    """A y inside the padding band below grid row ``row``.
+
+    The band between two rows is the only horizontal space that crosses no
+    core, so both the chain's row-to-row hop and the contract bus are routed
+    through it at different fractions.
+    """
+    return row * PITCH + CELL_SIZE + CELL_PADDING * fraction
+
+
+# Where each thing sits inside that band.
+GUTTER_CHAIN = 0.30
+GUTTER_BUS = 0.74
+
+
+def link_points(a: CoreItem, b: CoreItem) -> List[QPointF]:
+    """Polyline for one highway link, routed so it never cuts across the grid.
+
+    Physically adjacent cores get a straight centre-to-centre segment; the core
+    rectangles paint over its interior, so only the gap between them shows.
+
+    The chain's row-to-row hop is the one long link the single-dimension
+    highway has — the last core of a row connecting to the first core of the
+    next. Drawn centre-to-centre it reads as a diagonal slash across the whole
+    grid, which makes an ordered topology look chaotic. Routed instead down
+    into the gutter, along it, and back up, it reads the way it would on a
+    schematic: a return path, with the grid left intact.
+    """
+    ca, cb = a.center(), b.center()
+    if a.y_grid == b.y_grid or a.x_grid == b.x_grid:
+        return [ca, cb]
+
+    upper, lower = (a, b) if a.y_grid < b.y_grid else (b, a)
+    band = gutter_y(upper.y_grid, GUTTER_CHAIN)
+    points = [
+        upper.center(),
+        QPointF(upper.center().x(), band),
+        QPointF(lower.center().x(), band),
+        lower.center(),
+    ]
+    return points if upper is a else points[::-1]
+
+
+class MeshLink(QGraphicsPathItem):
     def __init__(self, a: CoreItem, b: CoreItem) -> None:
         super().__init__()
         self.a = a
         self.b = b
+        self.points: List[QPointF] = []
         self.setPen(QPen(COLOR_LINK, 3))
         self.setZValue(-5)
         self.refresh()
 
     def refresh(self) -> None:
-        ca = self.a.center()
-        cb = self.b.center()
-        self.setLine(ca.x(), ca.y(), cb.x(), cb.y())
+        self.points = link_points(self.a, self.b)
+        path = QPainterPath(self.points[0])
+        for point in self.points[1:]:
+            path.lineTo(point)
+        self.setPath(path)
+
+    def points_from(self, src_core_index: int) -> List[QPointF]:
+        """The polyline oriented so it starts at ``src_core_index``."""
+        if src_core_index == self.a.core_index:
+            return self.points
+        return self.points[::-1]
 
     def pulse(self, on: bool) -> None:
         pen = QPen(COLOR_LINK_ACTIVE if on else COLOR_LINK, 5 if on else 3)
@@ -210,20 +268,22 @@ class MeshLink(QGraphicsLineItem):
 
 
 class HighwayStub(QGraphicsLineItem):
-    """The drop from a core down onto the contract-bus rail.
+    """The drop from a core onto its slot on the contract bus.
 
     This is the "core calls a highway" indicator: it is dim while the core is
     quiet, lights amber on the cycle the core actually calls the highway from
     its own offered slot, and turns red for as long as that core holds the
     highway under a contract.
+
+    It is a plain vertical drop, because each core's slot sits on the bus
+    branch directly beneath it — no stub ever crosses another.
     """
 
-    def __init__(self, core: "CoreItem", slot_x: float, rail_y: float) -> None:
+    def __init__(self, core: "CoreItem", tick_x: float, tick_y: float) -> None:
         super().__init__()
         self.core = core
-        c = core.center()
         bottom = core.sceneBoundingRect().bottom()
-        self.setLine(c.x(), bottom, slot_x, rail_y)
+        self.setLine(tick_x, bottom, tick_x, tick_y)
         self.setZValue(-4)
         self.set_state(request=False, call=False, hold=False)
 
@@ -239,19 +299,23 @@ class HighwayStub(QGraphicsLineItem):
 
 
 class HighwaySlotMarker(QGraphicsRectItem):
-    """The bus slot currently being offered, sliding along the rail."""
+    """The bus slot currently being offered.
+
+    It walks each row's branch left to right and then steps down to the next —
+    which is exactly the row-major order `wau_highway_contract` offers slots
+    in, so the round-robin is legible from the marker's motion alone.
+    """
 
     SIZE = 20.0
 
-    def __init__(self, rail_y: float) -> None:
+    def __init__(self) -> None:
         super().__init__(QRectF(0, 0, self.SIZE, self.SIZE))
-        self._rail_y = rail_y
         self.setBrush(QBrush(COLOR_HWY_OFFER))
         self.setPen(QPen(QColor("#10131a"), 2))
         self.setZValue(6)
 
-    def move_to(self, x: float, granted: bool) -> None:
-        self.setPos(x - self.SIZE / 2, self._rail_y - self.SIZE / 2)
+    def move_to(self, pos: QPointF, granted: bool) -> None:
+        self.setPos(pos.x() - self.SIZE / 2, pos.y() - self.SIZE / 2)
         # While a contract is in force the bus stops offering slots, so the
         # marker parks on the holder rather than continuing to sweep.
         self.setBrush(QBrush(COLOR_HWY_HOLD if granted else COLOR_HWY_OFFER))
@@ -465,67 +529,127 @@ class WauScene(QGraphicsScene):
             legend_x += entry.boundingRect().width() + 28
 
     def _build_highway_scheme(self, grid_bottom: float) -> None:
-        """Draw the highway's contracting bus as an explicit scheme.
+        """Draw the highway fabric as an explicit scheme.
 
-        The rail is the bus itself, one tick per core slot; the stub dropping
-        from each core is that core's connection to it. Together they answer
-        "which core is calling the highway right now, and who owns it" at a
-        glance, instead of that arbitration being invisible.
+        Under the default `lines` topology there is one INDEPENDENT highway per
+        line of cores, so this draws one rail per line, in the gutter directly
+        beneath that line, each carrying its own contract bus and its own slot
+        marker. There is deliberately no spine joining them: the lines do not
+        touch, and drawing a joint would misrepresent the fabric. What each rail
+        does have is a hub stub on its left, because the coordinator is the one
+        thing every line reaches.
+
+        `chain` and `matrix` have a single highway spanning the whole grid, so
+        their rails are joined by a spine into one bus instead.
+
+        Either way each core's slot sits immediately below the core itself, so
+        its stub is a plain vertical drop and nothing crosses anything -- the
+        scheme stays as ordered as the grid it serves. Walking a rail left to
+        right is also the exact order `wau_highway_contract` offers that bus's
+        slots in, so a marker's path traces the round-robin rather than merely
+        indexing it.
         """
         hwy = self.model.highway
-        self._rail_y = grid_bottom + 56
+        per_line = hwy.is_lines
         self._stubs: Dict[int, HighwayStub] = {}
-        self._slot_x: Dict[int, float] = {}
+        self._slot_pos: Dict[int, QPointF] = {}
+        self._line_markers: Dict[int, HighwaySlotMarker] = {}
 
         left = 0.0
         right = max(1, self.model.grid_x) * PITCH - CELL_PADDING
-        rail = QGraphicsLineItem(left, self._rail_y, right, self._rail_y)
-        rail.setPen(QPen(COLOR_HWY_RAIL, 8))
-        rail.setZValue(-6)
-        self.addItem(rail)
+        spine_x = -CELL_PADDING * 0.55
+        rows = max(1, self.model.grid_y)
 
-        label = "single-dimension highway (chain)" if hwy.is_linear else "matrix highway (mesh)"
-        bus_state = "contract bus" if hwy.contract_bus else "contract bus off"
+        rail_y = [gutter_y(row, GUTTER_BUS) for row in range(rows)]
+        for y in rail_y:
+            rail = QGraphicsLineItem(spine_x, y, right, y)
+            rail.setPen(QPen(COLOR_HWY_RAIL, 7))
+            rail.setZValue(-6)
+            self.addItem(rail)
+
+        if per_line:
+            # Each line's own way off itself: a stub to the coordinator hub.
+            # Drawn separately per line precisely because they are separate.
+            hub_font = QFont("Menlo", 8)
+            for line_index, y in enumerate(rail_y):
+                hub = QGraphicsLineItem(spine_x, y, spine_x - 26, y)
+                hub.setPen(QPen(COLOR_HWY_RAIL.lighter(130), 5))
+                hub.setZValue(-6)
+                self.addItem(hub)
+
+                hub_label = QGraphicsSimpleTextItem("hub")
+                hub_label.setFont(hub_font)
+                hub_label.setBrush(QBrush(COLOR_DIM_TEXT))
+                hub_label.setPos(spine_x - 48, y - 20)
+                self.addItem(hub_label)
+        elif rows > 1:
+            # One highway: the rails are segments of the same bus.
+            spine = QGraphicsLineItem(spine_x, rail_y[0], spine_x, rail_y[-1])
+            spine.setPen(QPen(COLOR_HWY_RAIL, 7))
+            spine.setZValue(-6)
+            self.addItem(spine)
+
+        line_size = max(1, self.model.line_size)
+        tick_font = QFont("Menlo", 8)
+        for idx in range(max(1, self.model.core_count)):
+            core_item = self.core_items.get(idx)
+            if core_item is None:
+                continue
+            x = core_item.center().x()
+            y = rail_y[min(core_item.y_grid, rows - 1)]
+            self._slot_pos[idx] = QPointF(x, y)
+
+            tick = QGraphicsLineItem(x, y - 9, x, y + 9)
+            tick.setPen(QPen(COLOR_HWY_RAIL.lighter(150), 2))
+            tick.setZValue(-5)
+            self.addItem(tick)
+
+            # Slot ids are line-local, so label them the way the bus numbers
+            # them rather than by global core index.
+            slot_id = idx % line_size if per_line else idx
+            tick_label = QGraphicsSimpleTextItem(f"slot {slot_id}")
+            tick_label.setFont(tick_font)
+            tick_label.setBrush(QBrush(COLOR_DIM_TEXT))
+            tick_label.setPos(x + 8, y + 2)
+            self.addItem(tick_label)
+
+            stub = HighwayStub(core_item, x, y)
+            self.addItem(stub)
+            self._stubs[idx] = stub
+
+        self._rail_y = rail_y[-1]
+
+        # One marker per bus: every line arbitrates independently, so a single
+        # marker could not tell the truth about more than one of them.
+        for line_index in range(self.model.line_count):
+            marker = HighwaySlotMarker()
+            base = line_index * line_size
+            marker.move_to(
+                self._slot_pos.get(base, QPointF(left, self._rail_y)), granted=False
+            )
+            self.addItem(marker)
+            self._line_markers[line_index] = marker
+
+        if per_line:
+            label = (
+                f"{self.model.line_count} independent highways"
+                f"  ·  one per line of {line_size} cores"
+            )
+        elif hwy.is_chain:
+            label = "single-dimension highway (chain)"
+        else:
+            label = "matrix highway (mesh)"
+        bus_state = "contract bus per line" if per_line else "contract bus"
+        if not hwy.contract_bus:
+            bus_state = "contract bus off"
         rail_label = QGraphicsSimpleTextItem(
             f"{label}  ·  {bus_state}"
             + (f"  ·  max burst {hwy.contract_max_burst}" if hwy.contract_bus else "")
         )
         rail_label.setFont(QFont("Menlo", 11, QFont.Bold))
         rail_label.setBrush(QBrush(COLOR_DIM_TEXT))
-        rail_label.setPos(left, self._rail_y + 28)
+        rail_label.setPos(left, self._rail_y + 18)
         self.addItem(rail_label)
-
-        # One slot tick per core, spread evenly along the rail in *slot* order —
-        # the order wau_highway_contract offers them in. Slots get their own
-        # position rather than sitting under their core, because cores in
-        # different rows share an x and their taps would otherwise overlap.
-        count = max(1, self.model.core_count)
-        pitch = (right - left) / count
-        tick_font = QFont("Menlo", 8)
-        for idx in range(count):
-            core_item = self.core_items.get(idx)
-            if core_item is None:
-                continue
-            x = left + (idx + 0.5) * pitch
-            self._slot_x[idx] = x
-            tick = QGraphicsLineItem(x, self._rail_y - 10, x, self._rail_y + 10)
-            tick.setPen(QPen(COLOR_HWY_RAIL.lighter(150), 2))
-            tick.setZValue(-5)
-            self.addItem(tick)
-
-            tick_label = QGraphicsSimpleTextItem(str(idx))
-            tick_label.setFont(tick_font)
-            tick_label.setBrush(QBrush(COLOR_DIM_TEXT))
-            tick_label.setPos(x - 4, self._rail_y + 12)
-            self.addItem(tick_label)
-
-            stub = HighwayStub(core_item, x, self._rail_y)
-            self.addItem(stub)
-            self._stubs[idx] = stub
-
-        self._slot_marker = HighwaySlotMarker(self._rail_y)
-        self._slot_marker.move_to(self._slot_x.get(0, left), granted=False)
-        self.addItem(self._slot_marker)
 
         self.hud_highway = QGraphicsSimpleTextItem("")
         self.hud_highway.setFont(QFont("Menlo", 12))
@@ -534,7 +658,7 @@ class WauScene(QGraphicsScene):
         self.addItem(self.hud_highway)
 
     def _apply_highway_state(self, snap: CycleSnapshot) -> None:
-        """Light the stub of every core touching the highway this cycle."""
+        """Light the stub of every core touching a highway this cycle."""
         hwy = snap.highway
         for c in snap.cores:
             stub = self._stubs.get(c.core_index)
@@ -545,21 +669,37 @@ class WauScene(QGraphicsScene):
                     hold=c.highway_holder,
                 )
 
-        marker_core = hwy.grant_core if hwy.grant_valid else hwy.slot
-        if marker_core in self._slot_x:
-            self._slot_marker.move_to(self._slot_x[marker_core], hwy.grant_valid)
-
-        callers = [c.core_index for c in snap.cores if c.highway_call]
-        if hwy.grant_valid:
-            mode = CONTRACT_MODE_NAMES.get(hwy.grant_mode, f"mode{hwy.grant_mode}")
-            state = (
-                f"highway held by core {hwy.grant_core} "
-                f"({mode}, {hwy.grant_remaining} beats left)"
+        # Each line's marker follows its OWN bus: parked on that line's holder
+        # while a contract is in force, otherwise on the slot it is offering.
+        for line in hwy.lines:
+            marker = self._line_markers.get(line.line)
+            if marker is None:
+                continue
+            core_index = (
+                line.grant_core_index if line.grant_valid else line.slot_core
             )
+            position = self._slot_pos.get(core_index)
+            if position is not None:
+                marker.move_to(position, line.grant_valid)
+
+        held = [line for line in hwy.lines if line.grant_valid]
+        callers = [c.core_index for c in snap.cores if c.highway_call]
+        if held:
+            first = held[0]
+            mode = CONTRACT_MODE_NAMES.get(first.grant_mode, f"mode{first.grant_mode}")
+            state = (
+                f"highway {first.line} held by core {first.grant_core_index} "
+                f"({mode}, {first.grant_remaining} beats left)"
+            )
+            if len(held) > 1:
+                state += f"  +{len(held) - 1} more line(s) held"
         elif callers:
-            state = f"core {callers[0]} calling highway on slot {hwy.slot}"
+            state = f"core {callers[0]} calling its highway"
+        elif len(hwy.lines) > 1:
+            state = f"{len(hwy.lines)} highways open"
         else:
-            state = f"highway open · offering slot {hwy.slot}"
+            offering = hwy.lines[0].slot if hwy.lines else 0
+            state = f"highway open · offering slot {offering}"
         self.hud_highway.setText(
             f"{state}   grants {hwy.grant_count}   deferred {hwy.defer_count}"
         )
@@ -583,14 +723,24 @@ class WauScene(QGraphicsScene):
         self._pulsed_links = []
 
     def _route_points(self, src: int, dst: int, lane: float) -> Tuple[List[QPointF], List[MeshLink]]:
+        """Trace the packet along the links as *drawn*, not core-centre to core-centre.
+
+        Following each link's own polyline keeps the animation on the visible
+        wire — including the chain's gutter-routed row-to-row hop — so a packet
+        is never seen taking a path the fabric does not have.
+        """
         route = self.model.highway_route(src, dst)
         offset = QPointF(lane * LANE_OFFSET, lane * LANE_OFFSET)
-        points = [self.core_items[idx].center() + offset for idx in route]
+        points = [self.core_items[route[0]].center() + offset]
         links: List[MeshLink] = []
         for a, b in zip(route, route[1:]):
             link = self._link_by_pair.get((min(a, b), max(a, b)))
-            if link is not None:
+            if link is None:
+                segment = [self.core_items[a].center(), self.core_items[b].center()]
+            else:
                 links.append(link)
+                segment = link.points_from(a)
+            points.extend(point + offset for point in segment[1:])
         return points, links
 
     def _add_track(

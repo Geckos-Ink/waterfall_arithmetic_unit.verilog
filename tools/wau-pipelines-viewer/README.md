@@ -8,8 +8,8 @@ Python. Python only orchestrates the simulator, parses the per-cycle trace, and
 renders/animates it.
 
 What you get:
-- Zoomable / pannable 2-D grid view of the WAU mesh (cores, capabilities,
-  highway links).
+- Zoomable / pannable 2-D grid view of the WAU fabric (cores, capabilities,
+  highway links, contract bus).
 - **Ad-hoc circuit preparation**: point the viewer at a waugen config
   (`--config`) or directly at a `.cw` kernel (`--cw`) and it compiles the
   program, emits the RTL through the real `waugen` toolchain, and simulates
@@ -19,14 +19,32 @@ What you get:
   coordinator and the mesh-level concurrency becomes visible.
 - **Phased per-cycle animation**: every simulated cycle plays as a slow-motion
   mini-scene — operand packets travel hop-by-hop from the coordinator along
-  the same dimension-order (X-first) route the generated router uses, the
-  applied operation flashes on the core (`mul(62, #3)`), then result packets
-  travel back over the data mesh with an elaboration "pop" where they land,
-  and completed flow values drop out toward the host lane. Concurrent packets
-  ride offset parallel lanes.
+  the same route the generated router uses (along its own line under the
+  default per-line highways, the index-order chain under `chain`, or X-first
+  dimension order under `matrix`), the applied operation flashes on the core
+  (`mul(62, #3)`),
+  then result packets travel back over the data highway with an elaboration
+  "pop" where they land, and completed flow values drop out toward the host
+  lane. Concurrent packets ride offset parallel lanes.
+- **Highway scheme**: the grid is linked with the topology actually emitted,
+  drawn orthogonally, and packets animate along the links *as drawn* — never
+  on a path the fabric does not have. Under the default topology each row of
+  cores has its **own** highway, drawn as the rail beneath it and ending in
+  that line's coordinator `hub`; there is deliberately no spine joining them,
+  because the lines do not touch. Each rail carries its own contracting bus
+  with its own line-local slot numbering and its own marker, so you can see
+  the rows arbitrating in parallel. (`chain` and `matrix` have a single
+  highway, so their rails *are* joined by a spine.) Each core's slot sits
+  directly beneath it, making every stub a plain vertical drop that crosses
+  nothing. A stub answers *when does this core call its highway*: dim when
+  quiet, dashed while it wants the highway, amber on the cycle it calls from
+  its own offered slot, and solid red for as long as it holds that highway
+  under a contract. Every one of those states is read from the RTL trace.
 - A **concurrency HUD** (busy cores, packets in flight, peak parallel ops,
-  mesh hops/stalls) so how efficiently a program uses the WAU fabric is
-  readable at a glance — and captured in recordings.
+  mesh hops/stalls) plus a highway line (how many highways are open, or which
+  core holds one with its contract mode and beats left, and grant/defer
+  totals), so how efficiently a program uses the WAU fabric is readable at a
+  glance — and captured in recordings.
 - A Gantt-style schedule timeline showing program instructions per-core with a
   live "playhead" at the current cycle.
 - A performance / bottleneck panel (hops, stalls, forwards, local deliveries,

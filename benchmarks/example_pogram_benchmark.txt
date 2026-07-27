@@ -1,6 +1,6 @@
 WAU CW Example Benchmark Reference (latest)
-run_utc: 2026-07-27T18:17:11Z
-git_commit: 03fc5cd
+run_utc: 2026-07-27T23:08:42Z
+git_commit: 88c0acb
 git_tree_state: dirty
 python_version: Python 3.13.9
 iverilog_version: Icarus Verilog version 12.0 (stable) ()
@@ -39,11 +39,11 @@ dtype: float32
 tile_counter_max_iterations: 32
 
 Timing (ms)
-compile_cw_ms: 932
-validate_ms: 407
-generate_ms: 410
-iverilog_tests_ms: 1378
-total_ms: 3535
+compile_cw_ms: 713
+validate_ms: 372
+generate_ms: 376
+iverilog_tests_ms: 711
+total_ms: 2563
 
 Effective Execution Benchmark (CW flow stress)
 exec_flow_id: 90
@@ -53,7 +53,7 @@ exec_latency_cycles_max: 70
 exec_latency_cycles_avg: 68.00
 exec_latency_cycles_p50: 70.00
 exec_latency_cycles_p95: 70.00
-benchmark_ranking_score: 68045535.00
+benchmark_ranking_score: 68044563.00
 exec_case_1: flow=90, latency_cycles=70, out_value=481, expected_value=481, scoreboard=match
 exec_case_2: flow=90, latency_cycles=70, out_value=421, expected_value=421, scoreboard=match
 exec_case_3: flow=90, latency_cycles=68, out_value=0, expected_value=0, scoreboard=match

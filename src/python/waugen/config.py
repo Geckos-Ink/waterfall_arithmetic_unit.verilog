@@ -40,29 +40,36 @@ class Coord:
         return Coord(x=x, y=y, z=z)
 
 
-_SUPPORTED_HIGHWAY_TOPOLOGIES = ("linear", "matrix")
+_SUPPORTED_HIGHWAY_TOPOLOGIES = ("lines", "chain", "matrix")
 
 
 @dataclass(frozen=True)
 class HighwaySpec:
     """Highway fabric shape and the per-highway contract bus.
 
-    ``topology`` selects how many dimensions of highway links the emitted mesh
-    carries:
+    ``topology`` selects how the highway is laid out over the core grid. All
+    three keep the highway one-dimensional per *highway*; they differ in how
+    many highways there are and how they reach the coordinator.
 
-    - ``linear`` (default) — one 1-D highway per layer, walked in core-index
-      order: core ``i`` links to ``i - 1`` / ``i + 1``, so the last core of a
-      row joins the first core of the next row. Routers keep LOCAL/PREV/NEXT
-      (plus UP/DOWN when ``grid.z > 1``) instead of the seven-port mesh, and
-      routing is a plain index compare with no ``% GRID_X`` divider.
+    - ``lines`` (default) — **one highway per line of cores**: ``grid.y *
+      grid.z`` independent highways, each spanning one row of ``grid.x`` cores,
+      each with its own port onto the coordinator. This is the distributed
+      arrangement: traffic on one row neither shares wires nor arbitration with
+      traffic on another, so rows move in parallel. Routers keep
+      LOCAL/PREV/NEXT — three ports — and route by comparing the destination
+      against compile-time line bounds, with no ``% GRID_X`` divider anywhere.
+    - ``chain`` — a single 1-D highway per layer walked in core-index order:
+      core ``i`` links to ``i - 1`` / ``i + 1``, so the last core of a row joins
+      the first core of the next. Fewest links of the three, but every packet
+      shares one wire, so it serialises where ``lines`` would parallelise. Opt
+      in when link count matters more than highway throughput.
     - ``matrix`` — the full N/S/E/W(/U/D) mesh with X-then-Y-then-Z
-      dimension-order routing. Opt in for kernels whose highway traffic needs
-      the extra cross-section.
+      dimension-order routing. Opt in for traffic that needs the cross-section.
 
-    The contract bus is a narrow side-channel on the highway: it cycles one
-    core slot per clock, and the slot owner may post either a single request
-    ("pong") bit or a full contract describing how it intends to occupy the
-    highway.
+    The contract bus is a narrow side-channel on **each** highway: it cycles
+    one core slot per clock, and the slot owner may post either a single
+    request ("pong") bit or a full contract describing how it intends to occupy
+    that highway. Under ``lines`` every row therefore arbitrates independently.
     """
 
     topology: str
@@ -71,14 +78,34 @@ class HighwaySpec:
     contract_lease_cycles: int
 
     @property
-    def is_linear(self) -> bool:
-        return self.topology == "linear"
+    def is_lines(self) -> bool:
+        return self.topology == "lines"
+
+    @property
+    def is_chain(self) -> bool:
+        return self.topology == "chain"
+
+    @property
+    def is_matrix(self) -> bool:
+        return self.topology == "matrix"
+
+    def line_count(self, grid_x: int, grid_y: int, grid_z: int) -> int:
+        """How many independent highways this topology emits."""
+        if self.is_lines:
+            return grid_y * grid_z
+        return 1
+
+    def line_size(self, grid_x: int, grid_y: int, grid_z: int) -> int:
+        """How many cores share one highway."""
+        if self.is_lines:
+            return grid_x
+        return grid_x * grid_y * grid_z
 
     @staticmethod
     def from_obj(value: Any) -> "HighwaySpec":
         if value is None:
             return HighwaySpec(
-                topology="linear",
+                topology="lines",
                 contract_bus=True,
                 contract_max_burst=8,
                 contract_lease_cycles=64,
@@ -86,7 +113,7 @@ class HighwaySpec:
         if not isinstance(value, dict):
             raise ConfigError("device.highway must be an object")
 
-        topology = str(value.get("topology", "linear")).strip().lower() or "linear"
+        topology = str(value.get("topology", "lines")).strip().lower() or "lines"
         if topology not in _SUPPORTED_HIGHWAY_TOPOLOGIES:
             raise ConfigError(
                 "device.highway.topology must be one of: "
@@ -115,6 +142,12 @@ class HighwaySpec:
             contract_max_burst=max_burst,
             contract_lease_cycles=lease,
         )
+
+    @property
+    def is_linear(self) -> bool:
+        """Deprecated alias kept for readability at call sites that only care
+        that the highway is one-dimensional (``lines`` or ``chain``)."""
+        return self.is_lines or self.is_chain
 
 
 @dataclass(frozen=True)

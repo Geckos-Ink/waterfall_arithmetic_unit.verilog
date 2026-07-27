@@ -51,14 +51,22 @@ class HighwayInfo:
     emitted, so this mirrors `device.highway` rather than assuming a mesh.
     """
 
-    topology: str = "linear"
+    topology: str = "lines"
     contract_bus: bool = True
     contract_max_burst: int = 8
     contract_lease_cycles: int = 64
 
     @property
-    def is_linear(self) -> bool:
-        return self.topology == "linear"
+    def is_lines(self) -> bool:
+        return self.topology == "lines"
+
+    @property
+    def is_chain(self) -> bool:
+        return self.topology == "chain"
+
+    @property
+    def is_matrix(self) -> bool:
+        return self.topology == "matrix"
 
 
 # Contract-bus modes, mirroring wau_highway_contract's localparams.
@@ -84,16 +92,39 @@ class WauModel:
     def core_xy(self, idx: int) -> Tuple[int, int]:
         return (idx % self.grid_x, idx // self.grid_x)
 
+    @property
+    def line_count(self) -> int:
+        """How many independent highways the fabric has."""
+        return self.grid_y if self.highway.is_lines else 1
+
+    @property
+    def line_size(self) -> int:
+        """How many cores share one highway."""
+        return self.grid_x if self.highway.is_lines else self.core_count
+
+    def line_of(self, core_index: int) -> int:
+        """Which highway line a core sits on."""
+        return core_index // self.line_size
+
     def highway_route(self, src: int, dst: int) -> List[int]:
-        """The route the emitted router will actually take for ``src -> dst``."""
-        if self.highway.is_linear:
-            return linear_route(src, dst)
+        """The route the emitted router will actually take for ``src -> dst``.
+
+        Under ``lines`` a route only ever runs along one line: anything
+        addressed off-line leaves through that line's hub, which is the
+        coordinator rather than a core, so the animated path stops at the hub.
+        """
+        if self.highway.is_lines:
+            return line_route(self.line_size, src, dst)
+        if self.highway.is_chain:
+            return chain_route(src, dst)
         return manhattan_route(self.grid_x, self.grid_y, src, dst)
 
     def highway_segments(self) -> List[Tuple[int, int]]:
         """The highway's drawn link set, as ordered ``(lower, higher)`` pairs."""
-        if self.highway.is_linear:
-            return linear_segments(self.core_count)
+        if self.highway.is_lines:
+            return line_segments(self.line_count, self.line_size)
+        if self.highway.is_chain:
+            return chain_segments(self.core_count)
         return matrix_segments(self.grid_x, self.grid_y)
 
 
@@ -105,7 +136,7 @@ def load_model(program_path: Path, schedule_path: Optional[Path]) -> WauModel:
 
     hwy = prog["device"].get("highway") or {}
     highway = HighwayInfo(
-        topology=str(hwy.get("topology", "linear")),
+        topology=str(hwy.get("topology", "lines")),
         contract_bus=bool(hwy.get("contract_bus", True)),
         contract_max_burst=int(hwy.get("contract_max_burst", 8)),
         contract_lease_cycles=int(hwy.get("contract_lease_cycles", 64)),
@@ -222,11 +253,11 @@ def derive_stress_stimulus(
     return out
 
 
-def linear_route(src: int, dst: int) -> List[int]:
-    """Reconstruct the single-dimension ("linear") highway route.
+def chain_route(src: int, dst: int) -> List[int]:
+    """Reconstruct the ``chain`` highway route.
 
     Mirrors the generated ``wau_highway_router``'s ``route_dir`` under
-    ``device.highway.topology = "linear"``: within a layer the highway is one
+    ``device.highway.topology = "chain"``: within a layer the highway is one
     chain in core-index order, so the router simply compares the destination
     index against its own and steps PREV or NEXT. Row-to-row movement is the
     chain's wrap hop, not a separate north/south link.
@@ -237,9 +268,44 @@ def linear_route(src: int, dst: int) -> List[int]:
     return list(range(src, dst + step, step)) if src != dst else [src]
 
 
-def linear_segments(core_count: int) -> List[Tuple[int, int]]:
-    """Every link of the linear highway chain, as ``(lower, higher)`` pairs."""
+def chain_segments(core_count: int) -> List[Tuple[int, int]]:
+    """Every link of the chain highway, as ``(lower, higher)`` pairs."""
     return [(i, i + 1) for i in range(max(0, core_count - 1))]
+
+
+def line_route(line_size: int, src: int, dst: int) -> List[int]:
+    """Reconstruct a route on the default per-line highway.
+
+    Mirrors ``wau_highway_router``'s ``route_dir`` under
+    ``device.highway.topology = "lines"``: a router forwards NEXT only when the
+    destination is further along *its own* line, and PREV otherwise. So a route
+    within a line is a straight walk, while anything addressed off-line walks
+    west to the line's hub and leaves the fabric there.
+
+    When ``src`` and ``dst`` are on different lines the returned path therefore
+    stops at ``src``'s first core -- the hub end -- because the rest of the
+    journey is through the coordinator, not over the highway.
+    """
+    if src == dst:
+        return [src]
+    src_line = src // line_size
+    if dst // line_size == src_line:
+        step = 1 if dst > src else -1
+        return list(range(src, dst + step, step))
+    return list(range(src, src_line * line_size - 1, -1))
+
+
+def line_segments(line_count: int, line_size: int) -> List[Tuple[int, int]]:
+    """Every link of the per-line highways, as ``(lower, higher)`` pairs.
+
+    Lines are independent, so no pair ever spans two of them.
+    """
+    out: List[Tuple[int, int]] = []
+    for line in range(line_count):
+        base = line * line_size
+        for offset in range(line_size - 1):
+            out.append((base + offset, base + offset + 1))
+    return out
 
 
 def matrix_segments(grid_x: int, grid_y: int) -> List[Tuple[int, int]]:

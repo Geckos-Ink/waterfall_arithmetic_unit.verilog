@@ -5,11 +5,12 @@
 
 Two contracts live here:
 
-- `device.highway.topology` chooses how many dimensions of highway the emitted
-  mesh carries. `linear` (the default) is one 1-D highway per layer, walked in
-  core-index order, so each router keeps LOCAL/PREV/NEXT(+UP/DOWN) instead of
-  the seven-port mesh and routes by plain index compare. `matrix` keeps the full
-  N/S/E/W(/U/D) mesh with X-then-Y-then-Z dimension-order routing.
+- `device.highway.topology` chooses how the highway is laid out over the grid.
+  `lines` (the default) gives one INDEPENDENT highway per line of cores, each
+  with its own coordinator hub, so rows carry traffic in parallel; routers keep
+  LOCAL/PREV/NEXT and route against compile-time line bounds. `chain` threads a
+  single highway per layer through every core in index order. `matrix` keeps the
+  full N/S/E/W(/U/D) mesh with X-then-Y-then-Z dimension-order routing.
 - `device.highway.contract_bus` adds the per-highway contracting bus, whose
   per-core contract words are derived from the offline schedule.
 
@@ -37,6 +38,7 @@ from waugen.verilog_emit import (
 
 
 CONFIG_PATH = Path("src/python/configs/wau_de0_nano_demo.json")
+CHAIN_CONFIG_PATH = Path("src/python/configs/wau_chain_highway_demo.json")
 MATRIX_CONFIG_PATH = Path("src/python/configs/wau_matrix_highway_demo.json")
 
 
@@ -63,17 +65,41 @@ def _emit(config_path: Path) -> dict[str, str]:
 
 
 class HighwayConfigTests(unittest.TestCase):
-    def test_linear_topology_is_the_default(self) -> None:
+    def test_lines_topology_is_the_default(self) -> None:
         cfg = _load_with_highway(None)
-        self.assertEqual(cfg.device.highway.topology, "linear")
-        self.assertTrue(cfg.device.highway.is_linear)
+        self.assertEqual(cfg.device.highway.topology, "lines")
+        self.assertTrue(cfg.device.highway.is_lines)
         self.assertTrue(cfg.device.highway.contract_bus)
         self.assertEqual(cfg.device.highway.contract_max_burst, 8)
         self.assertEqual(cfg.device.highway.contract_lease_cycles, 64)
 
+    def test_lines_gives_one_highway_per_row_of_cores(self) -> None:
+        cfg = _load_with_highway(None)
+        hwy = cfg.device.highway
+        # 3x2x1 demo grid: two rows, so two independent highways of three cores.
+        self.assertEqual(hwy.line_count(3, 2, 1), 2)
+        self.assertEqual(hwy.line_size(3, 2, 1), 3)
+        # Layered grids get that set per layer.
+        self.assertEqual(hwy.line_count(3, 2, 4), 8)
+        self.assertEqual(hwy.line_size(3, 2, 4), 3)
+
+    def test_chain_and_matrix_are_a_single_highway(self) -> None:
+        for topology in ("chain", "matrix"):
+            with self.subTest(topology=topology):
+                hwy = _load_with_highway({"topology": topology}).device.highway
+                self.assertEqual(hwy.line_count(3, 2, 1), 1)
+                self.assertEqual(hwy.line_size(3, 2, 1), 6)
+
+    def test_chain_topology_is_opt_in(self) -> None:
+        cfg = _load_with_highway({"topology": "chain"})
+        self.assertEqual(cfg.device.highway.topology, "chain")
+        self.assertTrue(cfg.device.highway.is_chain)
+        self.assertFalse(cfg.device.highway.is_lines)
+
     def test_matrix_topology_is_opt_in(self) -> None:
         cfg = _load_with_highway({"topology": "matrix"})
         self.assertEqual(cfg.device.highway.topology, "matrix")
+        self.assertTrue(cfg.device.highway.is_matrix)
         self.assertFalse(cfg.device.highway.is_linear)
 
     def test_unknown_topology_is_rejected(self) -> None:
@@ -101,32 +127,50 @@ class HighwayConfigTests(unittest.TestCase):
 
     def test_non_object_highway_is_rejected(self) -> None:
         with self.assertRaisesRegex(ConfigError, "device.highway must be an object"):
-            _load_with_highway("linear")
+            _load_with_highway("lines")
 
 
 class HighwayEmissionTests(unittest.TestCase):
     """Macro/module agreement for both topologies."""
 
-    def test_linear_emits_three_plane_router_without_a_divider(self) -> None:
+    def test_lines_emits_a_three_port_router_without_a_divider(self) -> None:
         files = _emit(CONFIG_PATH)
         defs = files["wau_defs.vh"]
         router = files["wau_highway_router.v"]
 
-        self.assertIn("`define WAU_HIGHWAY_TOPOLOGY_LINEAR 1", defs)
-        self.assertIn('`define WAU_HIGHWAY_TOPOLOGY_NAME "linear"', defs)
-        self.assertIn("`define WAU_HIGHWAY_PORT_COUNT 5", defs)
+        self.assertIn("`define WAU_HIGHWAY_TOPOLOGY_LINES 1", defs)
+        self.assertIn('`define WAU_HIGHWAY_TOPOLOGY_NAME "lines"', defs)
+        self.assertIn("`define WAU_HIGHWAY_PORT_COUNT 3", defs)
+        self.assertIn("`define WAU_HIGHWAY_LINE_COUNT 2", defs)
+        self.assertIn("`define WAU_HIGHWAY_LINE_SIZE 3", defs)
 
         # The macro must match the module's own PORT_COUNT localparam.
+        self.assertIn("localparam PORT_COUNT = 3;", router)
+        for direction in ("local", "prev", "next"):
+            self.assertIn(f"input wire {direction}_in_valid,", router)
+        # A line needs no planar or vertical ports at all -- everything off-line
+        # leaves through the hub.
+        for absent in ("north", "south", "east", "west", "up", "down"):
+            self.assertNotIn(f"{absent}_in_valid", router)
+
+        # No per-port LPM_DIVIDE: the line bounds are elaboration-time constants.
+        self.assertNotIn("% GRID_X", router)
+        self.assertNotIn("/ GRID_X", router)
+        self.assertIn("LINE_LAST", router)
+        self.assertIn("dst_core > CORE_INDEX[CORE_ID_WIDTH-1:0]", router)
+
+    def test_chain_keeps_the_five_port_index_order_router(self) -> None:
+        files = _emit(CHAIN_CONFIG_PATH)
+        defs = files["wau_defs.vh"]
+        router = files["wau_highway_router.v"]
+
+        self.assertIn("`define WAU_HIGHWAY_TOPOLOGY_CHAIN 1", defs)
+        self.assertIn("`define WAU_HIGHWAY_PORT_COUNT 5", defs)
+        self.assertIn("`define WAU_HIGHWAY_LINE_COUNT 1", defs)
         self.assertIn("localparam PORT_COUNT = 5;", router)
         for direction in ("local", "prev", "next", "up", "down"):
             self.assertIn(f"input wire {direction}_in_valid,", router)
-        for absent in ("north", "south", "east", "west"):
-            self.assertNotIn(f"{absent}_in_valid", router)
-
-        # The whole point of the index-order chain: no per-port LPM_DIVIDE.
         self.assertNotIn("% GRID_X", router)
-        self.assertNotIn("/ GRID_X", router)
-        self.assertIn("dst_core > CORE_INDEX[CORE_ID_WIDTH-1:0]", router)
 
     def test_matrix_keeps_the_seven_port_dimension_order_router(self) -> None:
         files = _emit(MATRIX_CONFIG_PATH)
@@ -140,8 +184,33 @@ class HighwayEmissionTests(unittest.TestCase):
             self.assertIn(f"input wire {direction}_in_valid,", router)
         self.assertIn("dst_x = dst_core % GRID_X;", router)
 
-    def test_linear_mesh_joins_rows_end_to_end(self) -> None:
+    def test_lines_mesh_opens_each_row_onto_its_own_hub(self) -> None:
         mesh = _emit(CONFIG_PATH)["wau_highway_mesh.v"]
+        # A row boundary is NOT a hop: every line stops at its own hub, and the
+        # west end of each line is where that hub attaches.
+        self.assertIn("if (gx == 0) begin : prev_hub", mesh)
+        self.assertIn("localparam integer LINE_INDEX = (gz * GRID_Y) + gy;", mesh)
+        self.assertIn(
+            "assign prev_in_valid[CORE_INDEX] = hub_in_valid[LINE_INDEX];", mesh
+        )
+        self.assertIn(
+            "assign hub_out_valid[LINE_INDEX] = prev_out_valid[CORE_INDEX];", mesh
+        )
+        # The east end is the only tie-off, and no row-to-row link survives.
+        self.assertIn("if (gx == GRID_X - 1) begin : next_edge", mesh)
+        for absent in ("north_edge", "south_edge", "up_edge", "down_edge"):
+            self.assertNotIn(absent, mesh)
+
+    def test_lines_mesh_instantiates_one_contract_bus_per_line(self) -> None:
+        mesh = _emit(CONFIG_PATH)["wau_highway_mesh.v"]
+        # Each line arbitrates on its own; a contract on one row must not be
+        # able to hold off another row.
+        self.assertIn("for (gl = 0; gl < LINE_COUNT; gl = gl + 1) begin : gen_line_bus", mesh)
+        self.assertIn(".CORE_COUNT(LINE_SIZE),", mesh)
+        self.assertIn(".req(contract_req[(gl*LINE_SIZE) +: LINE_SIZE]),", mesh)
+
+    def test_chain_mesh_joins_rows_end_to_end(self) -> None:
+        mesh = _emit(CHAIN_CONFIG_PATH)["wau_highway_mesh.v"]
         # The chain's only edges are the first and last core of a layer; a row
         # boundary is an ordinary PREV/NEXT hop, not an edge tie-off.
         self.assertIn("if ((gx == 0) && (gy == 0)) begin : prev_edge", mesh)
@@ -158,12 +227,35 @@ class HighwayEmissionTests(unittest.TestCase):
             self.assertIn(edge, mesh)
         self.assertNotIn("prev_edge", mesh)
 
-    def test_layers_stay_connected_in_both_topologies(self) -> None:
-        for path in (CONFIG_PATH, MATRIX_CONFIG_PATH):
+    def test_layers_stay_connected_where_one_highway_spans_the_grid(self) -> None:
+        # `lines` has no vertical links by design -- every layer's rows are
+        # separate highways reached through their own hubs -- so this contract
+        # belongs to the single-highway topologies only.
+        for path in (CHAIN_CONFIG_PATH, MATRIX_CONFIG_PATH):
             with self.subTest(config=path.name):
                 mesh = _emit(path)["wau_highway_mesh.v"]
                 self.assertIn("up_edge", mesh)
                 self.assertIn("down_edge", mesh)
+
+    def test_lines_top_hubs_the_coordinator_onto_every_line(self) -> None:
+        top = _emit(CONFIG_PATH)["wau_top.v"]
+        # Dispatch is steered by compile-time line bounds, not by a divider.
+        self.assertIn("localparam integer LINE_LO = hub_i * HIGHWAY_LINE_SIZE;", top)
+        self.assertIn("assign ctrl_hub_in_valid[hub_i] = coord_dispatch_valid", top)
+        # Results are addressed off-line and arbitrated round-robin so no line
+        # can starve the others.
+        self.assertIn(
+            "assign data_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = HUB_DST;",
+            top,
+        )
+        self.assertIn("hub_rr_ptr", top)
+        self.assertIn("assign coord_result_valid = hub_sel_valid;", top)
+
+    def test_single_highway_top_keeps_the_core_zero_binding(self) -> None:
+        top = _emit(CHAIN_CONFIG_PATH)["wau_top.v"]
+        self.assertIn("assign ctrl_local_in_valid[core_i] = coord_dispatch_valid;", top)
+        self.assertIn("gen_idle_hub", top)
+        self.assertNotIn("hub_rr_ptr", top)
 
 
 class ContractBusEmissionTests(unittest.TestCase):
@@ -189,10 +281,10 @@ class ContractBusEmissionTests(unittest.TestCase):
         top = _emit(CONFIG_PATH)["wau_top.v"]
         # The control plane has a single injector (the coordinator), so there is
         # nothing to arbitrate and its bus stays out of the fabric entirely.
-        self.assertIn(".CONTRACT_BUS_ENABLE(0)\n    ) control_plane_mesh_u (", top)
-        self.assertIn(
-            ".CONTRACT_BUS_ENABLE(CONTRACT_BUS_ENABLE)\n    ) data_plane_mesh_u (", top
-        )
+        self.assertIn(".CONTRACT_BUS_ENABLE(0),", top)
+        self.assertIn(") control_plane_mesh_u (", top)
+        self.assertIn(".CONTRACT_BUS_ENABLE(CONTRACT_BUS_ENABLE),", top)
+        self.assertIn(") data_plane_mesh_u (", top)
         self.assertIn("localparam integer CONTRACT_BUS_ENABLE = 1;", top)
         # The real-time side: a core calls the highway when it has a result.
         self.assertIn("assign data_contract_req = core_result_valid;", top)
@@ -307,7 +399,7 @@ class HighwayProgramJsonTests(unittest.TestCase):
         self.assertEqual(
             payload["device"]["highway"],
             {
-                "topology": "linear",
+                "topology": "lines",
                 "contract_bus": True,
                 "contract_max_burst": 8,
                 "contract_lease_cycles": 64,

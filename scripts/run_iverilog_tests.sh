@@ -7,13 +7,15 @@ cd "$ROOT_DIR"
 CONFIG_PATH="${1:-src/python/configs/wau_de0_nano_demo.json}"
 OUT_DIR="src/verilog/generated"
 BUILD_DIR=".build/iverilog"
+# Kept fixed while BUILD_DIR is repointed per alternate-topology suite below.
+ROOT_BUILD_DIR=".build/iverilog"
 mkdir -p "$BUILD_DIR"
 
 export PYTHONPATH=src/python
 python3 -m waugen generate --config "$CONFIG_PATH" --out "$OUT_DIR" --summary
 
-# Directory the current run_test invocations read RTL from. The matrix-topology
-# pass at the end of this script repoints it at a second generated tree.
+# Directory the current run_test invocations read RTL from. The alternate-topology
+# passes at the end of this script repoint it at further generated trees.
 RTL_DIR="$OUT_DIR"
 
 run_test() {
@@ -59,13 +61,11 @@ run_suite() {
     $(top_sources) \
     "tests/rtl/tb_wau_coordinator_multiissue.v"
 
+  # A single row of cores: one highway line under every topology, so this one
+  # is topology-agnostic.
   run_test tb_wau_highway_mesh \
     $(mesh_sources) \
     "tests/rtl/tb_wau_highway_mesh.v"
-
-  run_test tb_wau_highway_mesh_3d \
-    $(mesh_sources) \
-    "tests/rtl/tb_wau_highway_mesh_3d.v"
 
   run_test tb_wau_highway_contract \
     "$RTL_DIR/wau_highway_contract.v" \
@@ -74,33 +74,48 @@ run_suite() {
   run_test tb_wau_host_mmio \
     "$RTL_DIR/wau_host_mmio.v" \
     "tests/rtl/tb_wau_host_mmio.v"
+
+  # Topology-specific fabric contracts. Each asserts something only true of the
+  # arrangement it names, so each runs only against RTL emitting that topology.
+  if grep -q '`define WAU_HIGHWAY_TOPOLOGY_LINES' "$RTL_DIR/wau_defs.vh"; then
+    # The default: one independent highway per line of cores, each with its own
+    # coordinator hub.
+    run_test tb_wau_highway_lines \
+      $(mesh_sources) \
+      "tests/rtl/tb_wau_highway_lines.v"
+  else
+    # Vertical up/down links exist only where a single highway spans the grid.
+    run_test tb_wau_highway_mesh_3d \
+      $(mesh_sources) \
+      "tests/rtl/tb_wau_highway_mesh_3d.v"
+  fi
+
+  if grep -q '`define WAU_HIGHWAY_TOPOLOGY_CHAIN' "$RTL_DIR/wau_defs.vh"; then
+    run_test tb_wau_highway_chain \
+      $(mesh_sources) \
+      "tests/rtl/tb_wau_highway_chain.v"
+
+    run_test tb_wau_highway_chain_3d \
+      $(mesh_sources) \
+      "tests/rtl/tb_wau_highway_chain_3d.v"
+  fi
 }
 
 run_suite
 
-# tb_wau_highway_linear asserts the *default* single-dimension chain (including
-# the row-to-row wrap hop), so it only makes sense against linear RTL.
-if grep -q '`define WAU_HIGHWAY_TOPOLOGY_LINEAR' "$RTL_DIR/wau_defs.vh"; then
-  run_test tb_wau_highway_linear \
-    $(mesh_sources) \
-    "tests/rtl/tb_wau_highway_linear.v"
+# The `chain` and `matrix` highway topologies are opt-in, so the default config
+# never elaborates them. Generate a tree from each tracked demo and re-run the
+# fabric suite against it, otherwise those code paths ship unexercised.
+for alt in chain matrix; do
+  ALT_CONFIG="src/python/configs/wau_${alt}_highway_demo.json"
+  ALT_DIR="$ROOT_BUILD_DIR/${alt}_rtl"
+  echo "[iverilog] regenerating ${alt}-topology RTL into ${ALT_DIR}"
+  python3 -m waugen generate --config "$ALT_CONFIG" --out "$ALT_DIR"
 
-  run_test tb_wau_highway_linear_3d \
-    $(mesh_sources) \
-    "tests/rtl/tb_wau_highway_linear_3d.v"
-fi
-
-# The `matrix` highway topology is opt-in, so the default config never
-# elaborates it. Generate a second tree from the tracked matrix demo and re-run
-# the fabric suite against it, otherwise that code path ships unexercised.
-MATRIX_CONFIG="src/python/configs/wau_matrix_highway_demo.json"
-MATRIX_DIR="$BUILD_DIR/matrix_rtl"
-echo "[iverilog] regenerating matrix-topology RTL into ${MATRIX_DIR}"
-python3 -m waugen generate --config "$MATRIX_CONFIG" --out "$MATRIX_DIR"
-
-RTL_DIR="$MATRIX_DIR"
-BUILD_DIR="$BUILD_DIR/matrix"
-mkdir -p "$BUILD_DIR"
-run_suite
+  RTL_DIR="$ALT_DIR"
+  BUILD_DIR="$ROOT_BUILD_DIR/${alt}"
+  mkdir -p "$BUILD_DIR"
+  run_suite
+done
 
 echo "All iverilog tests passed"
