@@ -9,9 +9,11 @@ Three ways to point the viewer at a circuit:
    ``waugen compile-cw`` onto ``--base-config`` and then emitted.
 
 Stimulus can be an explicit JSON file (``--stimulus``), one packet per flow
-(``--auto-stimulus``), or a seeded randomized stress stream (``--stress N``)
+(``--auto-stimulus``), a seeded randomized stress stream (``--stress N``)
 that interleaves flow ids to exercise the multi-issue coordinator's
-concurrency on the mesh.
+concurrency on the mesh, or a stream of real MNIST pixels
+(``--mnist-images``) so the animated elaboration runs on representative data
+rather than an RNG.
 """
 
 from __future__ import annotations
@@ -22,7 +24,12 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
-from .model import derive_auto_stimulus, derive_stress_stimulus, load_model
+from .model import (
+    derive_auto_stimulus,
+    derive_mnist_stimulus,
+    derive_stress_stimulus,
+    load_model,
+)
 from .prepare import DEFAULT_CW_FLOW_ID, find_repo_root, prepare_circuit
 from .simulator import IverilogRunner
 from .trace_parser import parse_trace
@@ -66,6 +73,14 @@ def main(argv=None) -> int:
     g.add_argument("--stress", type=int, default=None, metavar="N",
                    help="feed N seeded random packets, interleaving flow ids so "
                         "independent flows overlap on the mesh")
+    g.add_argument("--mnist-images", type=Path, default=None, metavar="IDX3",
+                   help="stream real MNIST pixels as operands (centered to "
+                        "[-128,127]) instead of random data; fetch the file "
+                        "with scripts/fetch_dataset.py")
+    stim.add_argument("--mnist-count", type=int, default=8, metavar="N",
+                      help="how many MNIST operand-pair packets to feed (default 8)")
+    stim.add_argument("--mnist-offset", type=int, default=0,
+                      help="skip this many leading MNIST pixels")
     stim.add_argument("--stress-seed", type=int, default=7,
                       help="RNG seed for --stress (default 7)")
     stim.add_argument("--stress-range", type=int, default=99,
@@ -86,6 +101,10 @@ def main(argv=None) -> int:
     out.add_argument("--gif-width", type=int, default=None,
                      help="max GIF width in pixels (default 1000); frames are "
                           "downscaled to this before quantization")
+    out.add_argument("--window-size", default="1500x950", metavar="WxH",
+                     help="off-screen window geometry used for headless "
+                          "recordings (default 1500x950); shape it to the grid "
+                          "so a tall fabric does not waste the frame")
     out.add_argument("--cycle-ms", type=int, default=1400,
                      help="initial playback pace in ms per simulated cycle")
     out.add_argument("--headless", action="store_true",
@@ -136,6 +155,14 @@ def main(argv=None) -> int:
         )
         print(f"[wau-viewer] stress stimulus ({len(stim_list)} packets, "
               f"seed={args.stress_seed}): {stim_list}", file=sys.stderr)
+    elif args.mnist_images is not None:
+        stim_list = derive_mnist_stimulus(
+            model, args.mnist_images, args.mnist_count,
+            offset=args.mnist_offset,
+        )
+        print(f"[wau-viewer] MNIST stimulus ({len(stim_list)} packets from "
+              f"{args.mnist_images}, offset={args.mnist_offset}): {stim_list}",
+              file=sys.stderr)
     elif args.auto_stimulus:
         stim_list = derive_auto_stimulus(model)
     else:
@@ -168,6 +195,10 @@ def main(argv=None) -> int:
     from .main_window import ViewerWindow, run_headless_recording
 
     if args.record and args.headless:
+        try:
+            win_w, win_h = (int(v) for v in str(args.window_size).lower().split("x", 1))
+        except ValueError:
+            parser.error("--window-size must look like 1500x950")
         out_path = run_headless_recording(
             model, trace, args.record,
             framerate=args.framerate,
@@ -175,6 +206,7 @@ def main(argv=None) -> int:
             cycle_ms=args.cycle_ms,
             max_cycles=args.record_max_cycles,
             gif_max_width=args.gif_width,
+            window_size=(win_w, win_h),
         )
         print(f"[wau-viewer] wrote {out_path}")
         return 0

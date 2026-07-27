@@ -125,6 +125,15 @@ Stimulus options:
   with round-robin-interleaved flow ids — consecutive packets always target
   different flows, which is what lets the multi-issue coordinator keep several
   flows in flight and makes the concurrency visible on the mesh.
+- `--mnist-images <idx3(.gz)>` (+ `--mnist-count`, `--mnist-offset`): **real
+  data** instead of an RNG. Operand pairs are streamed from consecutive MNIST
+  pixels centered to `[-128, 127]`, the same values the DE0-Nano stress runner
+  feeds through the live board with its own `--mnist-images`, so an animated
+  run and a silicon run drive the fabric identically. Fetch the file first
+  with `python3 scripts/fetch_dataset.py` (writes a git-ignored
+  `datasets/mnist/`). Real pixels are spatially correlated, so the station
+  cache behaves very differently from random operands — that difference is
+  visible in the stats panel's hit ratio.
 
 ## What happens under the hood
 
@@ -164,6 +173,8 @@ wau_viewer/
   recorder.py        # frame capture + MP4 (ffmpeg) / GIF (ffmpeg or Pillow)
 examples/
   de0_nano_demo.stim.json
+  wau_3x3_demo.json          # ad-hoc 3x3 demo circuit
+  wau_mnist_demo_base.json   # 4x2 base used by the MNIST recording
 ```
 
 ## Recording a demo video / GIF
@@ -186,8 +197,42 @@ python3 -m wau_viewer \
 
 (`frames_per_cycle / framerate` = seconds of video per simulated cycle; the
 example plays each cycle over 0.6 s.) `--record-max-cycles N` trims long
-traces, `--gif-width` caps the GIF resolution (default 1000 px). MP4 output requires `ffmpeg`; GIF output uses ffmpeg's palette
+traces, `--gif-width` caps the GIF resolution (default 1000 px), and
+`--window-size WxH` shapes the off-screen window to the fabric — a tall grid
+(2 columns × 4 rows) wastes most of a landscape frame, a wide one fills it.
+MP4 output requires `ffmpeg`; GIF output uses ffmpeg's palette
 pipeline when available and falls back to a pure-Pillow encoder otherwise.
+
+The second demo GIF in the repository root — the same mesh-stress kernel
+elaborating **real MNIST pixels**, recorded over one complete elaboration so
+no flow animation is cut off mid-flight — is produced with:
+
+```bash
+python3 ../../scripts/fetch_dataset.py   # once
+
+python3 -m wau_viewer \
+  --cw ../../CWs/stress/mesh_stress.cw \
+  --base-config examples/wau_mnist_demo_base.json \
+  --mnist-images ../../datasets/mnist/t10k-images-idx3-ubyte.gz \
+  --mnist-count 4 --mnist-offset 5888 \
+  --record examples/wau_mnist_mesh_stress.gif \
+  --framerate 10 --frames-per-cycle 3 --gif-width 1200 \
+  --record-max-cycles 198 --headless
+```
+
+`examples/wau_mnist_demo_base.json` is the demo's own base config: the
+`wau_cw_fit_base` DE0-Nano preset laid out as a 4x2 grid (two independent
+highways of four cores, which reads better in a landscape recording than the
+2x4 board grid) with every core given the full op set. `198` is where the
+first elaboration's result reaches the host, so the recording ends on a
+completed flow rather than in the middle of one; the untrimmed trace runs
+769 cycles for the four packets.
+
+One thing that recording makes obvious: the Gantt strip runs out of blocks
+after cycle 44. That is the *offline* schedule's makespan for this kernel,
+while the real RTL takes 198 cycles to retire the same flow — the timeline
+draws `wau_schedule.json`, not the trace, so past the makespan only the
+playhead keeps moving.
 
 In headless mode the GUI is never shown — frames are rendered off-screen by
 `QGraphicsView.grab()`.

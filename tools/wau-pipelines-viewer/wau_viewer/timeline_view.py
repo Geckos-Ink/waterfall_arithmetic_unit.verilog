@@ -120,3 +120,18 @@ class TimelineView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setFixedHeight(int(scene.sceneRect().height()) + 18)
         self.setBackgroundBrush(QBrush(QColor("#0f1014")))
+
+    def follow_cycle(self, cycle: int) -> None:
+        """Keep the playhead on screen as the trace advances.
+
+        A long trace makes the timeline scene far wider than the viewport, so
+        without this the strip stays parked wherever it was scrolled and shows
+        a stretch of schedule unrelated to the cycle being played (blank, for
+        a run whose makespan is shorter than its trace).
+        """
+        x = LEFT_GUTTER + cycle * CYCLE_WIDTH
+        self.ensureVisible(
+            QRectF(x - 1, 0, 2, self.sceneRect().height()),
+            CYCLE_WIDTH * 4,
+            0,
+        )

@@ -5,12 +5,14 @@
 
 Covers the ad-hoc circuit preparation path (config/.cw -> waugen -> RTL), the
 seeded stress-stimulus generator that interleaves flow ids to exercise the
-multi-issue coordinator, the dimension-order route reconstruction used by the
+multi-issue coordinator, the real-data (MNIST) stimulus that replaces the RNG
+with board-identical operand pairs, the dimension-order route reconstruction used by the
 hop-by-hop packet animation, and the dynamic RTL source discovery. All of
 these are Qt-free so they run headless in CI.
 """
 from __future__ import annotations
 
+import struct
 import sys
 import tempfile
 import unittest
@@ -24,6 +26,7 @@ from wau_viewer.model import (  # noqa: E402
     FlowStageInfo,
     HighwayInfo,
     WauModel,
+    derive_mnist_stimulus,
     derive_stress_stimulus,
     chain_route,
     chain_segments,
@@ -207,6 +210,58 @@ class StressStimulusTests(unittest.TestCase):
     def test_rejects_non_positive_count(self) -> None:
         with self.assertRaises(ValueError):
             derive_stress_stimulus(_make_model([1]), 0)
+
+
+class MnistStimulusTests(unittest.TestCase):
+    """Real-data stimulus: operand pairs streamed from MNIST image bytes.
+
+    The centering (`pixel - 128`) and the consecutive-pixel pairing must match
+    the DE0-Nano stress runner's `--mnist-images` path, so the animated run and
+    the board run drive the fabric with the same values.
+    """
+
+    @staticmethod
+    def _write_idx3(path: Path, pixels: bytes) -> None:
+        with open(path, "wb") as handle:
+            handle.write(struct.pack(">IIII", 2051, len(pixels), 1, 1))
+            handle.write(pixels)
+
+    def test_pairs_consecutive_pixels_centered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            images = Path(tmp) / "images-idx3-ubyte"
+            self._write_idx3(images, bytes([0, 255, 128, 1]))
+            stim = derive_mnist_stimulus(_make_model([7]), images, 2)
+        self.assertEqual(stim, [(7, -128, 127), (7, 0, -127)])
+
+    def test_offset_skips_leading_pixels_and_wraps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            images = Path(tmp) / "images-idx3-ubyte"
+            self._write_idx3(images, bytes([10, 20, 30, 40]))
+            stim = derive_mnist_stimulus(_make_model([1]), images, 3, offset=2)
+        # wraps back to the head of the stream rather than running out
+        self.assertEqual(stim, [(1, -98, -88), (1, -118, -108), (1, -98, -88)])
+
+    def test_interleaves_flow_ids_round_robin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            images = Path(tmp) / "images-idx3-ubyte"
+            self._write_idx3(images, bytes(range(16)))
+            stim = derive_mnist_stimulus(_make_model([1, 2]), images, 4)
+        self.assertEqual([s[0] for s in stim], [1, 2, 1, 2])
+
+    def test_rejects_bad_magic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            images = Path(tmp) / "not-idx3"
+            with open(images, "wb") as handle:
+                handle.write(struct.pack(">IIII", 2049, 1, 1, 1) + b"\x00")
+            with self.assertRaises(ValueError):
+                derive_mnist_stimulus(_make_model([1]), images, 1)
+
+    def test_rejects_non_positive_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            images = Path(tmp) / "images-idx3-ubyte"
+            self._write_idx3(images, bytes([1, 2]))
+            with self.assertRaises(ValueError):
+                derive_mnist_stimulus(_make_model([1]), images, 0)
 
 
 class CollectRtlSourcesTests(unittest.TestCase):

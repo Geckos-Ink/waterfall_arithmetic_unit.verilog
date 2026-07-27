@@ -92,10 +92,17 @@ class FrameRecorder:
 
     def _encode_ffmpeg_gif(self, out_path: Path) -> bool:
         """Two-pass palette GIF via ffmpeg. Returns False to allow fallback."""
+        # `format=rgb24` first: the grabbed PNGs carry an alpha channel, and an
+        # RGBA input makes the GIF muxer drop its transparency-based
+        # inter-frame differencing — every frame is then stored whole, which
+        # inflates a long recording by more than an order of magnitude.
+        # `diff_mode=rectangle` keeps each frame to the rectangle that
+        # actually changed.
         vf = (
+            "format=rgb24,"
             f"scale='min({self.gif_max_width},iw)':-1:flags=lanczos,"
             "split[s0][s1];[s0]palettegen=stats_mode=diff[p];"
-            "[s1][p]paletteuse=dither=bayer:bayer_scale=3"
+            "[s1][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle"
         )
         cmd = [
             "ffmpeg", "-y",

@@ -188,6 +188,7 @@ class ViewerWindow(QMainWindow):
             self.scene.reset_peaks()
         self.scene.apply_cycle(snap)
         self.timeline_scene.set_cycle(snap.cycle)
+        self.timeline_view.follow_cycle(snap.cycle)
         self.stats.apply_cycle(snap, self._output_count_at[idx])
         self.lbl_cycle.setText(f"cycle {snap.cycle} / {self.trace.cycles[-1].cycle}")
         if self.slider.value() != idx:
@@ -308,6 +309,7 @@ def run_headless_recording(
     cycle_ms: int = DEFAULT_CYCLE_MS,
     max_cycles: Optional[int] = None,
     gif_max_width: Optional[int] = None,
+    window_size: tuple = (1500, 950),
 ) -> Path:
     """Render the full trace off-screen and encode it. No window is shown.
 
@@ -318,7 +320,9 @@ def run_headless_recording(
     """
     app = QApplication.instance() or QApplication([])  # noqa: F841
     win = ViewerWindow(model, trace, cycle_ms=cycle_ms)
-    win.resize(1500, 950)
+    # a tall/narrow fabric (e.g. a 2x4 grid) wastes most of a landscape frame,
+    # so the recording window can be shaped to the grid being played
+    win.resize(int(window_size[0]), int(window_size[1]))
     # render off-screen by attaching to a hidden window
     win.show()
     win.hide()

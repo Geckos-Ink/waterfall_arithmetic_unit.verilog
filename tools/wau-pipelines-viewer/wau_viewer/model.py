@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import random
+import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -249,6 +251,54 @@ def derive_stress_stimulus(
             flow_id,
             rng.randint(value_min, value_max),
             rng.randint(value_min, value_max),
+        ))
+    return out
+
+
+def load_mnist_pixels(path: Path) -> bytes:
+    """Read the raw uint8 pixels of an MNIST images idx3 file (plain or `.gz`).
+
+    Kept self-contained (same reader as the DE0-Nano host program) so the
+    viewer stays independent of `scripts/`; fetch the file first with
+    `python3 scripts/fetch_dataset.py`.
+    """
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rb") as handle:
+        magic, count, rows, cols = struct.unpack(">IIII", handle.read(16))
+        if magic != 2051:
+            raise ValueError(f"{path}: bad MNIST images magic {magic} (expected 2051)")
+        pixels = handle.read(count * rows * cols)
+    if len(pixels) != count * rows * cols:
+        raise ValueError(f"{path}: truncated MNIST image data")
+    return pixels
+
+
+def derive_mnist_stimulus(
+    model: WauModel,
+    images: Path,
+    count: int,
+    offset: int = 0,
+) -> List[Tuple[int, int, int]]:
+    """Build a stimulus of ``count`` packets from consecutive MNIST pixels.
+
+    Operand pairs are streamed from the real image bytes, centered to
+    ``[-128, 127]`` exactly as the DE0-Nano stress runner does
+    (`--mnist-images`), so the animated data movement is the same real,
+    spatially-correlated stream that was measured on silicon rather than an
+    RNG. Flow ids are interleaved round-robin for the same reason as
+    :func:`derive_stress_stimulus`.
+    """
+    if count <= 0:
+        raise ValueError("mnist stimulus count must be positive")
+    pixels = load_mnist_pixels(Path(images))
+    flow_ids = sorted({stage.flow_id for stage in model.flows}) or [1]
+    start = offset % len(pixels)
+    out: List[Tuple[int, int, int]] = []
+    for i in range(count):
+        out.append((
+            flow_ids[i % len(flow_ids)],
+            pixels[(start + 2 * i) % len(pixels)] - 128,
+            pixels[(start + 2 * i + 1) % len(pixels)] - 128,
         ))
     return out
 

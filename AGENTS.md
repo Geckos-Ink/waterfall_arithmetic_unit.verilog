@@ -418,7 +418,7 @@ Ad-hoc circuit preparation: `--config <config.json>` or `--cw <kernel.cw>` compi
 
 #### [`wau_viewer/model.py`](tools/wau-pipelines-viewer/wau_viewer/model.py)
 
-Static layout model derived from `wau_program.json` + `wau_schedule.json`. Owns the seeded stress-stimulus generator, `HighwayInfo` (read back from the program report), and the route/segment reconstruction: `line_route`/`line_segments` for the default per-line highways, `chain_route`/`chain_segments` for `chain`, and `manhattan_route`/`matrix_segments` for `matrix`, dispatched by `WauModel.highway_route` / `highway_segments`. **All three MUST mirror `wau_highway_router`** — `manhattan_route` its X-then-Y-then-Z priority, `chain_route` its index compare, `line_route` its line-bounds compare (so an off-line route stops at the line's hub end rather than crossing into another line, which has no link to cross). If the emitter's routing changes, these change with it. Tested by [`tests/python/test_viewer_sim_prep.py`](tests/python/test_viewer_sim_prep.py).
+Static layout model derived from `wau_program.json` + `wau_schedule.json`. Owns the seeded stress-stimulus generator, the real-data MNIST stimulus (`derive_mnist_stimulus`: consecutive image bytes paired and centered to `[-128,127]` — this **MUST** stay identical to the DE0-Nano runner's `--mnist-images` path in [`run_cw_stress_benchmark.py`](demo/de0-nano/basic-example/host/programs/run_cw_stress_benchmark.py), or an animated run and a board run stop showing the same values), `HighwayInfo` (read back from the program report), and the route/segment reconstruction: `line_route`/`line_segments` for the default per-line highways, `chain_route`/`chain_segments` for `chain`, and `manhattan_route`/`matrix_segments` for `matrix`, dispatched by `WauModel.highway_route` / `highway_segments`. **All three MUST mirror `wau_highway_router`** — `manhattan_route` its X-then-Y-then-Z priority, `chain_route` its index compare, `line_route` its line-bounds compare (so an off-line route stops at the line's hub end rather than crossing into another line, which has no link to cross). If the emitter's routing changes, these change with it. Tested by [`tests/python/test_viewer_sim_prep.py`](tests/python/test_viewer_sim_prep.py).
 
 #### [`wau_viewer/graph_view.py`](tools/wau-pipelines-viewer/wau_viewer/graph_view.py)
 
@@ -428,11 +428,11 @@ Zoomable `QGraphicsView` of the mesh. Owns the phased packet animation (dispatch
 
 #### [`wau_viewer/recorder.py`](tools/wau-pipelines-viewer/wau_viewer/recorder.py)
 
-MP4/GIF encoding — ffmpeg with a palette pass, and a pure-Pillow fallback for GIF.
+MP4/GIF encoding — ffmpeg with a palette pass, and a pure-Pillow fallback for GIF. The GIF filter chain **MUST** start with `format=rgb24`: the grabbed frames are RGBA, and an alpha-carrying input makes the GIF muxer drop its transparency-based inter-frame differencing, which inflates a long recording by more than an order of magnitude (a 594-frame capture went 2.2 MB → 40 MB+ without it).
 
 #### Remaining viewer modules
 
-[`__main__.py`](tools/wau-pipelines-viewer/wau_viewer/__main__.py) (entry point: prepare → simulate → launch Qt), [`simulator.py`](tools/wau-pipelines-viewer/wau_viewer/simulator.py) (drives `iverilog`/`vvp`), [`tb_generator.py`](tools/wau-pipelines-viewer/wau_viewer/tb_generator.py) (generates the per-config tracing testbench), [`trace_parser.py`](tools/wau-pipelines-viewer/wau_viewer/trace_parser.py) (parses the per-cycle trace, including the `HWY` highway/contract-bus record and the per-core `hwy_req`/`hwy_call`/`hwy_hold` flags; covered by [`test_viewer_data_trace.py`](tests/python/test_viewer_data_trace.py)), [`main_window.py`](tools/wau-pipelines-viewer/wau_viewer/main_window.py) (transport controls, docks, recording), [`timeline_view.py`](tools/wau-pipelines-viewer/wau_viewer/timeline_view.py) (Gantt timeline with playhead), [`stats_panel.py`](tools/wau-pipelines-viewer/wau_viewer/stats_panel.py) (bottleneck readout).
+[`__main__.py`](tools/wau-pipelines-viewer/wau_viewer/__main__.py) (entry point: prepare → simulate → launch Qt), [`simulator.py`](tools/wau-pipelines-viewer/wau_viewer/simulator.py) (drives `iverilog`/`vvp`), [`tb_generator.py`](tools/wau-pipelines-viewer/wau_viewer/tb_generator.py) (generates the per-config tracing testbench), [`trace_parser.py`](tools/wau-pipelines-viewer/wau_viewer/trace_parser.py) (parses the per-cycle trace, including the `HWY` highway/contract-bus record and the per-core `hwy_req`/`hwy_call`/`hwy_hold` flags; covered by [`test_viewer_data_trace.py`](tests/python/test_viewer_data_trace.py)), [`main_window.py`](tools/wau-pipelines-viewer/wau_viewer/main_window.py) (transport controls, docks, recording — `run_headless_recording` takes the `--window-size` geometry so a recording can be shaped to the grid), [`timeline_view.py`](tools/wau-pipelines-viewer/wau_viewer/timeline_view.py) (Gantt timeline with playhead; `follow_cycle` keeps the playhead in view, without which a trace longer than the makespan plays against a blank strip), [`stats_panel.py`](tools/wau-pipelines-viewer/wau_viewer/stats_panel.py) (bottleneck readout).
 
 ### [`demo/de0-nano/basic-example/`](demo/de0-nano/basic-example)
 
@@ -781,6 +781,10 @@ python3 -m wau_viewer --cw ../../CWs/example-program.cw --stress 8
 
 ```bash
 python3 -m wau_viewer --config examples/wau_3x3_demo.json --stress 6 --record examples/wau_3x3_demo.gif --framerate 10 --frames-per-cycle 6 --headless
+```
+
+```bash
+python3 -m wau_viewer --cw ../../CWs/stress/mesh_stress.cw --base-config examples/wau_mnist_demo_base.json --mnist-images ../../datasets/mnist/t10k-images-idx3-ubyte.gz --mnist-count 4 --mnist-offset 5888 --record examples/wau_mnist_mesh_stress.gif --framerate 10 --frames-per-cycle 3 --gif-width 1200 --record-max-cycles 198 --headless
 ```
 
 ### Datasets (network access; writes git-ignored `datasets/`)

@@ -27,6 +27,42 @@ and note that a contract on one row never stops another row moving. The viewer c
 `.cw` program or a config into a fresh ad-hoc circuit itself (`--config`/`--cw`
 + `--stress N`).*
 
+### Real data in elaboration — MNIST through the mesh
+
+![](https://github.com/Geckos-Ink/waterfall_arithmetic_unit.verilog/blob/main/tools/wau-pipelines-viewer/examples/wau_mnist_mesh_stress.gif?raw=true)
+
+*Above: the same viewer replaying an iverilog simulation of
+[`CWs/stress/mesh_stress.cw`](CWs/stress/mesh_stress.cw) — the 47-node
+Conv2D + bias + residual + ReLU kernel lowered onto a 4x2 grid — driven by
+**real MNIST pixels** instead of random operands. Operand pairs are streamed
+from consecutive bytes of `t10k-images-idx3-ubyte` (test image `7`, a `9`,
+from offset `5888`) and centered to `[-128, 127]` exactly as the DE0-Nano
+stress runner does, so the animation moves the same values that were checked
+bit-exact on silicon in the
+[live MNIST board run](#ad-hoc-mesh-stress-kernel--live-board-run-2026-07-07).
+The recording covers **one whole elaboration, uncut** — all 198 cycles from
+the first operand packet leaving the coordinator to the finished result being
+handed back to the host — so no flow animation is truncated mid-flight: you
+can follow a single MNIST pixel pair the whole way through the 47-node DAG,
+across both independent highways, and watch the run end with core `#7`
+holding its highway under a burst contract while the HUD reads `258` mesh
+hops and `0` stalls. Reproduce it with:*
+
+```bash
+python3 scripts/fetch_dataset.py   # once: writes git-ignored datasets/mnist/
+
+cd tools/wau-pipelines-viewer && python3 -m wau_viewer \
+  --cw ../../CWs/stress/mesh_stress.cw \
+  --base-config examples/wau_mnist_demo_base.json \
+  --mnist-images ../../datasets/mnist/t10k-images-idx3-ubyte.gz \
+  --mnist-count 4 --mnist-offset 5888 \
+  --record examples/wau_mnist_mesh_stress.gif \
+  --framerate 10 --frames-per-cycle 3 --gif-width 1200 \
+  --record-max-cycles 198 --headless
+```
+
+Drop `--record`/`--headless` to drive the same MNIST run interactively.
+
 This repository now contains a working foundation for:
 - device-aware WAU configuration (real FPGA presets included),
 - flow compilation (flow stages -> core assignments with fallback cores),
