@@ -4,8 +4,9 @@ Each simulated cycle is rendered as a *phased* mini-animation so the order of
 operations stays legible even at slow playback:
 
 1. dispatch phase — operand packets travel hop-by-hop from the coordinator to
-   their compute core along the same dimension-order (X-first) route the
-   generated ``wau_highway_router`` actually uses;
+   their compute core along the same route the generated ``wau_highway_router``
+   actually uses (the index-order chain for the default single-dimension
+   highway, X-then-Y dimension order for a ``matrix`` highway);
 2. execute phase — the operation being applied flashes on the core
    (``mul(14, 3)``-style badge);
 3. result phase — data-plane deliveries travel back over the mesh with an
@@ -18,6 +19,15 @@ All packet motion is driven by a single ``advance(t)`` progress function
 capture all render the exact same deterministic frames. Concurrent packets are
 offset onto parallel lanes and counted in the HUD to make the mesh-level
 parallelism of a program visually evident.
+
+Underneath the grid sits the *highway scheme*: a rail standing for the highway's
+contracting bus, one numbered tick per core slot, and a stub tapping each core
+onto it. The stub is the answer to "when does a core call a highway" — dim while
+the core is quiet, dashed while it wants the highway, amber on the cycle it
+calls from its own offered slot, and solid red for as long as it owns the
+highway under a contract. The sliding marker is the slot the bus is currently
+offering, and it parks on the holder while a contract is in force. Every one of
+those states is read from the RTL trace, never inferred.
 """
 
 from __future__ import annotations
@@ -45,7 +55,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
-from .model import WauModel, manhattan_route
+from .model import CONTRACT_MODE_NAMES, WauModel
 from .trace_parser import CycleSnapshot
 
 
@@ -65,6 +75,14 @@ COLOR_TEXT = QColor("#f0f0f0")
 COLOR_DIM_TEXT = QColor("#a0a4ad")
 COLOR_LINK = QColor("#555a66")
 COLOR_LINK_ACTIVE = QColor("#ffe27a")
+
+# Highway scheme: the contract bus rail, its cycling slot marker, and the
+# per-core stubs that light up when a core calls the highway.
+COLOR_HWY_RAIL = QColor("#3a4150")
+COLOR_HWY_STUB = QColor("#404654")
+COLOR_HWY_CALL = QColor("#ff8f3f")       # a core calling the highway
+COLOR_HWY_HOLD = QColor("#ff5f5f")       # the core that owns it under contract
+COLOR_HWY_OFFER = QColor("#6fd3ff")      # the slot the bus is offering now
 
 COLOR_PACKET_OP = QColor("#5fd0a0")      # operands flowing toward a core
 COLOR_PACKET_RESULT = QColor("#3f9cff")  # result data flowing back
@@ -189,6 +207,54 @@ class MeshLink(QGraphicsLineItem):
     def pulse(self, on: bool) -> None:
         pen = QPen(COLOR_LINK_ACTIVE if on else COLOR_LINK, 5 if on else 3)
         self.setPen(pen)
+
+
+class HighwayStub(QGraphicsLineItem):
+    """The drop from a core down onto the contract-bus rail.
+
+    This is the "core calls a highway" indicator: it is dim while the core is
+    quiet, lights amber on the cycle the core actually calls the highway from
+    its own offered slot, and turns red for as long as that core holds the
+    highway under a contract.
+    """
+
+    def __init__(self, core: "CoreItem", slot_x: float, rail_y: float) -> None:
+        super().__init__()
+        self.core = core
+        c = core.center()
+        bottom = core.sceneBoundingRect().bottom()
+        self.setLine(c.x(), bottom, slot_x, rail_y)
+        self.setZValue(-4)
+        self.set_state(request=False, call=False, hold=False)
+
+    def set_state(self, request: bool, call: bool, hold: bool) -> None:
+        if hold:
+            self.setPen(QPen(COLOR_HWY_HOLD, 6))
+        elif call:
+            self.setPen(QPen(COLOR_HWY_CALL, 5))
+        elif request:
+            self.setPen(QPen(COLOR_HWY_CALL.darker(160), 3, Qt.DashLine))
+        else:
+            self.setPen(QPen(COLOR_HWY_STUB, 2, Qt.DotLine))
+
+
+class HighwaySlotMarker(QGraphicsRectItem):
+    """The bus slot currently being offered, sliding along the rail."""
+
+    SIZE = 20.0
+
+    def __init__(self, rail_y: float) -> None:
+        super().__init__(QRectF(0, 0, self.SIZE, self.SIZE))
+        self._rail_y = rail_y
+        self.setBrush(QBrush(COLOR_HWY_OFFER))
+        self.setPen(QPen(QColor("#10131a"), 2))
+        self.setZValue(6)
+
+    def move_to(self, x: float, granted: bool) -> None:
+        self.setPos(x - self.SIZE / 2, self._rail_y - self.SIZE / 2)
+        # While a contract is in force the bus stops offering slots, so the
+        # marker parks on the holder rather than continuing to sweep.
+        self.setBrush(QBrush(COLOR_HWY_HOLD if granted else COLOR_HWY_OFFER))
 
 
 class DataPacketItem(QGraphicsObject):
@@ -336,26 +402,25 @@ class WauScene(QGraphicsScene):
             self.addItem(item)
             self.core_items[c.index] = item
 
-        # mesh links (horizontal + vertical neighbors)
-        for y in range(self.model.grid_y):
-            for x in range(self.model.grid_x):
-                here_idx = self.model.core_index(x, y)
-                here = self.core_items[here_idx]
-                if x + 1 < self.model.grid_x:
-                    nb_idx = self.model.core_index(x + 1, y)
-                    link = MeshLink(here, self.core_items[nb_idx])
-                    self.links.append(link)
-                    self._link_by_pair[(min(here_idx, nb_idx), max(here_idx, nb_idx))] = link
-                if y + 1 < self.model.grid_y:
-                    nb_idx = self.model.core_index(x, y + 1)
-                    link = MeshLink(here, self.core_items[nb_idx])
-                    self.links.append(link)
-                    self._link_by_pair[(min(here_idx, nb_idx), max(here_idx, nb_idx))] = link
+        # Highway links, drawn from the topology the generator actually emitted:
+        # one chain in core-index order for the default single-dimension
+        # highway, the full neighbour mesh for `matrix`.
+        for a_idx, b_idx in self.model.highway_segments():
+            a_item = self.core_items.get(a_idx)
+            b_item = self.core_items.get(b_idx)
+            if a_item is None or b_item is None:
+                continue
+            link = MeshLink(a_item, b_item)
+            self.links.append(link)
+            self._link_by_pair[(min(a_idx, b_idx), max(a_idx, b_idx))] = link
         for link in self.links:
             self.addItem(link)
             link.refresh()
 
         grid_bottom = self.model.grid_y * PITCH
+
+        self._build_highway_scheme(grid_bottom)
+        grid_bottom = self._rail_y + 40
 
         # host endpoint: final values animate from the coordinator down here
         self._host_point = QPointF(CELL_SIZE / 2, grid_bottom + 44)
@@ -371,13 +436,13 @@ class WauScene(QGraphicsScene):
         self.hud_cycle = QGraphicsSimpleTextItem("cycle –")
         self.hud_cycle.setFont(QFont("Menlo", 15, QFont.Bold))
         self.hud_cycle.setBrush(QBrush(COLOR_TEXT))
-        self.hud_cycle.setPos(0, -84)
+        self.hud_cycle.setPos(0, -112)
         self.addItem(self.hud_cycle)
 
         self.hud_parallel = QGraphicsSimpleTextItem("")
         self.hud_parallel.setFont(QFont("Menlo", 12))
         self.hud_parallel.setBrush(QBrush(COLOR_DIM_TEXT))
-        self.hud_parallel.setPos(0, -56)
+        self.hud_parallel.setPos(0, -86)
         self.addItem(self.hud_parallel)
 
         # legend for the packet colors, so the animation is self-explanatory
@@ -388,6 +453,9 @@ class WauScene(QGraphicsScene):
             ("■ op applied", COLOR_OP_FLASH),
             ("■ result over data mesh", COLOR_PACKET_RESULT),
             ("■ output → host", COLOR_PACKET_HOST),
+            ("■ core calls highway", COLOR_HWY_CALL),
+            ("■ holds highway (contract)", COLOR_HWY_HOLD),
+            ("■ bus slot offered", COLOR_HWY_OFFER),
         ):
             entry = QGraphicsSimpleTextItem(text)
             entry.setFont(legend_font)
@@ -395,6 +463,106 @@ class WauScene(QGraphicsScene):
             entry.setPos(legend_x, -30)
             self.addItem(entry)
             legend_x += entry.boundingRect().width() + 28
+
+    def _build_highway_scheme(self, grid_bottom: float) -> None:
+        """Draw the highway's contracting bus as an explicit scheme.
+
+        The rail is the bus itself, one tick per core slot; the stub dropping
+        from each core is that core's connection to it. Together they answer
+        "which core is calling the highway right now, and who owns it" at a
+        glance, instead of that arbitration being invisible.
+        """
+        hwy = self.model.highway
+        self._rail_y = grid_bottom + 56
+        self._stubs: Dict[int, HighwayStub] = {}
+        self._slot_x: Dict[int, float] = {}
+
+        left = 0.0
+        right = max(1, self.model.grid_x) * PITCH - CELL_PADDING
+        rail = QGraphicsLineItem(left, self._rail_y, right, self._rail_y)
+        rail.setPen(QPen(COLOR_HWY_RAIL, 8))
+        rail.setZValue(-6)
+        self.addItem(rail)
+
+        label = "single-dimension highway (chain)" if hwy.is_linear else "matrix highway (mesh)"
+        bus_state = "contract bus" if hwy.contract_bus else "contract bus off"
+        rail_label = QGraphicsSimpleTextItem(
+            f"{label}  ·  {bus_state}"
+            + (f"  ·  max burst {hwy.contract_max_burst}" if hwy.contract_bus else "")
+        )
+        rail_label.setFont(QFont("Menlo", 11, QFont.Bold))
+        rail_label.setBrush(QBrush(COLOR_DIM_TEXT))
+        rail_label.setPos(left, self._rail_y + 28)
+        self.addItem(rail_label)
+
+        # One slot tick per core, spread evenly along the rail in *slot* order —
+        # the order wau_highway_contract offers them in. Slots get their own
+        # position rather than sitting under their core, because cores in
+        # different rows share an x and their taps would otherwise overlap.
+        count = max(1, self.model.core_count)
+        pitch = (right - left) / count
+        tick_font = QFont("Menlo", 8)
+        for idx in range(count):
+            core_item = self.core_items.get(idx)
+            if core_item is None:
+                continue
+            x = left + (idx + 0.5) * pitch
+            self._slot_x[idx] = x
+            tick = QGraphicsLineItem(x, self._rail_y - 10, x, self._rail_y + 10)
+            tick.setPen(QPen(COLOR_HWY_RAIL.lighter(150), 2))
+            tick.setZValue(-5)
+            self.addItem(tick)
+
+            tick_label = QGraphicsSimpleTextItem(str(idx))
+            tick_label.setFont(tick_font)
+            tick_label.setBrush(QBrush(COLOR_DIM_TEXT))
+            tick_label.setPos(x - 4, self._rail_y + 12)
+            self.addItem(tick_label)
+
+            stub = HighwayStub(core_item, x, self._rail_y)
+            self.addItem(stub)
+            self._stubs[idx] = stub
+
+        self._slot_marker = HighwaySlotMarker(self._rail_y)
+        self._slot_marker.move_to(self._slot_x.get(0, left), granted=False)
+        self.addItem(self._slot_marker)
+
+        self.hud_highway = QGraphicsSimpleTextItem("")
+        self.hud_highway.setFont(QFont("Menlo", 12))
+        self.hud_highway.setBrush(QBrush(COLOR_HWY_OFFER))
+        self.hud_highway.setPos(0, -60)
+        self.addItem(self.hud_highway)
+
+    def _apply_highway_state(self, snap: CycleSnapshot) -> None:
+        """Light the stub of every core touching the highway this cycle."""
+        hwy = snap.highway
+        for c in snap.cores:
+            stub = self._stubs.get(c.core_index)
+            if stub is not None:
+                stub.set_state(
+                    request=c.highway_request,
+                    call=c.highway_call,
+                    hold=c.highway_holder,
+                )
+
+        marker_core = hwy.grant_core if hwy.grant_valid else hwy.slot
+        if marker_core in self._slot_x:
+            self._slot_marker.move_to(self._slot_x[marker_core], hwy.grant_valid)
+
+        callers = [c.core_index for c in snap.cores if c.highway_call]
+        if hwy.grant_valid:
+            mode = CONTRACT_MODE_NAMES.get(hwy.grant_mode, f"mode{hwy.grant_mode}")
+            state = (
+                f"highway held by core {hwy.grant_core} "
+                f"({mode}, {hwy.grant_remaining} beats left)"
+            )
+        elif callers:
+            state = f"core {callers[0]} calling highway on slot {hwy.slot}"
+        else:
+            state = f"highway open · offering slot {hwy.slot}"
+        self.hud_highway.setText(
+            f"{state}   grants {hwy.grant_count}   deferred {hwy.defer_count}"
+        )
 
     def set_total_cycles(self, total: int) -> None:
         self._total_cycles = total
@@ -415,7 +583,7 @@ class WauScene(QGraphicsScene):
         self._pulsed_links = []
 
     def _route_points(self, src: int, dst: int, lane: float) -> Tuple[List[QPointF], List[MeshLink]]:
-        route = manhattan_route(self.model.grid_x, self.model.grid_y, src, dst)
+        route = self.model.highway_route(src, dst)
         offset = QPointF(lane * LANE_OFFSET, lane * LANE_OFFSET)
         points = [self.core_items[idx].center() + offset for idx in route]
         links: List[MeshLink] = []
@@ -445,6 +613,7 @@ class WauScene(QGraphicsScene):
     def apply_cycle(self, snap: CycleSnapshot) -> CycleActivity:
         """Load one cycle's activity; call ``advance(t)`` afterwards to render."""
         self._clear_dynamic_items()
+        self._apply_highway_state(snap)
         activity = CycleActivity()
 
         dispatch_events = []

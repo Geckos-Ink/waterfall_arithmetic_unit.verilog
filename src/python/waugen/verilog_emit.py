@@ -63,6 +63,30 @@ def _render_defs(project: CompiledProject) -> str:
         f"// Station cache policy: {station_cache.replacement_policy} "
         f"({station_cache.entries} entries)"
     )
+    highway = cfg.device.highway
+    lines.append(f"`define WAU_HIGHWAY_TOPOLOGY_{highway.topology.upper()} 1")
+    lines.append(f"`define WAU_HIGHWAY_TOPOLOGY_NAME \"{highway.topology}\"")
+    lines.append(
+        f"`define WAU_HIGHWAY_PORT_COUNT {len(_highway_dirs(project))}"
+    )
+    lines.append(
+        f"`define WAU_HIGHWAY_CONTRACT_BUS {1 if highway.contract_bus else 0}"
+    )
+    lines.append(f"`define WAU_HIGHWAY_CONTRACT_WORD_WIDTH {_CONTRACT_WORD_WIDTH}")
+    lines.append(f"`define WAU_HIGHWAY_CONTRACT_MODE_LSB {_CONTRACT_MODE_LSB}")
+    lines.append(f"`define WAU_HIGHWAY_CONTRACT_WORDS_LSB {_CONTRACT_WORDS_LSB}")
+    lines.append(f"`define WAU_HIGHWAY_CONTRACT_REPEATS_LSB {_CONTRACT_REPEATS_LSB}")
+    lines.append(f"`define WAU_HIGHWAY_CONTRACT_MAX_BURST {highway.contract_max_burst}")
+    lines.append(
+        f"`define WAU_HIGHWAY_CONTRACT_LEASE_CYCLES {highway.contract_lease_cycles}"
+    )
+    lines.append(
+        f"// Highway topology: {highway.topology} "
+        f"({len(_highway_dirs(project))} router ports per core)"
+    )
+    lines.append(
+        "// Contract bus modes: 0=pong, 1=burst, 2=stream, 3=reserve"
+    )
     lines.append(f"// Supported data types: {', '.join(cfg.device.supported_data_types)}")
     lines.append("")
     for op in cfg.operations:
@@ -521,212 +545,28 @@ endmodule
 """
 
 
-def _render_highway_router() -> str:
-    return """`timescale 1ns/1ps
-`include "wau_defs.vh"
+_HIGHWAY_LINEAR_DIRS = ("local", "prev", "next", "up", "down")
+_HIGHWAY_MATRIX_DIRS = ("local", "north", "south", "east", "west", "up", "down")
 
-module wau_highway_router #(
-    parameter CORE_INDEX = 0,
-    parameter CORE_X = 0,
-    parameter CORE_Y = 0,
-    parameter CORE_Z = 0,
-    parameter GRID_X = `WAU_GRID_X,
-    parameter GRID_Y = `WAU_GRID_Y,
-    parameter CORE_ID_WIDTH = 8,
-    parameter PAYLOAD_WIDTH = 64
-) (
-    input wire clk,
-    input wire rst_n,
+# Highway contract word layout, shared by the emitter, `wau_highway_contract`
+# and the viewer. "how" = mode, "how much" = words, "how many times" = repeats.
+_CONTRACT_WORD_WIDTH = 18
+_CONTRACT_MODE_LSB = 0
+_CONTRACT_WORDS_LSB = 2
+_CONTRACT_REPEATS_LSB = 10
+_CONTRACT_MODE_PONG = 0
+_CONTRACT_MODE_BURST = 1
+_CONTRACT_MODE_STREAM = 2
+_CONTRACT_MODE_RESERVE = 3
+_CONTRACT_MODE_NAMES = {
+    _CONTRACT_MODE_PONG: "pong",
+    _CONTRACT_MODE_BURST: "burst",
+    _CONTRACT_MODE_STREAM: "stream",
+    _CONTRACT_MODE_RESERVE: "reserve",
+}
 
-    output reg [31:0] hop_count,
-    output reg [31:0] stall_count,
-    output reg [31:0] local_delivered_count,
-    output reg [31:0] forward_count,
 
-    input wire local_in_valid,
-    output wire local_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] local_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] local_in_payload,
-
-    output wire local_out_valid,
-    input wire local_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] local_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] local_out_payload,
-
-    input wire north_in_valid,
-    output wire north_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] north_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] north_in_payload,
-
-    output wire north_out_valid,
-    input wire north_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] north_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] north_out_payload,
-
-    input wire south_in_valid,
-    output wire south_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] south_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] south_in_payload,
-
-    output wire south_out_valid,
-    input wire south_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] south_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] south_out_payload,
-
-    input wire east_in_valid,
-    output wire east_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] east_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] east_in_payload,
-
-    output wire east_out_valid,
-    input wire east_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] east_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] east_out_payload,
-
-    input wire west_in_valid,
-    output wire west_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] west_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] west_in_payload,
-
-    output wire west_out_valid,
-    input wire west_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] west_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] west_out_payload,
-
-    input wire up_in_valid,
-    output wire up_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] up_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] up_in_payload,
-
-    output wire up_out_valid,
-    input wire up_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] up_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] up_out_payload,
-
-    input wire down_in_valid,
-    output wire down_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] down_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] down_in_payload,
-
-    output wire down_out_valid,
-    input wire down_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] down_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] down_out_payload
-);
-    localparam DIR_LOCAL = 3'd0;
-    localparam DIR_NORTH = 3'd1;
-    localparam DIR_SOUTH = 3'd2;
-    localparam DIR_EAST = 3'd3;
-    localparam DIR_WEST = 3'd4;
-    localparam DIR_UP = 3'd5;
-    localparam DIR_DOWN = 3'd6;
-    localparam PORT_COUNT = 7;
-
-    function [2:0] route_dir;
-        input [CORE_ID_WIDTH-1:0] dst_core;
-        integer dst_x;
-        integer dst_y;
-        integer dst_z;
-        begin
-            if (dst_core == CORE_INDEX[CORE_ID_WIDTH-1:0]) begin
-                route_dir = DIR_LOCAL;
-            end else begin
-                dst_x = dst_core % GRID_X;
-                dst_y = (dst_core / GRID_X) % GRID_Y;
-                dst_z = dst_core / (GRID_X * GRID_Y);
-
-                if (dst_x > CORE_X) begin
-                    route_dir = DIR_EAST;
-                end else if (dst_x < CORE_X) begin
-                    route_dir = DIR_WEST;
-                end else if (dst_y > CORE_Y) begin
-                    route_dir = DIR_SOUTH;
-                end else if (dst_y < CORE_Y) begin
-                    route_dir = DIR_NORTH;
-                end else if (dst_z > CORE_Z) begin
-                    route_dir = DIR_DOWN;
-                end else begin
-                    route_dir = DIR_UP;
-                end
-            end
-        end
-    endfunction
-
-    wire in_valid [0:PORT_COUNT-1];
-    wire [CORE_ID_WIDTH-1:0] in_dst [0:PORT_COUNT-1];
-    wire [PAYLOAD_WIDTH-1:0] in_payload [0:PORT_COUNT-1];
-    wire out_ready [0:PORT_COUNT-1];
-
-    reg in_ready_r [0:PORT_COUNT-1];
-    reg out_valid_r [0:PORT_COUNT-1];
-    reg [CORE_ID_WIDTH-1:0] out_dst_r [0:PORT_COUNT-1];
-    reg [PAYLOAD_WIDTH-1:0] out_payload_r [0:PORT_COUNT-1];
-
-    assign in_valid[DIR_LOCAL] = local_in_valid;
-    assign in_valid[DIR_NORTH] = north_in_valid;
-    assign in_valid[DIR_SOUTH] = south_in_valid;
-    assign in_valid[DIR_EAST] = east_in_valid;
-    assign in_valid[DIR_WEST] = west_in_valid;
-    assign in_valid[DIR_UP] = up_in_valid;
-    assign in_valid[DIR_DOWN] = down_in_valid;
-
-    assign in_dst[DIR_LOCAL] = local_in_dst;
-    assign in_dst[DIR_NORTH] = north_in_dst;
-    assign in_dst[DIR_SOUTH] = south_in_dst;
-    assign in_dst[DIR_EAST] = east_in_dst;
-    assign in_dst[DIR_WEST] = west_in_dst;
-    assign in_dst[DIR_UP] = up_in_dst;
-    assign in_dst[DIR_DOWN] = down_in_dst;
-
-    assign in_payload[DIR_LOCAL] = local_in_payload;
-    assign in_payload[DIR_NORTH] = north_in_payload;
-    assign in_payload[DIR_SOUTH] = south_in_payload;
-    assign in_payload[DIR_EAST] = east_in_payload;
-    assign in_payload[DIR_WEST] = west_in_payload;
-    assign in_payload[DIR_UP] = up_in_payload;
-    assign in_payload[DIR_DOWN] = down_in_payload;
-
-    assign out_ready[DIR_LOCAL] = local_out_ready;
-    assign out_ready[DIR_NORTH] = north_out_ready;
-    assign out_ready[DIR_SOUTH] = south_out_ready;
-    assign out_ready[DIR_EAST] = east_out_ready;
-    assign out_ready[DIR_WEST] = west_out_ready;
-    assign out_ready[DIR_UP] = up_out_ready;
-    assign out_ready[DIR_DOWN] = down_out_ready;
-
-    assign local_in_ready = in_ready_r[DIR_LOCAL];
-    assign north_in_ready = in_ready_r[DIR_NORTH];
-    assign south_in_ready = in_ready_r[DIR_SOUTH];
-    assign east_in_ready = in_ready_r[DIR_EAST];
-    assign west_in_ready = in_ready_r[DIR_WEST];
-    assign up_in_ready = in_ready_r[DIR_UP];
-    assign down_in_ready = in_ready_r[DIR_DOWN];
-
-    assign local_out_valid = out_valid_r[DIR_LOCAL];
-    assign north_out_valid = out_valid_r[DIR_NORTH];
-    assign south_out_valid = out_valid_r[DIR_SOUTH];
-    assign east_out_valid = out_valid_r[DIR_EAST];
-    assign west_out_valid = out_valid_r[DIR_WEST];
-    assign up_out_valid = out_valid_r[DIR_UP];
-    assign down_out_valid = out_valid_r[DIR_DOWN];
-
-    assign local_out_dst = out_dst_r[DIR_LOCAL];
-    assign north_out_dst = out_dst_r[DIR_NORTH];
-    assign south_out_dst = out_dst_r[DIR_SOUTH];
-    assign east_out_dst = out_dst_r[DIR_EAST];
-    assign west_out_dst = out_dst_r[DIR_WEST];
-    assign up_out_dst = out_dst_r[DIR_UP];
-    assign down_out_dst = out_dst_r[DIR_DOWN];
-
-    assign local_out_payload = out_payload_r[DIR_LOCAL];
-    assign north_out_payload = out_payload_r[DIR_NORTH];
-    assign south_out_payload = out_payload_r[DIR_SOUTH];
-    assign east_out_payload = out_payload_r[DIR_EAST];
-    assign west_out_payload = out_payload_r[DIR_WEST];
-    assign up_out_payload = out_payload_r[DIR_UP];
-    assign down_out_payload = out_payload_r[DIR_DOWN];
-
-    integer out_i;
+_HIGHWAY_ROUTER_BODY = """    integer out_i;
     integer in_i;
     integer init_i;
     integer selected_input;
@@ -802,312 +642,655 @@ endmodule
 """
 
 
-def _render_highway_mesh() -> str:
+_HIGHWAY_MESH_CONTRACT_BLOCK = """    // Contract-bus admission. `admit` is a registered decision, so gating the
+    // local port here adds no combinational path through the routers. With the
+    // bus disabled (or idle) every core is admitted and the highway behaves
+    // exactly as an ungoverned mesh.
+    wire [CORE_COUNT-1:0] admit;
+    wire [CORE_COUNT-1:0] core_in_valid;
+    wire [CORE_COUNT-1:0] core_in_ready;
+
+    assign core_in_valid = local_in_valid & admit;
+    assign local_in_ready = core_in_ready & admit;
+
+    generate
+        if (CONTRACT_BUS_ENABLE != 0) begin : gen_contract_bus
+            wau_highway_contract #(
+                .CORE_COUNT(CORE_COUNT),
+                .CORE_ID_WIDTH(CORE_ID_WIDTH),
+                .WORD_WIDTH(CONTRACT_WORD_WIDTH),
+                .MAX_BURST(CONTRACT_MAX_BURST),
+                .LEASE_CYCLES(CONTRACT_LEASE_CYCLES)
+            ) contract_u (
+                .clk(clk),
+                .rst_n(rst_n),
+                .req(contract_req),
+                .word(contract_word),
+                .pending(local_in_valid),
+                .accepted(local_in_valid & local_in_ready),
+                .admit(admit),
+                .call(contract_call),
+                .slot(contract_slot),
+                .grant_valid(contract_grant_valid),
+                .grant_core(contract_grant_core),
+                .grant_mode(contract_grant_mode),
+                .grant_remaining(contract_grant_remaining),
+                .grant_lease(),
+                .grant_count(contract_grant_count),
+                .hold_cycles(contract_hold_cycles),
+                .defer_count(contract_defer_count)
+            );
+        end else begin : gen_no_contract_bus
+            assign admit = {CORE_COUNT{1'b1}};
+            assign contract_call = {CORE_COUNT{1'b0}};
+            assign contract_slot = {CORE_ID_WIDTH{1'b0}};
+            assign contract_grant_valid = 1'b0;
+            assign contract_grant_core = {CORE_ID_WIDTH{1'b0}};
+            assign contract_grant_mode = 2'd0;
+            assign contract_grant_remaining = 16'd0;
+            assign contract_grant_count = 32'd0;
+            assign contract_hold_cycles = 32'd0;
+            assign contract_defer_count = 32'd0;
+        end
+    endgenerate
+
+"""
+
+
+def _highway_dirs(project: CompiledProject) -> tuple[str, ...]:
+    return (
+        _HIGHWAY_LINEAR_DIRS
+        if project.config.device.highway.is_linear
+        else _HIGHWAY_MATRIX_DIRS
+    )
+
+
+def _encode_contract_word(mode: int, words: int, repeats: int) -> int:
+    return (
+        (mode & 0x3) << _CONTRACT_MODE_LSB
+        | (words & 0xFF) << _CONTRACT_WORDS_LSB
+        | (repeats & 0xFF) << _CONTRACT_REPEATS_LSB
+    )
+
+
+def contract_rom_entries(
+    project: CompiledProject, schedule: SchedulePlan
+) -> list[tuple[int, int, int]]:
+    """Derive each core's *programmed* highway expectation from the schedule.
+
+    The contract bus accepts two kinds of answer on a core's offered slot: a
+    bare request bit, or a contract saying how the core intends to use the
+    highway. This builds the latter from what the offline scheduler already
+    knows, so a core that will push a run of results for one flow asks for the
+    whole run once instead of re-arbitrating per beat:
+
+    - ``words``   — the longest run of instructions the core executes for a
+      single flow id (how much it transmits in one go), clamped to the
+      synthesised ``contract_max_burst``;
+    - ``repeats`` — how many distinct flow ids land on the core (how many times
+      it expects to come back);
+    - ``mode``    — ``pong`` for a single isolated beat, ``burst`` for one run,
+      ``stream`` for several.
+
+    Cores with no scheduled work get a ``pong`` contract, which is exactly the
+    "request bit" behaviour and reserves nothing.
+    """
+    cfg = project.config
+    core_count = cfg.device.grid_x * cfg.device.grid_y * cfg.device.grid_z
+    max_burst = cfg.device.highway.contract_max_burst
+
+    per_core: list[dict[int, int]] = [dict() for _ in range(core_count)]
+    for ins in schedule.instructions:
+        if 0 <= ins.core_index < core_count:
+            counts = per_core[ins.core_index]
+            counts[ins.flow_id] = counts.get(ins.flow_id, 0) + 1
+
+    entries: list[tuple[int, int, int]] = []
+    for counts in per_core:
+        if not counts:
+            entries.append((_CONTRACT_MODE_PONG, 1, 1))
+            continue
+        words = min(max(counts.values()), max_burst)
+        repeats = min(len(counts), 255)
+        if words <= 1 and repeats <= 1:
+            mode = _CONTRACT_MODE_PONG
+        elif repeats <= 1:
+            mode = _CONTRACT_MODE_BURST
+        else:
+            mode = _CONTRACT_MODE_STREAM
+        entries.append((mode, max(words, 1), max(repeats, 1)))
+    return entries
+
+
+def _render_highway_contract() -> str:
+    """The highway's contracting bus.
+
+    One core slot is offered per clock. The offered core answers either with a
+    bare request bit (``pong`` — a single beat, no reservation) or with a
+    contract word describing how it intends to occupy this highway. While a
+    contract is in force the highway admits *only* its holder, so a contracted
+    transfer never interleaves with another core's traffic and never has to
+    wait for its slot to come round again. Every contract is bounded twice —
+    by its beat count and by a hard lease — so the bus always makes progress
+    even if the holder goes quiet.
+    """
     return """`timescale 1ns/1ps
 `include "wau_defs.vh"
 
-module wau_highway_mesh #(
-    parameter GRID_X = `WAU_GRID_X,
-    parameter GRID_Y = `WAU_GRID_Y,
-    parameter GRID_Z = `WAU_GRID_Z,
+module wau_highway_contract #(
     parameter CORE_COUNT = `WAU_CORE_COUNT,
     parameter CORE_ID_WIDTH = 8,
-    parameter PAYLOAD_WIDTH = 64
+    parameter WORD_WIDTH = `WAU_HIGHWAY_CONTRACT_WORD_WIDTH,
+    parameter MAX_BURST = `WAU_HIGHWAY_CONTRACT_MAX_BURST,
+    parameter LEASE_CYCLES = `WAU_HIGHWAY_CONTRACT_LEASE_CYCLES
 ) (
     input wire clk,
     input wire rst_n,
 
-    input wire [CORE_COUNT-1:0] local_in_valid,
-    output wire [CORE_COUNT-1:0] local_in_ready,
-    input wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_in_dst,
-    input wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_in_payload,
+    // Real-time side: a core raises `req` when it actually wants the highway.
+    input wire [CORE_COUNT-1:0] req,
+    // Program side: the expectation the offline schedule derived for that core.
+    input wire [CORE_COUNT*WORD_WIDTH-1:0] word,
+    // Highway side: who is presenting, and whose presentation was taken.
+    input wire [CORE_COUNT-1:0] pending,
+    input wire [CORE_COUNT-1:0] accepted,
 
-    output wire [CORE_COUNT-1:0] local_out_valid,
-    input wire [CORE_COUNT-1:0] local_out_ready,
-    output wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_out_dst,
-    output wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_out_payload,
+    // Injection mask applied by the mesh, and the per-core "called the
+    // highway" pulse the viewer renders.
+    output wire [CORE_COUNT-1:0] admit,
+    output wire [CORE_COUNT-1:0] call,
 
-    output wire [CORE_COUNT*32-1:0] router_hop_count,
-    output wire [CORE_COUNT*32-1:0] router_stall_count,
-    output wire [CORE_COUNT*32-1:0] router_local_delivered_count,
-    output wire [CORE_COUNT*32-1:0] router_forward_count
+    output reg [CORE_ID_WIDTH-1:0] slot,
+    output reg grant_valid,
+    output reg [CORE_ID_WIDTH-1:0] grant_core,
+    output reg [1:0] grant_mode,
+    output reg [15:0] grant_remaining,
+    output reg [15:0] grant_lease,
+
+    output reg [31:0] grant_count,
+    output reg [31:0] hold_cycles,
+    output reg [31:0] defer_count
 );
-    wire [CORE_COUNT-1:0] north_in_valid;
-    wire [CORE_COUNT-1:0] north_in_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] north_in_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] north_in_payload;
-    wire [CORE_COUNT-1:0] north_out_valid;
-    wire [CORE_COUNT-1:0] north_out_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] north_out_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] north_out_payload;
+    localparam [1:0] MODE_PONG    = 2'd0;
+    localparam [1:0] MODE_BURST   = 2'd1;
+    localparam [1:0] MODE_STREAM  = 2'd2;
+    localparam [1:0] MODE_RESERVE = 2'd3;
 
-    wire [CORE_COUNT-1:0] south_in_valid;
-    wire [CORE_COUNT-1:0] south_in_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] south_in_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] south_in_payload;
-    wire [CORE_COUNT-1:0] south_out_valid;
-    wire [CORE_COUNT-1:0] south_out_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] south_out_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] south_out_payload;
+    localparam integer MODE_LSB    = 0;
+    localparam integer WORDS_LSB   = 2;
+    localparam integer REPEATS_LSB = 10;
 
-    wire [CORE_COUNT-1:0] east_in_valid;
-    wire [CORE_COUNT-1:0] east_in_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] east_in_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] east_in_payload;
-    wire [CORE_COUNT-1:0] east_out_valid;
-    wire [CORE_COUNT-1:0] east_out_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] east_out_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] east_out_payload;
+    localparam [CORE_ID_WIDTH-1:0] LAST_SLOT = CORE_COUNT - 1;
+    localparam [7:0] MAX_BURST_BEATS = MAX_BURST;
+    localparam [15:0] LEASE_INIT = LEASE_CYCLES;
 
-    wire [CORE_COUNT-1:0] west_in_valid;
-    wire [CORE_COUNT-1:0] west_in_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] west_in_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] west_in_payload;
-    wire [CORE_COUNT-1:0] west_out_valid;
-    wire [CORE_COUNT-1:0] west_out_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] west_out_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] west_out_payload;
-
-    wire [CORE_COUNT-1:0] up_in_valid;
-    wire [CORE_COUNT-1:0] up_in_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] up_in_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] up_in_payload;
-    wire [CORE_COUNT-1:0] up_out_valid;
-    wire [CORE_COUNT-1:0] up_out_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] up_out_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] up_out_payload;
-
-    wire [CORE_COUNT-1:0] down_in_valid;
-    wire [CORE_COUNT-1:0] down_in_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] down_in_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] down_in_payload;
-    wire [CORE_COUNT-1:0] down_out_valid;
-    wire [CORE_COUNT-1:0] down_out_ready;
-    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] down_out_dst;
-    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] down_out_payload;
-
-    localparam integer LAYER_CORE_COUNT = GRID_X * GRID_Y;
-
-    genvar gz;
-    genvar gy;
-    genvar gx;
+    // With no contract in force the highway stays wide open, so an idle bus
+    // adds no admission latency; a contract narrows it to its holder alone.
+    wire [CORE_COUNT-1:0] grant_mask;
+    genvar gi;
     generate
-        for (gz = 0; gz < GRID_Z; gz = gz + 1) begin : gen_z
-        for (gy = 0; gy < GRID_Y; gy = gy + 1) begin : gen_y
-            for (gx = 0; gx < GRID_X; gx = gx + 1) begin : gen_x
-                localparam integer CORE_INDEX = (gz * LAYER_CORE_COUNT) + (gy * GRID_X) + gx;
-                localparam integer NORTH_INDEX = CORE_INDEX - GRID_X;
-                localparam integer SOUTH_INDEX = CORE_INDEX + GRID_X;
-                localparam integer EAST_INDEX = CORE_INDEX + 1;
-                localparam integer WEST_INDEX = CORE_INDEX - 1;
-                localparam integer UP_INDEX = CORE_INDEX - LAYER_CORE_COUNT;
-                localparam integer DOWN_INDEX = CORE_INDEX + LAYER_CORE_COUNT;
+        for (gi = 0; gi < CORE_COUNT; gi = gi + 1) begin : gen_slot
+            assign grant_mask[gi] = (grant_core == gi[CORE_ID_WIDTH-1:0]);
+            assign call[gi] = (!grant_valid) && (slot == gi[CORE_ID_WIDTH-1:0]) && req[gi];
+        end
+    endgenerate
+    assign admit = grant_valid ? grant_mask : {CORE_COUNT{1'b1}};
 
-                wau_highway_router #(
-                    .CORE_INDEX(CORE_INDEX),
-                    .CORE_X(gx),
-                    .CORE_Y(gy),
-                    .CORE_Z(gz),
-                    .GRID_X(GRID_X),
-                    .GRID_Y(GRID_Y),
-                    .CORE_ID_WIDTH(CORE_ID_WIDTH),
-                    .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
-                ) router_u (
-                    .clk(clk),
-                    .rst_n(rst_n),
-                    .hop_count(router_hop_count[(CORE_INDEX*32) +: 32]),
-                    .stall_count(router_stall_count[(CORE_INDEX*32) +: 32]),
-                    .local_delivered_count(router_local_delivered_count[(CORE_INDEX*32) +: 32]),
-                    .forward_count(router_forward_count[(CORE_INDEX*32) +: 32]),
-                    .local_in_valid(local_in_valid[CORE_INDEX]),
-                    .local_in_ready(local_in_ready[CORE_INDEX]),
-                    .local_in_dst(local_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .local_in_payload(local_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .local_out_valid(local_out_valid[CORE_INDEX]),
-                    .local_out_ready(local_out_ready[CORE_INDEX]),
-                    .local_out_dst(local_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .local_out_payload(local_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .north_in_valid(north_in_valid[CORE_INDEX]),
-                    .north_in_ready(north_in_ready[CORE_INDEX]),
-                    .north_in_dst(north_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .north_in_payload(north_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .north_out_valid(north_out_valid[CORE_INDEX]),
-                    .north_out_ready(north_out_ready[CORE_INDEX]),
-                    .north_out_dst(north_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .north_out_payload(north_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .south_in_valid(south_in_valid[CORE_INDEX]),
-                    .south_in_ready(south_in_ready[CORE_INDEX]),
-                    .south_in_dst(south_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .south_in_payload(south_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .south_out_valid(south_out_valid[CORE_INDEX]),
-                    .south_out_ready(south_out_ready[CORE_INDEX]),
-                    .south_out_dst(south_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .south_out_payload(south_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .east_in_valid(east_in_valid[CORE_INDEX]),
-                    .east_in_ready(east_in_ready[CORE_INDEX]),
-                    .east_in_dst(east_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .east_in_payload(east_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .east_out_valid(east_out_valid[CORE_INDEX]),
-                    .east_out_ready(east_out_ready[CORE_INDEX]),
-                    .east_out_dst(east_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .east_out_payload(east_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .west_in_valid(west_in_valid[CORE_INDEX]),
-                    .west_in_ready(west_in_ready[CORE_INDEX]),
-                    .west_in_dst(west_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .west_in_payload(west_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .west_out_valid(west_out_valid[CORE_INDEX]),
-                    .west_out_ready(west_out_ready[CORE_INDEX]),
-                    .west_out_dst(west_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .west_out_payload(west_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .up_in_valid(up_in_valid[CORE_INDEX]),
-                    .up_in_ready(up_in_ready[CORE_INDEX]),
-                    .up_in_dst(up_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .up_in_payload(up_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .up_out_valid(up_out_valid[CORE_INDEX]),
-                    .up_out_ready(up_out_ready[CORE_INDEX]),
-                    .up_out_dst(up_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .up_out_payload(up_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .down_in_valid(down_in_valid[CORE_INDEX]),
-                    .down_in_ready(down_in_ready[CORE_INDEX]),
-                    .down_in_dst(down_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .down_in_payload(down_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                    .down_out_valid(down_out_valid[CORE_INDEX]),
-                    .down_out_ready(down_out_ready[CORE_INDEX]),
-                    .down_out_dst(down_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                    .down_out_payload(down_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
-                );
+    wire [WORD_WIDTH-1:0] slot_word = word[(slot*WORD_WIDTH) +: WORD_WIDTH];
+    wire [1:0] slot_mode = slot_word[MODE_LSB +: 2];
+    wire [7:0] slot_words = slot_word[WORDS_LSB +: 8];
+    wire [7:0] slot_repeats = slot_word[REPEATS_LSB +: 8];
 
-                if (gy == 0) begin : north_edge
-                    assign north_in_valid[CORE_INDEX] = 1'b0;
-                    assign north_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
-                    assign north_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
-                    assign north_out_ready[CORE_INDEX] = 1'b1;
-                end else begin : north_link
-                    wau_neighbor_forward #(
-                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
-                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
-                    ) from_north_u (
-                        .in_valid(south_out_valid[NORTH_INDEX]),
-                        .in_ready(south_out_ready[NORTH_INDEX]),
-                        .in_dst(south_out_dst[(NORTH_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .in_payload(south_out_payload[(NORTH_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                        .out_valid(north_in_valid[CORE_INDEX]),
-                        .out_ready(north_in_ready[CORE_INDEX]),
-                        .out_dst(north_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .out_payload(north_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
-                    );
+    // "how much" per run and "how many times", clamped to what was synthesised.
+    wire [7:0] eff_words = (slot_words == 8'd0)
+        ? 8'd1
+        : ((slot_words > MAX_BURST_BEATS) ? MAX_BURST_BEATS : slot_words);
+    wire [7:0] eff_repeats = (slot_repeats == 8'd0) ? 8'd1 : slot_repeats;
+    wire [15:0] stream_beats = eff_words * eff_repeats;
+
+    reg [15:0] beats_next;
+    always @(*) begin
+        case (slot_mode)
+            MODE_PONG:   beats_next = 16'd1;
+            MODE_BURST:  beats_next = {8'd0, eff_words};
+            MODE_STREAM: beats_next = stream_beats;
+            // RESERVE holds the highway for the whole lease regardless of how
+            // many beats actually flow.
+            default:     beats_next = 16'hFFFF;
+        endcase
+    end
+
+    wire holder_beat = grant_valid && accepted[grant_core];
+    wire contract_done = holder_beat && (grant_remaining <= 16'd1);
+    wire lease_expired = grant_valid && (grant_lease == 16'd0);
+    // A holder that has gone quiet releases immediately rather than sitting on
+    // the highway until its lease runs out.
+    wire holder_idle = grant_valid && !pending[grant_core] && !req[grant_core];
+    wire release_now = contract_done || lease_expired || holder_idle;
+
+    // Cores that presented traffic but were held off by someone else's
+    // contract this cycle.
+    reg [CORE_ID_WIDTH:0] deferred_now;
+    integer di;
+    always @(*) begin
+        deferred_now = {(CORE_ID_WIDTH+1){1'b0}};
+        for (di = 0; di < CORE_COUNT; di = di + 1) begin
+            if (pending[di] && !admit[di]) begin
+                deferred_now = deferred_now + 1'b1;
+            end
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            slot <= {CORE_ID_WIDTH{1'b0}};
+            grant_valid <= 1'b0;
+            grant_core <= {CORE_ID_WIDTH{1'b0}};
+            grant_mode <= MODE_PONG;
+            grant_remaining <= 16'd0;
+            grant_lease <= 16'd0;
+            grant_count <= 32'd0;
+            hold_cycles <= 32'd0;
+            defer_count <= 32'd0;
+        end else begin
+            defer_count <= defer_count + {{(31-CORE_ID_WIDTH){1'b0}}, deferred_now};
+
+            if (!grant_valid) begin
+                if (req[slot]) begin
+                    grant_valid <= 1'b1;
+                    grant_core <= slot;
+                    grant_mode <= slot_mode;
+                    grant_remaining <= beats_next;
+                    grant_lease <= LEASE_INIT;
+                    grant_count <= grant_count + 32'd1;
+                end else begin
+                    // Nothing asked on this slot: offer the next one.
+                    slot <= (slot == LAST_SLOT) ? {CORE_ID_WIDTH{1'b0}} : slot + 1'b1;
                 end
-
-                if (gy == GRID_Y - 1) begin : south_edge
-                    assign south_in_valid[CORE_INDEX] = 1'b0;
-                    assign south_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
-                    assign south_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
-                    assign south_out_ready[CORE_INDEX] = 1'b1;
-                end else begin : south_link
-                    wau_neighbor_forward #(
-                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
-                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
-                    ) from_south_u (
-                        .in_valid(north_out_valid[SOUTH_INDEX]),
-                        .in_ready(north_out_ready[SOUTH_INDEX]),
-                        .in_dst(north_out_dst[(SOUTH_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .in_payload(north_out_payload[(SOUTH_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                        .out_valid(south_in_valid[CORE_INDEX]),
-                        .out_ready(south_in_ready[CORE_INDEX]),
-                        .out_dst(south_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .out_payload(south_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
-                    );
+            end else begin
+                hold_cycles <= hold_cycles + 32'd1;
+                if (grant_lease != 16'd0) begin
+                    grant_lease <= grant_lease - 16'd1;
                 end
-
-                if (gx == GRID_X - 1) begin : east_edge
-                    assign east_in_valid[CORE_INDEX] = 1'b0;
-                    assign east_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
-                    assign east_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
-                    assign east_out_ready[CORE_INDEX] = 1'b1;
-                end else begin : east_link
-                    wau_neighbor_forward #(
-                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
-                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
-                    ) from_east_u (
-                        .in_valid(west_out_valid[EAST_INDEX]),
-                        .in_ready(west_out_ready[EAST_INDEX]),
-                        .in_dst(west_out_dst[(EAST_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .in_payload(west_out_payload[(EAST_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                        .out_valid(east_in_valid[CORE_INDEX]),
-                        .out_ready(east_in_ready[CORE_INDEX]),
-                        .out_dst(east_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .out_payload(east_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
-                    );
+                if (holder_beat && (grant_remaining != 16'd0)) begin
+                    grant_remaining <= grant_remaining - 16'd1;
                 end
-
-                if (gx == 0) begin : west_edge
-                    assign west_in_valid[CORE_INDEX] = 1'b0;
-                    assign west_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
-                    assign west_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
-                    assign west_out_ready[CORE_INDEX] = 1'b1;
-                end else begin : west_link
-                    wau_neighbor_forward #(
-                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
-                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
-                    ) from_west_u (
-                        .in_valid(east_out_valid[WEST_INDEX]),
-                        .in_ready(east_out_ready[WEST_INDEX]),
-                        .in_dst(east_out_dst[(WEST_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .in_payload(east_out_payload[(WEST_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                        .out_valid(west_in_valid[CORE_INDEX]),
-                        .out_ready(west_in_ready[CORE_INDEX]),
-                        .out_dst(west_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .out_payload(west_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
-                    );
-                end
-
-                if (gz == 0) begin : up_edge
-                    assign up_in_valid[CORE_INDEX] = 1'b0;
-                    assign up_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
-                    assign up_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
-                    assign up_out_ready[CORE_INDEX] = 1'b1;
-                end else begin : up_link
-                    wau_neighbor_forward #(
-                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
-                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
-                    ) from_up_u (
-                        .in_valid(down_out_valid[UP_INDEX]),
-                        .in_ready(down_out_ready[UP_INDEX]),
-                        .in_dst(down_out_dst[(UP_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .in_payload(down_out_payload[(UP_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                        .out_valid(up_in_valid[CORE_INDEX]),
-                        .out_ready(up_in_ready[CORE_INDEX]),
-                        .out_dst(up_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .out_payload(up_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
-                    );
-                end
-
-                if (gz == GRID_Z - 1) begin : down_edge
-                    assign down_in_valid[CORE_INDEX] = 1'b0;
-                    assign down_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {CORE_ID_WIDTH{1'b0}};
-                    assign down_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {PAYLOAD_WIDTH{1'b0}};
-                    assign down_out_ready[CORE_INDEX] = 1'b1;
-                end else begin : down_link
-                    wau_neighbor_forward #(
-                        .CORE_ID_WIDTH(CORE_ID_WIDTH),
-                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
-                    ) from_down_u (
-                        .in_valid(up_out_valid[DOWN_INDEX]),
-                        .in_ready(up_out_ready[DOWN_INDEX]),
-                        .in_dst(up_out_dst[(DOWN_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .in_payload(up_out_payload[(DOWN_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),
-                        .out_valid(down_in_valid[CORE_INDEX]),
-                        .out_ready(down_in_ready[CORE_INDEX]),
-                        .out_dst(down_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
-                        .out_payload(down_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])
-                    );
+                if (release_now) begin
+                    grant_valid <= 1'b0;
+                    // Resume the round-robin *after* the holder so a contracted
+                    // core cannot immediately re-take the highway.
+                    slot <= (grant_core == LAST_SLOT)
+                        ? {CORE_ID_WIDTH{1'b0}}
+                        : grant_core + 1'b1;
                 end
             end
         end
-        end
-    endgenerate
+    end
 endmodule
 """
+
+
+def _render_highway_router(project: CompiledProject) -> str:
+    """Per-core highway router.
+
+    The port set follows ``device.highway.topology``: ``linear`` keeps
+    LOCAL/PREV/NEXT (plus UP/DOWN for layered grids) and routes by comparing
+    the destination against this core's index, while ``matrix`` keeps the full
+    N/S/E/W/U/D mesh with X-then-Y-then-Z dimension-order routing. The
+    arbitration and observability logic below is shared by both.
+    """
+    dirs = _highway_dirs(project)
+    linear = project.config.device.highway.is_linear
+    port_count = len(dirs)
+
+    lines: list[str] = []
+    lines.append("`timescale 1ns/1ps")
+    lines.append('`include "wau_defs.vh"')
+    lines.append("")
+    lines.append("module wau_highway_router #(")
+    lines.append("    parameter CORE_INDEX = 0,")
+    lines.append("    parameter CORE_X = 0,")
+    lines.append("    parameter CORE_Y = 0,")
+    lines.append("    parameter CORE_Z = 0,")
+    lines.append("    parameter GRID_X = `WAU_GRID_X,")
+    lines.append("    parameter GRID_Y = `WAU_GRID_Y,")
+    lines.append("    parameter CORE_ID_WIDTH = 8,")
+    lines.append("    parameter PAYLOAD_WIDTH = 64")
+    lines.append(") (")
+    lines.append("    input wire clk,")
+    lines.append("    input wire rst_n,")
+    lines.append("")
+    lines.append("    output reg [31:0] hop_count,")
+    lines.append("    output reg [31:0] stall_count,")
+    lines.append("    output reg [31:0] local_delivered_count,")
+    lines.append("    output reg [31:0] forward_count,")
+    port_blocks: list[str] = []
+    for name in dirs:
+        port_blocks.append(
+            "\n".join(
+                [
+                    f"    input wire {name}_in_valid,",
+                    f"    output wire {name}_in_ready,",
+                    f"    input wire [CORE_ID_WIDTH-1:0] {name}_in_dst,",
+                    f"    input wire [PAYLOAD_WIDTH-1:0] {name}_in_payload,",
+                    "",
+                    f"    output wire {name}_out_valid,",
+                    f"    input wire {name}_out_ready,",
+                    f"    output wire [CORE_ID_WIDTH-1:0] {name}_out_dst,",
+                    f"    output wire [PAYLOAD_WIDTH-1:0] {name}_out_payload",
+                ]
+            )
+        )
+    lines.append("")
+    lines.append(",\n\n".join(port_blocks))
+    lines.append(");")
+
+    for i, name in enumerate(dirs):
+        lines.append(f"    localparam DIR_{name.upper()} = 3'd{i};")
+    lines.append(f"    localparam PORT_COUNT = {port_count};")
+    lines.append("")
+
+    if linear:
+        lines.append("    // One 1-D highway per layer, walked in core-index order: the last")
+        lines.append("    // core of a row is the previous hop of the first core of the next")
+        lines.append("    // row. Comparing plain indices keeps the router free of the")
+        lines.append("    // per-port modulo/divide the matrix topology needs to recover x/y,")
+        lines.append("    // which is what makes a non-power-of-two grid infer an LPM_DIVIDE.")
+        lines.append("    localparam integer LAYER_CORE_COUNT = GRID_X * GRID_Y;")
+        lines.append(
+            "    localparam [CORE_ID_WIDTH-1:0] LAYER_FIRST = CORE_Z * LAYER_CORE_COUNT;"
+        )
+        lines.append(
+            "    localparam [CORE_ID_WIDTH-1:0] LAYER_LAST ="
+            " (CORE_Z * LAYER_CORE_COUNT) + LAYER_CORE_COUNT - 1;"
+        )
+        lines.append("")
+        lines.append("    function [2:0] route_dir;")
+        lines.append("        input [CORE_ID_WIDTH-1:0] dst_core;")
+        lines.append("        begin")
+        lines.append("            if (dst_core == CORE_INDEX[CORE_ID_WIDTH-1:0]) begin")
+        lines.append("                route_dir = DIR_LOCAL;")
+        lines.append("            end else if (dst_core < LAYER_FIRST) begin")
+        lines.append("                route_dir = DIR_UP;")
+        lines.append("            end else if (dst_core > LAYER_LAST) begin")
+        lines.append("                route_dir = DIR_DOWN;")
+        lines.append("            end else if (dst_core > CORE_INDEX[CORE_ID_WIDTH-1:0]) begin")
+        lines.append("                route_dir = DIR_NEXT;")
+        lines.append("            end else begin")
+        lines.append("                route_dir = DIR_PREV;")
+        lines.append("            end")
+        lines.append("        end")
+        lines.append("    endfunction")
+    else:
+        lines.append("    function [2:0] route_dir;")
+        lines.append("        input [CORE_ID_WIDTH-1:0] dst_core;")
+        lines.append("        integer dst_x;")
+        lines.append("        integer dst_y;")
+        lines.append("        integer dst_z;")
+        lines.append("        begin")
+        lines.append("            if (dst_core == CORE_INDEX[CORE_ID_WIDTH-1:0]) begin")
+        lines.append("                route_dir = DIR_LOCAL;")
+        lines.append("            end else begin")
+        lines.append("                dst_x = dst_core % GRID_X;")
+        lines.append("                dst_y = (dst_core / GRID_X) % GRID_Y;")
+        lines.append("                dst_z = dst_core / (GRID_X * GRID_Y);")
+        lines.append("")
+        lines.append("                if (dst_x > CORE_X) begin")
+        lines.append("                    route_dir = DIR_EAST;")
+        lines.append("                end else if (dst_x < CORE_X) begin")
+        lines.append("                    route_dir = DIR_WEST;")
+        lines.append("                end else if (dst_y > CORE_Y) begin")
+        lines.append("                    route_dir = DIR_SOUTH;")
+        lines.append("                end else if (dst_y < CORE_Y) begin")
+        lines.append("                    route_dir = DIR_NORTH;")
+        lines.append("                end else if (dst_z > CORE_Z) begin")
+        lines.append("                    route_dir = DIR_DOWN;")
+        lines.append("                end else begin")
+        lines.append("                    route_dir = DIR_UP;")
+        lines.append("                end")
+        lines.append("            end")
+        lines.append("        end")
+        lines.append("    endfunction")
+
+    lines.append("")
+    lines.append("    wire in_valid [0:PORT_COUNT-1];")
+    lines.append("    wire [CORE_ID_WIDTH-1:0] in_dst [0:PORT_COUNT-1];")
+    lines.append("    wire [PAYLOAD_WIDTH-1:0] in_payload [0:PORT_COUNT-1];")
+    lines.append("    wire out_ready [0:PORT_COUNT-1];")
+    lines.append("")
+    lines.append("    reg in_ready_r [0:PORT_COUNT-1];")
+    lines.append("    reg out_valid_r [0:PORT_COUNT-1];")
+    lines.append("    reg [CORE_ID_WIDTH-1:0] out_dst_r [0:PORT_COUNT-1];")
+    lines.append("    reg [PAYLOAD_WIDTH-1:0] out_payload_r [0:PORT_COUNT-1];")
+
+    for field, source in (
+        ("in_valid", "{name}_in_valid"),
+        ("in_dst", "{name}_in_dst"),
+        ("in_payload", "{name}_in_payload"),
+        ("out_ready", "{name}_out_ready"),
+    ):
+        lines.append("")
+        for name in dirs:
+            lines.append(
+                f"    assign {field}[DIR_{name.upper()}] = {source.format(name=name)};"
+            )
+
+    for target, source in (
+        ("{name}_in_ready", "in_ready_r"),
+        ("{name}_out_valid", "out_valid_r"),
+        ("{name}_out_dst", "out_dst_r"),
+        ("{name}_out_payload", "out_payload_r"),
+    ):
+        lines.append("")
+        for name in dirs:
+            lines.append(
+                f"    assign {target.format(name=name)} = {source}[DIR_{name.upper()}];"
+            )
+
+    lines.append("")
+    lines.append(_HIGHWAY_ROUTER_BODY)
+    return "\n".join(lines)
+
+
+def _render_highway_mesh(project: CompiledProject) -> str:
+    """Wire one router per core into the configured highway topology.
+
+    Both topologies expose the same per-core ``local_*`` interface and the same
+    contract bus, so `wau_top` (and the testbenches) are written once. Only the
+    inter-router link generation differs.
+    """
+    dirs = _highway_dirs(project)
+    linear = project.config.device.highway.is_linear
+
+    lines: list[str] = []
+    lines.append("`timescale 1ns/1ps")
+    lines.append('`include "wau_defs.vh"')
+    lines.append("")
+    lines.append("module wau_highway_mesh #(")
+    lines.append("    parameter GRID_X = `WAU_GRID_X,")
+    lines.append("    parameter GRID_Y = `WAU_GRID_Y,")
+    lines.append("    parameter GRID_Z = `WAU_GRID_Z,")
+    lines.append("    parameter CORE_COUNT = `WAU_CORE_COUNT,")
+    lines.append("    parameter CORE_ID_WIDTH = 8,")
+    lines.append("    parameter PAYLOAD_WIDTH = 64,")
+    lines.append("    parameter CONTRACT_BUS_ENABLE = 0,")
+    lines.append("    parameter CONTRACT_WORD_WIDTH = `WAU_HIGHWAY_CONTRACT_WORD_WIDTH,")
+    lines.append("    parameter CONTRACT_MAX_BURST = `WAU_HIGHWAY_CONTRACT_MAX_BURST,")
+    lines.append("    parameter CONTRACT_LEASE_CYCLES = `WAU_HIGHWAY_CONTRACT_LEASE_CYCLES")
+    lines.append(") (")
+    lines.append("    input wire clk,")
+    lines.append("    input wire rst_n,")
+    lines.append("")
+    lines.append("    input wire [CORE_COUNT-1:0] local_in_valid,")
+    lines.append("    output wire [CORE_COUNT-1:0] local_in_ready,")
+    lines.append("    input wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_in_dst,")
+    lines.append("    input wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_in_payload,")
+    lines.append("")
+    lines.append("    output wire [CORE_COUNT-1:0] local_out_valid,")
+    lines.append("    input wire [CORE_COUNT-1:0] local_out_ready,")
+    lines.append("    output wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_out_dst,")
+    lines.append("    output wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_out_payload,")
+    lines.append("")
+    lines.append("    // Contracting bus: one core slot is offered per clock; the slot")
+    lines.append("    // owner answers with a request bit or a full transmission contract.")
+    lines.append("    input wire [CORE_COUNT-1:0] contract_req,")
+    lines.append("    input wire [CORE_COUNT*CONTRACT_WORD_WIDTH-1:0] contract_word,")
+    lines.append("    output wire [CORE_COUNT-1:0] contract_call,")
+    lines.append("    output wire [CORE_ID_WIDTH-1:0] contract_slot,")
+    lines.append("    output wire contract_grant_valid,")
+    lines.append("    output wire [CORE_ID_WIDTH-1:0] contract_grant_core,")
+    lines.append("    output wire [1:0] contract_grant_mode,")
+    lines.append("    output wire [15:0] contract_grant_remaining,")
+    lines.append("    output wire [31:0] contract_grant_count,")
+    lines.append("    output wire [31:0] contract_hold_cycles,")
+    lines.append("    output wire [31:0] contract_defer_count,")
+    lines.append("")
+    lines.append("    output wire [CORE_COUNT*32-1:0] router_hop_count,")
+    lines.append("    output wire [CORE_COUNT*32-1:0] router_stall_count,")
+    lines.append("    output wire [CORE_COUNT*32-1:0] router_local_delivered_count,")
+    lines.append("    output wire [CORE_COUNT*32-1:0] router_forward_count")
+    lines.append(");")
+
+    for name in dirs:
+        if name == "local":
+            continue
+        lines.append(f"    wire [CORE_COUNT-1:0] {name}_in_valid;")
+        lines.append(f"    wire [CORE_COUNT-1:0] {name}_in_ready;")
+        lines.append(f"    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] {name}_in_dst;")
+        lines.append(f"    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] {name}_in_payload;")
+        lines.append(f"    wire [CORE_COUNT-1:0] {name}_out_valid;")
+        lines.append(f"    wire [CORE_COUNT-1:0] {name}_out_ready;")
+        lines.append(f"    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] {name}_out_dst;")
+        lines.append(f"    wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] {name}_out_payload;")
+        lines.append("")
+
+    lines.append(_HIGHWAY_MESH_CONTRACT_BLOCK)
+
+    lines.append("    localparam integer LAYER_CORE_COUNT = GRID_X * GRID_Y;")
+    lines.append("")
+    lines.append("    genvar gz;")
+    lines.append("    genvar gy;")
+    lines.append("    genvar gx;")
+    lines.append("    generate")
+    lines.append("        for (gz = 0; gz < GRID_Z; gz = gz + 1) begin : gen_z")
+    lines.append("        for (gy = 0; gy < GRID_Y; gy = gy + 1) begin : gen_y")
+    lines.append("            for (gx = 0; gx < GRID_X; gx = gx + 1) begin : gen_x")
+    lines.append(
+        "                localparam integer CORE_INDEX = (gz * LAYER_CORE_COUNT) + (gy * GRID_X) + gx;"
+    )
+    if linear:
+        lines.append("                localparam integer PREV_INDEX = CORE_INDEX - 1;")
+        lines.append("                localparam integer NEXT_INDEX = CORE_INDEX + 1;")
+    else:
+        lines.append("                localparam integer NORTH_INDEX = CORE_INDEX - GRID_X;")
+        lines.append("                localparam integer SOUTH_INDEX = CORE_INDEX + GRID_X;")
+        lines.append("                localparam integer EAST_INDEX = CORE_INDEX + 1;")
+        lines.append("                localparam integer WEST_INDEX = CORE_INDEX - 1;")
+    lines.append("                localparam integer UP_INDEX = CORE_INDEX - LAYER_CORE_COUNT;")
+    lines.append("                localparam integer DOWN_INDEX = CORE_INDEX + LAYER_CORE_COUNT;")
+    lines.append("")
+    lines.append("                wau_highway_router #(")
+    lines.append("                    .CORE_INDEX(CORE_INDEX),")
+    lines.append("                    .CORE_X(gx),")
+    lines.append("                    .CORE_Y(gy),")
+    lines.append("                    .CORE_Z(gz),")
+    lines.append("                    .GRID_X(GRID_X),")
+    lines.append("                    .GRID_Y(GRID_Y),")
+    lines.append("                    .CORE_ID_WIDTH(CORE_ID_WIDTH),")
+    lines.append("                    .PAYLOAD_WIDTH(PAYLOAD_WIDTH)")
+    lines.append("                ) router_u (")
+    lines.append("                    .clk(clk),")
+    lines.append("                    .rst_n(rst_n),")
+    lines.append("                    .hop_count(router_hop_count[(CORE_INDEX*32) +: 32]),")
+    lines.append("                    .stall_count(router_stall_count[(CORE_INDEX*32) +: 32]),")
+    lines.append(
+        "                    .local_delivered_count(router_local_delivered_count[(CORE_INDEX*32) +: 32]),"
+    )
+    lines.append("                    .forward_count(router_forward_count[(CORE_INDEX*32) +: 32]),")
+    conn: list[str] = []
+    for name in dirs:
+        # The local port is the contract-gated view of the module's local port.
+        vin = "core_in_valid[CORE_INDEX]" if name == "local" else f"{name}_in_valid[CORE_INDEX]"
+        rin = "core_in_ready[CORE_INDEX]" if name == "local" else f"{name}_in_ready[CORE_INDEX]"
+        conn.append(f"                    .{name}_in_valid({vin}),")
+        conn.append(f"                    .{name}_in_ready({rin}),")
+        conn.append(
+            f"                    .{name}_in_dst({name}_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),"
+        )
+        conn.append(
+            f"                    .{name}_in_payload({name}_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),"
+        )
+        conn.append(f"                    .{name}_out_valid({name}_out_valid[CORE_INDEX]),")
+        conn.append(f"                    .{name}_out_ready({name}_out_ready[CORE_INDEX]),")
+        conn.append(
+            f"                    .{name}_out_dst({name}_out_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),"
+        )
+        conn.append(
+            f"                    .{name}_out_payload({name}_out_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),"
+        )
+    conn[-1] = conn[-1].rstrip(",")
+    lines.extend(conn)
+    lines.append("                );")
+    lines.append("")
+
+    if linear:
+        link_specs = [
+            ("prev", "next", "PREV_INDEX", "(gx == 0) && (gy == 0)"),
+            ("next", "prev", "NEXT_INDEX", "(gx == GRID_X - 1) && (gy == GRID_Y - 1)"),
+        ]
+    else:
+        link_specs = [
+            ("north", "south", "NORTH_INDEX", "gy == 0"),
+            ("south", "north", "SOUTH_INDEX", "gy == GRID_Y - 1"),
+            ("east", "west", "EAST_INDEX", "gx == GRID_X - 1"),
+            ("west", "east", "WEST_INDEX", "gx == 0"),
+        ]
+    link_specs += [
+        ("up", "down", "UP_INDEX", "gz == 0"),
+        ("down", "up", "DOWN_INDEX", "gz == GRID_Z - 1"),
+    ]
+
+    for side, peer_side, peer_index, edge_cond in link_specs:
+        lines.append(f"                if ({edge_cond}) begin : {side}_edge")
+        lines.append(f"                    assign {side}_in_valid[CORE_INDEX] = 1'b0;")
+        lines.append(
+            f"                    assign {side}_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = {{CORE_ID_WIDTH{{1'b0}}}};"
+        )
+        lines.append(
+            f"                    assign {side}_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH] = {{PAYLOAD_WIDTH{{1'b0}}}};"
+        )
+        lines.append(f"                    assign {side}_out_ready[CORE_INDEX] = 1'b1;")
+        lines.append(f"                end else begin : {side}_link")
+        lines.append("                    wau_neighbor_forward #(")
+        lines.append("                        .CORE_ID_WIDTH(CORE_ID_WIDTH),")
+        lines.append("                        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)")
+        lines.append(f"                    ) from_{side}_u (")
+        lines.append(f"                        .in_valid({peer_side}_out_valid[{peer_index}]),")
+        lines.append(f"                        .in_ready({peer_side}_out_ready[{peer_index}]),")
+        lines.append(
+            f"                        .in_dst({peer_side}_out_dst[({peer_index}*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),"
+        )
+        lines.append(
+            f"                        .in_payload({peer_side}_out_payload[({peer_index}*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH]),"
+        )
+        lines.append(f"                        .out_valid({side}_in_valid[CORE_INDEX]),")
+        lines.append(f"                        .out_ready({side}_in_ready[CORE_INDEX]),")
+        lines.append(
+            f"                        .out_dst({side}_in_dst[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),"
+        )
+        lines.append(
+            f"                        .out_payload({side}_in_payload[(CORE_INDEX*PAYLOAD_WIDTH) +: PAYLOAD_WIDTH])"
+        )
+        lines.append("                    );")
+        lines.append("                end")
+        lines.append("")
+
+    lines.append("            end")
+    lines.append("        end")
+    lines.append("        end")
+    lines.append("    endgenerate")
+    lines.append("endmodule")
+    return "\n".join(lines) + "\n"
 
 
 def _stage_case_entries(project: CompiledProject, field: str) -> str:
@@ -1552,8 +1735,30 @@ endmodule
 """
 
 
-def _render_top(project: CompiledProject) -> str:
+def _render_contract_rom(project: CompiledProject, schedule: SchedulePlan) -> str:
+    """Emit the per-core programmed contract words as plain continuous assigns.
+
+    Kept explicit (one line per core, annotated) rather than packed into a
+    literal so the schedule-derived expectation stays readable in the emitted
+    RTL and diffable across generator runs.
+    """
+    entries = contract_rom_entries(project, schedule)
+    width = _CONTRACT_WORD_WIDTH
+    lines: list[str] = []
+    for idx, (mode, words, repeats) in enumerate(entries):
+        value = _encode_contract_word(mode, words, repeats)
+        lines.append(
+            f"    assign data_contract_word[({idx}*CONTRACT_WORD_WIDTH) +: CONTRACT_WORD_WIDTH] ="
+            f" {width}'h{value:05X};"
+            f"  // core {idx}: {_CONTRACT_MODE_NAMES[mode]}"
+            f" words={words} repeats={repeats}"
+        )
+    return "\n".join(lines)
+
+
+def _render_top(project: CompiledProject, schedule: SchedulePlan) -> str:
     module_name = project.config.output_module_name
+    contract_enable = 1 if project.config.device.highway.contract_bus else 0
     template = """`timescale 1ns/1ps
 `include "wau_defs.vh"
 
@@ -1587,10 +1792,17 @@ module __WAU_TOP_MODULE__ #(
     output wire [31:0] obs_total_forward_count,
     output wire [31:0] obs_total_local_delivered_count,
     output wire [31:0] obs_total_cache_hit_count,
-    output wire [31:0] obs_total_cache_lookup_count
+    output wire [31:0] obs_total_cache_lookup_count,
+
+    // Highway contract bus observability (data-plane highway).
+    output wire [31:0] obs_total_contract_grant_count,
+    output wire [31:0] obs_total_contract_hold_cycles,
+    output wire [31:0] obs_total_contract_defer_count
 );
     localparam integer CORE_ID_WIDTH = 8;
     localparam integer COORDINATOR_CORE_INDEX = 0;
+    localparam integer CONTRACT_WORD_WIDTH = `WAU_HIGHWAY_CONTRACT_WORD_WIDTH;
+    localparam integer CONTRACT_BUS_ENABLE = __WAU_CONTRACT_ENABLE__;
 
     localparam integer CTRL_STAGE_LSB = 0;
     localparam integer CTRL_IMM_LSB = CTRL_STAGE_LSB + 8;
@@ -1776,13 +1988,49 @@ module __WAU_TOP_MODULE__ #(
     wire [CORE_COUNT*32-1:0] data_router_local_delivered_count;
     wire [CORE_COUNT*32-1:0] data_router_forward_count;
 
+    // Highway contract bus. Only the data-plane highway is contracted: it is
+    // the one many cores compete for (every core pushes its results onto it),
+    // whereas the control plane has a single injector (the coordinator) and so
+    // has nothing to arbitrate.
+    //
+    // `data_contract_req` is the *real-time* side — a core raises it the moment
+    // it actually has a result to move. `data_contract_word` is the *program*
+    // side: the expectation the offline scheduler derived for that core, which
+    // the bus applies when the core answers on its offered slot.
+    wire [CORE_COUNT-1:0] data_contract_req;
+    wire [CORE_COUNT*CONTRACT_WORD_WIDTH-1:0] data_contract_word;
+    wire [CORE_COUNT-1:0] data_contract_call;
+    wire [CORE_ID_WIDTH-1:0] data_contract_slot;
+    wire data_contract_grant_valid;
+    wire [CORE_ID_WIDTH-1:0] data_contract_grant_core;
+    wire [1:0] data_contract_grant_mode;
+    wire [15:0] data_contract_grant_remaining;
+    wire [31:0] data_contract_grant_count;
+    wire [31:0] data_contract_hold_cycles;
+    wire [31:0] data_contract_defer_count;
+
+    wire [CORE_COUNT-1:0] ctrl_contract_call;
+    wire [CORE_ID_WIDTH-1:0] ctrl_contract_slot;
+    wire ctrl_contract_grant_valid;
+    wire [CORE_ID_WIDTH-1:0] ctrl_contract_grant_core;
+    wire [1:0] ctrl_contract_grant_mode;
+    wire [15:0] ctrl_contract_grant_remaining;
+    wire [31:0] ctrl_contract_grant_count;
+    wire [31:0] ctrl_contract_hold_cycles;
+    wire [31:0] ctrl_contract_defer_count;
+
+    assign data_contract_req = core_result_valid;
+
+__WAU_CONTRACT_ROM__
+
     wau_highway_mesh #(
         .GRID_X(GRID_X),
         .GRID_Y(GRID_Y),
         .GRID_Z(GRID_Z),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
-        .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH)
+        .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH),
+        .CONTRACT_BUS_ENABLE(0)
     ) control_plane_mesh_u (
         .clk(clk),
         .rst_n(rst_n),
@@ -1794,6 +2042,17 @@ module __WAU_TOP_MODULE__ #(
         .local_out_ready(ctrl_local_out_ready),
         .local_out_dst(ctrl_local_out_dst),
         .local_out_payload(ctrl_local_out_payload),
+        .contract_req({CORE_COUNT{1'b0}}),
+        .contract_word({(CORE_COUNT*CONTRACT_WORD_WIDTH){1'b0}}),
+        .contract_call(ctrl_contract_call),
+        .contract_slot(ctrl_contract_slot),
+        .contract_grant_valid(ctrl_contract_grant_valid),
+        .contract_grant_core(ctrl_contract_grant_core),
+        .contract_grant_mode(ctrl_contract_grant_mode),
+        .contract_grant_remaining(ctrl_contract_grant_remaining),
+        .contract_grant_count(ctrl_contract_grant_count),
+        .contract_hold_cycles(ctrl_contract_hold_cycles),
+        .contract_defer_count(ctrl_contract_defer_count),
         .router_hop_count(ctrl_router_hop_count),
         .router_stall_count(ctrl_router_stall_count),
         .router_local_delivered_count(ctrl_router_local_delivered_count),
@@ -1806,7 +2065,8 @@ module __WAU_TOP_MODULE__ #(
         .GRID_Z(GRID_Z),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
-        .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH)
+        .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH),
+        .CONTRACT_BUS_ENABLE(CONTRACT_BUS_ENABLE)
     ) data_plane_mesh_u (
         .clk(clk),
         .rst_n(rst_n),
@@ -1818,6 +2078,17 @@ module __WAU_TOP_MODULE__ #(
         .local_out_ready(data_local_out_ready),
         .local_out_dst(data_local_out_dst),
         .local_out_payload(data_local_out_payload),
+        .contract_req(data_contract_req),
+        .contract_word(data_contract_word),
+        .contract_call(data_contract_call),
+        .contract_slot(data_contract_slot),
+        .contract_grant_valid(data_contract_grant_valid),
+        .contract_grant_core(data_contract_grant_core),
+        .contract_grant_mode(data_contract_grant_mode),
+        .contract_grant_remaining(data_contract_grant_remaining),
+        .contract_grant_count(data_contract_grant_count),
+        .contract_hold_cycles(data_contract_hold_cycles),
+        .contract_defer_count(data_contract_defer_count),
         .router_hop_count(data_router_hop_count),
         .router_stall_count(data_router_stall_count),
         .router_local_delivered_count(data_router_local_delivered_count),
@@ -1917,9 +2188,23 @@ module __WAU_TOP_MODULE__ #(
     assign obs_total_local_delivered_count = total_local_delivered_count;
     assign obs_total_cache_hit_count = total_cache_hit_count;
     assign obs_total_cache_lookup_count = total_cache_lookup_count;
+
+    // The control-plane highway runs uncontracted, so its counters are constant
+    // zero; summing both planes keeps the observability bus meaningful if the
+    // control plane is ever contracted too.
+    assign obs_total_contract_grant_count =
+        data_contract_grant_count + ctrl_contract_grant_count;
+    assign obs_total_contract_hold_cycles =
+        data_contract_hold_cycles + ctrl_contract_hold_cycles;
+    assign obs_total_contract_defer_count =
+        data_contract_defer_count + ctrl_contract_defer_count;
 endmodule
 """
-    return template.replace("__WAU_TOP_MODULE__", module_name)
+    return (
+        template.replace("__WAU_TOP_MODULE__", module_name)
+        .replace("__WAU_CONTRACT_ENABLE__", str(contract_enable))
+        .replace("__WAU_CONTRACT_ROM__", _render_contract_rom(project, schedule))
+    )
 
 def _render_host_mmio() -> str:
     """Memory-mapped host interface.
@@ -1947,6 +2232,9 @@ def _render_host_mmio() -> str:
       0x15  DELIVRD  R  obs_total_local_delivered_count
       0x16  CACHE_H  R  obs_total_cache_hit_count
       0x17  CACHE_L  R  obs_total_cache_lookup_count
+      0x18  CTR_GRNT R  obs_total_contract_grant_count
+      0x19  CTR_HOLD R  obs_total_contract_hold_cycles
+      0x1A  CTR_DEFR R  obs_total_contract_defer_count
     """
     return """`timescale 1ns/1ps
 `include "wau_defs.vh"
@@ -1989,7 +2277,10 @@ module wau_host_mmio #(
     input wire [31:0] obs_total_forward_count,
     input wire [31:0] obs_total_local_delivered_count,
     input wire [31:0] obs_total_cache_hit_count,
-    input wire [31:0] obs_total_cache_lookup_count
+    input wire [31:0] obs_total_cache_lookup_count,
+    input wire [31:0] obs_total_contract_grant_count,
+    input wire [31:0] obs_total_contract_hold_cycles,
+    input wire [31:0] obs_total_contract_defer_count
 );
     localparam [ADDR_WIDTH-1:0] ADDR_CTRL     = 'h00;
     localparam [ADDR_WIDTH-1:0] ADDR_STATUS   = 'h01;
@@ -2005,6 +2296,9 @@ module wau_host_mmio #(
     localparam [ADDR_WIDTH-1:0] ADDR_DELIVRD  = 'h15;
     localparam [ADDR_WIDTH-1:0] ADDR_CACHE_H  = 'h16;
     localparam [ADDR_WIDTH-1:0] ADDR_CACHE_L  = 'h17;
+    localparam [ADDR_WIDTH-1:0] ADDR_CTR_GRNT = 'h18;
+    localparam [ADDR_WIDTH-1:0] ADDR_CTR_HOLD = 'h19;
+    localparam [ADDR_WIDTH-1:0] ADDR_CTR_DEFR = 'h1A;
 
     reg [FLOW_ID_WIDTH-1:0] last_out_flow;
     reg signed [DATA_WIDTH-1:0] last_out_value;
@@ -2081,6 +2375,9 @@ module wau_host_mmio #(
                     ADDR_DELIVRD: mmio_readdata <= obs_total_local_delivered_count;
                     ADDR_CACHE_H: mmio_readdata <= obs_total_cache_hit_count;
                     ADDR_CACHE_L: mmio_readdata <= obs_total_cache_lookup_count;
+                    ADDR_CTR_GRNT: mmio_readdata <= obs_total_contract_grant_count;
+                    ADDR_CTR_HOLD: mmio_readdata <= obs_total_contract_hold_cycles;
+                    ADDR_CTR_DEFR: mmio_readdata <= obs_total_contract_defer_count;
                     default: mmio_readdata <= 32'd0;
                 endcase
             end
@@ -2148,6 +2445,9 @@ module wau_de0_nano_top (
     wire [31:0] obs_total_local_delivered_count;
     wire [31:0] obs_total_cache_hit_count;
     wire [31:0] obs_total_cache_lookup_count;
+    wire [31:0] obs_total_contract_grant_count;
+    wire [31:0] obs_total_contract_hold_cycles;
+    wire [31:0] obs_total_contract_defer_count;
 
     // Button-driven MMIO emulator: edge-detect KEY[1] (low-active) and
     // sequence FLOW_ID/IN_A/IN_B/TRIGGER writes. SW[3:0] supplies the data nibble.
@@ -2243,7 +2543,10 @@ module wau_de0_nano_top (
         .obs_total_forward_count(obs_total_forward_count),
         .obs_total_local_delivered_count(obs_total_local_delivered_count),
         .obs_total_cache_hit_count(obs_total_cache_hit_count),
-        .obs_total_cache_lookup_count(obs_total_cache_lookup_count)
+        .obs_total_cache_lookup_count(obs_total_cache_lookup_count),
+        .obs_total_contract_grant_count(obs_total_contract_grant_count),
+        .obs_total_contract_hold_cycles(obs_total_contract_hold_cycles),
+        .obs_total_contract_defer_count(obs_total_contract_defer_count)
     );
 
     assign LED[0] = host_out_valid;
@@ -2270,7 +2573,10 @@ module wau_de0_nano_top (
         .obs_total_forward_count(obs_total_forward_count),
         .obs_total_local_delivered_count(obs_total_local_delivered_count),
         .obs_total_cache_hit_count(obs_total_cache_hit_count),
-        .obs_total_cache_lookup_count(obs_total_cache_lookup_count)
+        .obs_total_cache_lookup_count(obs_total_cache_lookup_count),
+        .obs_total_contract_grant_count(obs_total_contract_grant_count),
+        .obs_total_contract_hold_cycles(obs_total_contract_hold_cycles),
+        .obs_total_contract_defer_count(obs_total_contract_defer_count)
     );
 endmodule
 """
@@ -2311,6 +2617,14 @@ def _render_program_json(project: CompiledProject) -> dict:
             },
             "coordinator_mode": project.config.device.coordinator_mode,
             "supported_data_types": list(project.config.device.supported_data_types),
+            "highway": {
+                "topology": project.config.device.highway.topology,
+                "contract_bus": project.config.device.highway.contract_bus,
+                "contract_max_burst": project.config.device.highway.contract_max_burst,
+                "contract_lease_cycles": (
+                    project.config.device.highway.contract_lease_cycles
+                ),
+            },
         },
         "compiler": {
             "routing": project.config.compiler.routing,
@@ -2414,13 +2728,16 @@ def emit_verilog(project: CompiledProject, schedule: SchedulePlan, out_dir: Path
     verilog_project.add_verilog("wau_defs.vh", _render_defs(project))
     verilog_project.add_verilog("wau_operation_alu.v", _render_operation_alu(project))
     verilog_project.add_verilog("wau_neighbor_forward.v", _render_neighbor_forward())
-    verilog_project.add_verilog("wau_highway_router.v", _render_highway_router())
-    verilog_project.add_verilog("wau_highway_mesh.v", _render_highway_mesh())
+    verilog_project.add_verilog(
+        "wau_highway_contract.v", _render_highway_contract()
+    )
+    verilog_project.add_verilog("wau_highway_router.v", _render_highway_router(project))
+    verilog_project.add_verilog("wau_highway_mesh.v", _render_highway_mesh(project))
     verilog_project.add_verilog("wau_core_station.v", _render_core_station(project))
     verilog_project.add_verilog("wau_core.v", _render_core())
     verilog_project.add_verilog("wau_coordinator.v", _render_coordinator(project))
     verilog_project.add_verilog("wau_host_mmio.v", _render_host_mmio())
-    verilog_project.add_verilog(f"{module_name}.v", _render_top(project))
+    verilog_project.add_verilog(f"{module_name}.v", _render_top(project, schedule))
     verilog_project.add_verilog(
         "wau_de0_nano_top.v",
         _render_de0_nano_wrapper(project),

@@ -62,6 +62,13 @@ class CoreState:
     ddeliv_value: Optional[int] = None
     ddeliv_flow_id: Optional[int] = None
     ddeliv_stage_id: Optional[int] = None
+    # Highway contract bus. `highway_request` is the core wanting the data
+    # highway at all; `highway_call` is that request landing on the core's own
+    # offered slot -- the cycle it actually calls the highway; `highway_holder`
+    # marks the core that currently owns the highway under a contract.
+    highway_request: bool = False
+    highway_call: bool = False
+    highway_holder: bool = False
 
 
 @dataclass
@@ -75,12 +82,33 @@ class ObsState:
 
 
 @dataclass
+class HighwayState:
+    """Contract-bus state of the data highway for one cycle.
+
+    ``slot`` is the core the bus is offering this clock; ``grant_valid`` /
+    ``grant_core`` say who currently owns the highway outright, ``grant_mode``
+    which kind of contract they posted, and ``grant_remaining`` how many beats
+    of it are still to run.
+    """
+
+    slot: int = 0
+    grant_valid: bool = False
+    grant_core: int = 0
+    grant_mode: int = 0
+    grant_remaining: int = 0
+    grant_count: int = 0
+    hold_cycles: int = 0
+    defer_count: int = 0
+
+
+@dataclass
 class CycleSnapshot:
     cycle: int
     host_in: HostInState = field(default_factory=HostInState)
     host_out: HostOutState = field(default_factory=HostOutState)
     cores: List[CoreState] = field(default_factory=list)
     obs: ObsState = field(default_factory=ObsState)
+    highway: HighwayState = field(default_factory=HighwayState)
 
 
 @dataclass
@@ -176,6 +204,9 @@ def parse_trace(path: Path) -> ParsedTrace:
                     cs.ddeliv_value = _to_int(kv.get("ddeliv_val", "0"))
                     cs.ddeliv_flow_id = _to_int(kv.get("ddeliv_flow", "0"))
                     cs.ddeliv_stage_id = _to_int(kv.get("ddeliv_stage", "0"))
+                cs.highway_request = kv.get("hwy_req") == "1"
+                cs.highway_call = kv.get("hwy_call") == "1"
+                cs.highway_holder = kv.get("hwy_hold") == "1"
                 current.cores.append(cs)
             elif head == "OBS" and current is not None:
                 kv = _parse_kv(tokens)
@@ -186,6 +217,18 @@ def parse_trace(path: Path) -> ParsedTrace:
                     delivered=_to_int(kv.get("deliv", "0")),
                     cache_hits=_to_int(kv.get("cache_h", "0")),
                     cache_lookups=_to_int(kv.get("cache_l", "0")),
+                )
+            elif head == "HWY" and current is not None:
+                kv = _parse_kv(tokens)
+                current.highway = HighwayState(
+                    slot=_to_int(kv.get("slot", "0")),
+                    grant_valid=kv.get("grant") == "1",
+                    grant_core=_to_int(kv.get("gcore", "0")),
+                    grant_mode=_to_int(kv.get("gmode", "0")),
+                    grant_remaining=_to_int(kv.get("grem", "0")),
+                    grant_count=_to_int(kv.get("grants", "0")),
+                    hold_cycles=_to_int(kv.get("hold", "0")),
+                    defer_count=_to_int(kv.get("defer", "0")),
                 )
 
     if current is not None:
@@ -208,19 +251,26 @@ def derive_bottlenecks(trace: ParsedTrace) -> Dict[str, object]:
     core_count = trace.meta.core_count
     busy = [0] * core_count
     dispatched = [0] * core_count
+    highway_calls = [0] * core_count
     backpressure = 0
+    highway_held_cycles = 0
     for snap in trace.cycles:
         for c in snap.cores:
             if c.busy:
                 busy[c.core_index] += 1
             if c.dispatched:
                 dispatched[c.core_index] += 1
+            if c.highway_call:
+                highway_calls[c.core_index] += 1
         if snap.host_in.valid and not snap.host_in.ready:
             backpressure += 1
+        if snap.highway.grant_valid:
+            highway_held_cycles += 1
 
     busy_ratio = [b / n for b in busy]
     busiest = int(max(range(core_count), key=lambda i: busy_ratio[i])) if core_count else None
     last_obs = trace.cycles[-1].obs
+    last_hwy = trace.cycles[-1].highway
     stall_rate = last_obs.stalls / max(1, last_obs.hops)
     return {
         "busiest_core": busiest,
@@ -230,4 +280,11 @@ def derive_bottlenecks(trace: ParsedTrace) -> Dict[str, object]:
         "stall_rate": stall_rate,
         "total_cycles": n,
         "outputs_seen": trace.meta.outputs_seen,
+        # Highway contract bus: how often cores called the highway, how long it
+        # was owned under contract, and how much traffic that held off.
+        "highway_call_count": highway_calls,
+        "highway_held_cycles": highway_held_cycles,
+        "highway_hold_ratio": highway_held_cycles / n,
+        "highway_grant_count": last_hwy.grant_count,
+        "highway_defer_count": last_hwy.defer_count,
     }

@@ -1605,6 +1605,7 @@ run_test tb_wau_operation_alu "$ALU_LOG" \
 
 run_test tb_wau_highway_mesh "$MESH_LOG" \
   "$OUT_DIR/wau_neighbor_forward.v" \
+  "$OUT_DIR/wau_highway_contract.v" \
   "$OUT_DIR/wau_highway_router.v" \
   "$OUT_DIR/wau_highway_mesh.v" \
   "tests/rtl/tb_wau_highway_mesh.v"
@@ -1612,6 +1613,7 @@ run_test tb_wau_highway_mesh "$MESH_LOG" \
 run_test tb_wau_cw_compiled_exec "$EXEC_LOG" \
   "$OUT_DIR/wau_operation_alu.v" \
   "$OUT_DIR/wau_neighbor_forward.v" \
+  "$OUT_DIR/wau_highway_contract.v" \
   "$OUT_DIR/wau_highway_router.v" \
   "$OUT_DIR/wau_highway_mesh.v" \
   "$OUT_DIR/wau_core_station.v" \
@@ -1626,6 +1628,7 @@ if [[ "${INCLUDE_TOP_DEMO:-0}" == "1" ]]; then
   run_test tb_wau_top_demo "$TOP_LOG" \
     "$OUT_DIR/wau_operation_alu.v" \
     "$OUT_DIR/wau_neighbor_forward.v" \
+    "$OUT_DIR/wau_highway_contract.v" \
     "$OUT_DIR/wau_highway_router.v" \
     "$OUT_DIR/wau_highway_mesh.v" \
     "$OUT_DIR/wau_core_station.v" \

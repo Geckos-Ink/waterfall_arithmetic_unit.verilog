@@ -44,6 +44,28 @@ class ScheduleInstruction:
 
 
 @dataclass
+class HighwayInfo:
+    """The emitted highway fabric's shape, read back from `wau_program.json`.
+
+    The viewer must draw and route over the highway the generator actually
+    emitted, so this mirrors `device.highway` rather than assuming a mesh.
+    """
+
+    topology: str = "linear"
+    contract_bus: bool = True
+    contract_max_burst: int = 8
+    contract_lease_cycles: int = 64
+
+    @property
+    def is_linear(self) -> bool:
+        return self.topology == "linear"
+
+
+# Contract-bus modes, mirroring wau_highway_contract's localparams.
+CONTRACT_MODE_NAMES = {0: "pong", 1: "burst", 2: "stream", 3: "reserve"}
+
+
+@dataclass
 class WauModel:
     grid_x: int
     grid_y: int
@@ -54,6 +76,7 @@ class WauModel:
     flows: List[FlowStageInfo]
     schedule: List[ScheduleInstruction]
     makespan_cycles: int
+    highway: HighwayInfo = field(default_factory=HighwayInfo)
 
     def core_index(self, x: int, y: int) -> int:
         return y * self.grid_x + x
@@ -61,12 +84,32 @@ class WauModel:
     def core_xy(self, idx: int) -> Tuple[int, int]:
         return (idx % self.grid_x, idx // self.grid_x)
 
+    def highway_route(self, src: int, dst: int) -> List[int]:
+        """The route the emitted router will actually take for ``src -> dst``."""
+        if self.highway.is_linear:
+            return linear_route(src, dst)
+        return manhattan_route(self.grid_x, self.grid_y, src, dst)
+
+    def highway_segments(self) -> List[Tuple[int, int]]:
+        """The highway's drawn link set, as ordered ``(lower, higher)`` pairs."""
+        if self.highway.is_linear:
+            return linear_segments(self.core_count)
+        return matrix_segments(self.grid_x, self.grid_y)
+
 
 def load_model(program_path: Path, schedule_path: Optional[Path]) -> WauModel:
     prog = json.loads(Path(program_path).read_text())
     grid_x = prog["device"]["grid"]["x"]
     grid_y = prog["device"]["grid"]["y"]
     core_count = grid_x * grid_y
+
+    hwy = prog["device"].get("highway") or {}
+    highway = HighwayInfo(
+        topology=str(hwy.get("topology", "linear")),
+        contract_bus=bool(hwy.get("contract_bus", True)),
+        contract_max_burst=int(hwy.get("contract_max_burst", 8)),
+        contract_lease_cycles=int(hwy.get("contract_lease_cycles", 64)),
+    )
 
     capabilities = {
         (cap["core"]["x"], cap["core"]["y"]): cap
@@ -133,6 +176,7 @@ def load_model(program_path: Path, schedule_path: Optional[Path]) -> WauModel:
         flows=flows,
         schedule=schedule,
         makespan_cycles=makespan,
+        highway=highway,
     )
 
 
@@ -175,6 +219,39 @@ def derive_stress_stimulus(
             rng.randint(value_min, value_max),
             rng.randint(value_min, value_max),
         ))
+    return out
+
+
+def linear_route(src: int, dst: int) -> List[int]:
+    """Reconstruct the single-dimension ("linear") highway route.
+
+    Mirrors the generated ``wau_highway_router``'s ``route_dir`` under
+    ``device.highway.topology = "linear"``: within a layer the highway is one
+    chain in core-index order, so the router simply compares the destination
+    index against its own and steps PREV or NEXT. Row-to-row movement is the
+    chain's wrap hop, not a separate north/south link.
+
+    Returns the inclusive list of core indices from ``src`` to ``dst``.
+    """
+    step = 1 if dst >= src else -1
+    return list(range(src, dst + step, step)) if src != dst else [src]
+
+
+def linear_segments(core_count: int) -> List[Tuple[int, int]]:
+    """Every link of the linear highway chain, as ``(lower, higher)`` pairs."""
+    return [(i, i + 1) for i in range(max(0, core_count - 1))]
+
+
+def matrix_segments(grid_x: int, grid_y: int) -> List[Tuple[int, int]]:
+    """Every link of the full mesh highway, as ``(lower, higher)`` pairs."""
+    out: List[Tuple[int, int]] = []
+    for y in range(grid_y):
+        for x in range(grid_x):
+            here = y * grid_x + x
+            if x + 1 < grid_x:
+                out.append((here, here + 1))
+            if y + 1 < grid_y:
+                out.append((here, here + grid_x))
     return out
 
 

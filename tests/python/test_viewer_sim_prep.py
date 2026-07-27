@@ -22,9 +22,13 @@ sys.path.insert(0, str(VIEWER_ROOT))
 
 from wau_viewer.model import (  # noqa: E402
     FlowStageInfo,
+    HighwayInfo,
     WauModel,
     derive_stress_stimulus,
+    linear_route,
+    linear_segments,
     manhattan_route,
+    matrix_segments,
 )
 from wau_viewer.simulator import (  # noqa: E402
     REQUIRED_RTL_MODULES,
@@ -32,7 +36,7 @@ from wau_viewer.simulator import (  # noqa: E402
 )
 
 
-def _make_model(flow_ids) -> WauModel:
+def _make_model(flow_ids, highway: HighwayInfo | None = None) -> WauModel:
     flows = [
         FlowStageInfo(
             flow_id=fid,
@@ -56,7 +60,65 @@ def _make_model(flow_ids) -> WauModel:
         flows=flows,
         schedule=[],
         makespan_cycles=0,
+        highway=highway or HighwayInfo(),
     )
+
+
+class LinearHighwayRouteTests(unittest.TestCase):
+    """The default single-dimension highway is one chain in core-index order.
+
+    Mirrors the generated `wau_highway_router` under
+    `device.highway.topology = "linear"`, which routes by comparing the
+    destination index against its own -- so the reconstructed route must walk
+    consecutive indices, including across a row boundary.
+    """
+
+    def test_route_walks_consecutive_indices(self) -> None:
+        self.assertEqual(linear_route(0, 4), [0, 1, 2, 3, 4])
+
+    def test_route_is_symmetric_backwards(self) -> None:
+        self.assertEqual(linear_route(4, 0), [4, 3, 2, 1, 0])
+
+    def test_route_same_core_is_single_point(self) -> None:
+        self.assertEqual(linear_route(3, 3), [3])
+
+    def test_row_boundary_is_an_ordinary_chain_hop(self) -> None:
+        # 3x3 grid: core 2 ends row 0 and core 3 starts row 1. Under the linear
+        # highway that is one hop, not the two the mesh would need.
+        self.assertEqual(linear_route(2, 3), [2, 3])
+
+    def test_model_dispatches_on_topology(self) -> None:
+        linear = _make_model([1])
+        self.assertEqual(linear.highway_route(0, 8), list(range(9)))
+        matrix = _make_model([1], HighwayInfo(topology="matrix"))
+        self.assertEqual(matrix.highway_route(0, 8), [0, 1, 2, 5, 8])
+
+    def test_every_hop_is_a_drawn_highway_link(self) -> None:
+        model = _make_model([1])
+        links = set(model.highway_segments())
+        for src in range(model.core_count):
+            for dst in range(model.core_count):
+                route = model.highway_route(src, dst)
+                self.assertEqual(route[0], src)
+                self.assertEqual(route[-1], dst)
+                for a, b in zip(route, route[1:]):
+                    self.assertIn((min(a, b), max(a, b)), links)
+
+
+class HighwaySegmentTests(unittest.TestCase):
+    def test_linear_segments_form_one_chain(self) -> None:
+        self.assertEqual(linear_segments(4), [(0, 1), (1, 2), (2, 3)])
+        self.assertEqual(linear_segments(1), [])
+
+    def test_matrix_segments_are_the_neighbour_mesh(self) -> None:
+        self.assertEqual(
+            sorted(matrix_segments(2, 2)),
+            [(0, 1), (0, 2), (1, 3), (2, 3)],
+        )
+
+    def test_linear_uses_fewer_links_than_the_mesh(self) -> None:
+        # The whole point of the single-dimension default: a lighter fabric.
+        self.assertLess(len(linear_segments(9)), len(matrix_segments(3, 3)))
 
 
 class ManhattanRouteTests(unittest.TestCase):

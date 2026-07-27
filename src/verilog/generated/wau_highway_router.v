@@ -32,45 +32,25 @@ module wau_highway_router #(
     output wire [CORE_ID_WIDTH-1:0] local_out_dst,
     output wire [PAYLOAD_WIDTH-1:0] local_out_payload,
 
-    input wire north_in_valid,
-    output wire north_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] north_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] north_in_payload,
+    input wire prev_in_valid,
+    output wire prev_in_ready,
+    input wire [CORE_ID_WIDTH-1:0] prev_in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] prev_in_payload,
 
-    output wire north_out_valid,
-    input wire north_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] north_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] north_out_payload,
+    output wire prev_out_valid,
+    input wire prev_out_ready,
+    output wire [CORE_ID_WIDTH-1:0] prev_out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] prev_out_payload,
 
-    input wire south_in_valid,
-    output wire south_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] south_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] south_in_payload,
+    input wire next_in_valid,
+    output wire next_in_ready,
+    input wire [CORE_ID_WIDTH-1:0] next_in_dst,
+    input wire [PAYLOAD_WIDTH-1:0] next_in_payload,
 
-    output wire south_out_valid,
-    input wire south_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] south_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] south_out_payload,
-
-    input wire east_in_valid,
-    output wire east_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] east_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] east_in_payload,
-
-    output wire east_out_valid,
-    input wire east_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] east_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] east_out_payload,
-
-    input wire west_in_valid,
-    output wire west_in_ready,
-    input wire [CORE_ID_WIDTH-1:0] west_in_dst,
-    input wire [PAYLOAD_WIDTH-1:0] west_in_payload,
-
-    output wire west_out_valid,
-    input wire west_out_ready,
-    output wire [CORE_ID_WIDTH-1:0] west_out_dst,
-    output wire [PAYLOAD_WIDTH-1:0] west_out_payload,
+    output wire next_out_valid,
+    input wire next_out_ready,
+    output wire [CORE_ID_WIDTH-1:0] next_out_dst,
+    output wire [PAYLOAD_WIDTH-1:0] next_out_payload,
 
     input wire up_in_valid,
     output wire up_in_ready,
@@ -93,40 +73,34 @@ module wau_highway_router #(
     output wire [PAYLOAD_WIDTH-1:0] down_out_payload
 );
     localparam DIR_LOCAL = 3'd0;
-    localparam DIR_NORTH = 3'd1;
-    localparam DIR_SOUTH = 3'd2;
-    localparam DIR_EAST = 3'd3;
-    localparam DIR_WEST = 3'd4;
-    localparam DIR_UP = 3'd5;
-    localparam DIR_DOWN = 3'd6;
-    localparam PORT_COUNT = 7;
+    localparam DIR_PREV = 3'd1;
+    localparam DIR_NEXT = 3'd2;
+    localparam DIR_UP = 3'd3;
+    localparam DIR_DOWN = 3'd4;
+    localparam PORT_COUNT = 5;
+
+    // One 1-D highway per layer, walked in core-index order: the last
+    // core of a row is the previous hop of the first core of the next
+    // row. Comparing plain indices keeps the router free of the
+    // per-port modulo/divide the matrix topology needs to recover x/y,
+    // which is what makes a non-power-of-two grid infer an LPM_DIVIDE.
+    localparam integer LAYER_CORE_COUNT = GRID_X * GRID_Y;
+    localparam [CORE_ID_WIDTH-1:0] LAYER_FIRST = CORE_Z * LAYER_CORE_COUNT;
+    localparam [CORE_ID_WIDTH-1:0] LAYER_LAST = (CORE_Z * LAYER_CORE_COUNT) + LAYER_CORE_COUNT - 1;
 
     function [2:0] route_dir;
         input [CORE_ID_WIDTH-1:0] dst_core;
-        integer dst_x;
-        integer dst_y;
-        integer dst_z;
         begin
             if (dst_core == CORE_INDEX[CORE_ID_WIDTH-1:0]) begin
                 route_dir = DIR_LOCAL;
+            end else if (dst_core < LAYER_FIRST) begin
+                route_dir = DIR_UP;
+            end else if (dst_core > LAYER_LAST) begin
+                route_dir = DIR_DOWN;
+            end else if (dst_core > CORE_INDEX[CORE_ID_WIDTH-1:0]) begin
+                route_dir = DIR_NEXT;
             end else begin
-                dst_x = dst_core % GRID_X;
-                dst_y = (dst_core / GRID_X) % GRID_Y;
-                dst_z = dst_core / (GRID_X * GRID_Y);
-
-                if (dst_x > CORE_X) begin
-                    route_dir = DIR_EAST;
-                end else if (dst_x < CORE_X) begin
-                    route_dir = DIR_WEST;
-                end else if (dst_y > CORE_Y) begin
-                    route_dir = DIR_SOUTH;
-                end else if (dst_y < CORE_Y) begin
-                    route_dir = DIR_NORTH;
-                end else if (dst_z > CORE_Z) begin
-                    route_dir = DIR_DOWN;
-                end else begin
-                    route_dir = DIR_UP;
-                end
+                route_dir = DIR_PREV;
             end
         end
     endfunction
@@ -142,66 +116,50 @@ module wau_highway_router #(
     reg [PAYLOAD_WIDTH-1:0] out_payload_r [0:PORT_COUNT-1];
 
     assign in_valid[DIR_LOCAL] = local_in_valid;
-    assign in_valid[DIR_NORTH] = north_in_valid;
-    assign in_valid[DIR_SOUTH] = south_in_valid;
-    assign in_valid[DIR_EAST] = east_in_valid;
-    assign in_valid[DIR_WEST] = west_in_valid;
+    assign in_valid[DIR_PREV] = prev_in_valid;
+    assign in_valid[DIR_NEXT] = next_in_valid;
     assign in_valid[DIR_UP] = up_in_valid;
     assign in_valid[DIR_DOWN] = down_in_valid;
 
     assign in_dst[DIR_LOCAL] = local_in_dst;
-    assign in_dst[DIR_NORTH] = north_in_dst;
-    assign in_dst[DIR_SOUTH] = south_in_dst;
-    assign in_dst[DIR_EAST] = east_in_dst;
-    assign in_dst[DIR_WEST] = west_in_dst;
+    assign in_dst[DIR_PREV] = prev_in_dst;
+    assign in_dst[DIR_NEXT] = next_in_dst;
     assign in_dst[DIR_UP] = up_in_dst;
     assign in_dst[DIR_DOWN] = down_in_dst;
 
     assign in_payload[DIR_LOCAL] = local_in_payload;
-    assign in_payload[DIR_NORTH] = north_in_payload;
-    assign in_payload[DIR_SOUTH] = south_in_payload;
-    assign in_payload[DIR_EAST] = east_in_payload;
-    assign in_payload[DIR_WEST] = west_in_payload;
+    assign in_payload[DIR_PREV] = prev_in_payload;
+    assign in_payload[DIR_NEXT] = next_in_payload;
     assign in_payload[DIR_UP] = up_in_payload;
     assign in_payload[DIR_DOWN] = down_in_payload;
 
     assign out_ready[DIR_LOCAL] = local_out_ready;
-    assign out_ready[DIR_NORTH] = north_out_ready;
-    assign out_ready[DIR_SOUTH] = south_out_ready;
-    assign out_ready[DIR_EAST] = east_out_ready;
-    assign out_ready[DIR_WEST] = west_out_ready;
+    assign out_ready[DIR_PREV] = prev_out_ready;
+    assign out_ready[DIR_NEXT] = next_out_ready;
     assign out_ready[DIR_UP] = up_out_ready;
     assign out_ready[DIR_DOWN] = down_out_ready;
 
     assign local_in_ready = in_ready_r[DIR_LOCAL];
-    assign north_in_ready = in_ready_r[DIR_NORTH];
-    assign south_in_ready = in_ready_r[DIR_SOUTH];
-    assign east_in_ready = in_ready_r[DIR_EAST];
-    assign west_in_ready = in_ready_r[DIR_WEST];
+    assign prev_in_ready = in_ready_r[DIR_PREV];
+    assign next_in_ready = in_ready_r[DIR_NEXT];
     assign up_in_ready = in_ready_r[DIR_UP];
     assign down_in_ready = in_ready_r[DIR_DOWN];
 
     assign local_out_valid = out_valid_r[DIR_LOCAL];
-    assign north_out_valid = out_valid_r[DIR_NORTH];
-    assign south_out_valid = out_valid_r[DIR_SOUTH];
-    assign east_out_valid = out_valid_r[DIR_EAST];
-    assign west_out_valid = out_valid_r[DIR_WEST];
+    assign prev_out_valid = out_valid_r[DIR_PREV];
+    assign next_out_valid = out_valid_r[DIR_NEXT];
     assign up_out_valid = out_valid_r[DIR_UP];
     assign down_out_valid = out_valid_r[DIR_DOWN];
 
     assign local_out_dst = out_dst_r[DIR_LOCAL];
-    assign north_out_dst = out_dst_r[DIR_NORTH];
-    assign south_out_dst = out_dst_r[DIR_SOUTH];
-    assign east_out_dst = out_dst_r[DIR_EAST];
-    assign west_out_dst = out_dst_r[DIR_WEST];
+    assign prev_out_dst = out_dst_r[DIR_PREV];
+    assign next_out_dst = out_dst_r[DIR_NEXT];
     assign up_out_dst = out_dst_r[DIR_UP];
     assign down_out_dst = out_dst_r[DIR_DOWN];
 
     assign local_out_payload = out_payload_r[DIR_LOCAL];
-    assign north_out_payload = out_payload_r[DIR_NORTH];
-    assign south_out_payload = out_payload_r[DIR_SOUTH];
-    assign east_out_payload = out_payload_r[DIR_EAST];
-    assign west_out_payload = out_payload_r[DIR_WEST];
+    assign prev_out_payload = out_payload_r[DIR_PREV];
+    assign next_out_payload = out_payload_r[DIR_NEXT];
     assign up_out_payload = out_payload_r[DIR_UP];
     assign down_out_payload = out_payload_r[DIR_DOWN];
 

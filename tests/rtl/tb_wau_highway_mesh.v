@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+`include "wau_defs.vh"
 
 module tb_wau_highway_mesh;
     localparam CORE_COUNT = 3;
@@ -18,6 +19,18 @@ module tb_wau_highway_mesh;
     wire [CORE_COUNT*CORE_ID_WIDTH-1:0] local_out_dst;
     wire [CORE_COUNT*PAYLOAD_WIDTH-1:0] local_out_payload;
 
+    // The contract bus is a highway-side feature; these meshes are elaborated
+    // with it disabled so the topology tests stay about routing alone.
+    wire [CORE_COUNT-1:0] contract_call;
+    wire [CORE_ID_WIDTH-1:0] contract_slot;
+    wire contract_grant_valid;
+    wire [CORE_ID_WIDTH-1:0] contract_grant_core;
+    wire [1:0] contract_grant_mode;
+    wire [15:0] contract_grant_remaining;
+    wire [31:0] contract_grant_count;
+    wire [31:0] contract_hold_cycles;
+    wire [31:0] contract_defer_count;
+
     wire [CORE_COUNT*32-1:0] router_hop_count;
     wire [CORE_COUNT*32-1:0] router_stall_count;
     wire [CORE_COUNT*32-1:0] router_local_delivered_count;
@@ -31,7 +44,8 @@ module tb_wau_highway_mesh;
         .GRID_Z(1),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
-        .PAYLOAD_WIDTH(PAYLOAD_WIDTH)
+        .PAYLOAD_WIDTH(PAYLOAD_WIDTH),
+        .CONTRACT_BUS_ENABLE(0)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -43,6 +57,17 @@ module tb_wau_highway_mesh;
         .local_out_ready(local_out_ready),
         .local_out_dst(local_out_dst),
         .local_out_payload(local_out_payload),
+        .contract_req({CORE_COUNT{1'b0}}),
+        .contract_word({(CORE_COUNT*`WAU_HIGHWAY_CONTRACT_WORD_WIDTH){1'b0}}),
+        .contract_call(contract_call),
+        .contract_slot(contract_slot),
+        .contract_grant_valid(contract_grant_valid),
+        .contract_grant_core(contract_grant_core),
+        .contract_grant_mode(contract_grant_mode),
+        .contract_grant_remaining(contract_grant_remaining),
+        .contract_grant_count(contract_grant_count),
+        .contract_hold_cycles(contract_hold_cycles),
+        .contract_defer_count(contract_defer_count),
         .router_hop_count(router_hop_count),
         .router_stall_count(router_stall_count),
         .router_local_delivered_count(router_local_delivered_count),

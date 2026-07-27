@@ -18,7 +18,13 @@
     "supported_data_types": [
       "int32",
       "float16"
-    ]
+    ],
+    "highway": {
+      "topology": "linear",
+      "contract_bus": true,
+      "contract_max_burst": 8,
+      "contract_lease_cycles": 64
+    }
   },
   "compiler": {
     "routing": "waterfall",

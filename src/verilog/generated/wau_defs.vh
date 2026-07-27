@@ -24,6 +24,18 @@
 `define WAU_STATION_CACHE_ENTRIES 4
 `define WAU_STATION_CACHE_POLICY_FIFO 1
 // Station cache policy: fifo (4 entries)
+`define WAU_HIGHWAY_TOPOLOGY_LINEAR 1
+`define WAU_HIGHWAY_TOPOLOGY_NAME "linear"
+`define WAU_HIGHWAY_PORT_COUNT 5
+`define WAU_HIGHWAY_CONTRACT_BUS 1
+`define WAU_HIGHWAY_CONTRACT_WORD_WIDTH 18
+`define WAU_HIGHWAY_CONTRACT_MODE_LSB 0
+`define WAU_HIGHWAY_CONTRACT_WORDS_LSB 2
+`define WAU_HIGHWAY_CONTRACT_REPEATS_LSB 10
+`define WAU_HIGHWAY_CONTRACT_MAX_BURST 8
+`define WAU_HIGHWAY_CONTRACT_LEASE_CYCLES 64
+// Highway topology: linear (5 router ports per core)
+// Contract bus modes: 0=pong, 1=burst, 2=stream, 3=reserve
 // Supported data types: int32, float16
 
 `define WAU_OPCODE_ADD 8'h01

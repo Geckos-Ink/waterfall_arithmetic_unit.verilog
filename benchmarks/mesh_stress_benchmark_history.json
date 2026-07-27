@@ -1,5 +1,5 @@
 {
-  "best_sidecar": "benchmarks\\mesh_stress_benchmark_best.json",
+  "best_sidecar": "benchmarks/mesh_stress_benchmark_best.json",
   "format_version": 1,
   "runs": [
     {
@@ -10,6 +10,15 @@
       "run_profile": "mesh_stress",
       "run_utc": "2026-07-07T08:18:59Z",
       "total_ms": 4760
+    },
+    {
+      "benchmark_ranking_score": 179296012.0,
+      "benchmark_text": "benchmarks/mesh_stress_benchmark.txt",
+      "exec_latency_cycles_avg": 179.25,
+      "makespan_cycles": 43,
+      "run_profile": "mesh_stress",
+      "run_utc": "2026-07-27T18:18:02Z",
+      "total_ms": 3012
     }
   ]
 }

@@ -16,6 +16,7 @@ from .trace_parser import parse_trace
 REQUIRED_RTL_MODULES = (
     "wau_operation_alu.v",
     "wau_neighbor_forward.v",
+    "wau_highway_contract.v",
     "wau_highway_router.v",
     "wau_highway_mesh.v",
     "wau_core_station.v",

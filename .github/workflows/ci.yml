@@ -73,6 +73,7 @@ jobs:
           name: iverilog-generated-rtl
           path: |
             src/verilog/generated/**
+            .build/iverilog/matrix_rtl/**
           if-no-files-found: warn
           retention-days: 14
 

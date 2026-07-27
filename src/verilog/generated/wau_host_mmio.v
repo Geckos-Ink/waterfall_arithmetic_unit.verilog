@@ -42,7 +42,10 @@ module wau_host_mmio #(
     input wire [31:0] obs_total_forward_count,
     input wire [31:0] obs_total_local_delivered_count,
     input wire [31:0] obs_total_cache_hit_count,
-    input wire [31:0] obs_total_cache_lookup_count
+    input wire [31:0] obs_total_cache_lookup_count,
+    input wire [31:0] obs_total_contract_grant_count,
+    input wire [31:0] obs_total_contract_hold_cycles,
+    input wire [31:0] obs_total_contract_defer_count
 );
     localparam [ADDR_WIDTH-1:0] ADDR_CTRL     = 'h00;
     localparam [ADDR_WIDTH-1:0] ADDR_STATUS   = 'h01;
@@ -58,6 +61,9 @@ module wau_host_mmio #(
     localparam [ADDR_WIDTH-1:0] ADDR_DELIVRD  = 'h15;
     localparam [ADDR_WIDTH-1:0] ADDR_CACHE_H  = 'h16;
     localparam [ADDR_WIDTH-1:0] ADDR_CACHE_L  = 'h17;
+    localparam [ADDR_WIDTH-1:0] ADDR_CTR_GRNT = 'h18;
+    localparam [ADDR_WIDTH-1:0] ADDR_CTR_HOLD = 'h19;
+    localparam [ADDR_WIDTH-1:0] ADDR_CTR_DEFR = 'h1A;
 
     reg [FLOW_ID_WIDTH-1:0] last_out_flow;
     reg signed [DATA_WIDTH-1:0] last_out_value;
@@ -134,6 +140,9 @@ module wau_host_mmio #(
                     ADDR_DELIVRD: mmio_readdata <= obs_total_local_delivered_count;
                     ADDR_CACHE_H: mmio_readdata <= obs_total_cache_hit_count;
                     ADDR_CACHE_L: mmio_readdata <= obs_total_cache_lookup_count;
+                    ADDR_CTR_GRNT: mmio_readdata <= obs_total_contract_grant_count;
+                    ADDR_CTR_HOLD: mmio_readdata <= obs_total_contract_hold_cycles;
+                    ADDR_CTR_DEFR: mmio_readdata <= obs_total_contract_defer_count;
                     default: mmio_readdata <= 32'd0;
                 endcase
             end

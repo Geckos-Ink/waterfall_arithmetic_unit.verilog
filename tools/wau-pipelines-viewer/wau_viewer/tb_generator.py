@@ -58,6 +58,9 @@ module tb_wau_viewer;
     wire [31:0] obs_total_local_delivered_count;
     wire [31:0] obs_total_cache_hit_count;
     wire [31:0] obs_total_cache_lookup_count;
+    wire [31:0] obs_total_contract_grant_count;
+    wire [31:0] obs_total_contract_hold_cycles;
+    wire [31:0] obs_total_contract_defer_count;
 
     wau_top dut (
         .clk(clk),
@@ -77,7 +80,10 @@ module tb_wau_viewer;
         .obs_total_forward_count(obs_total_forward_count),
         .obs_total_local_delivered_count(obs_total_local_delivered_count),
         .obs_total_cache_hit_count(obs_total_cache_hit_count),
-        .obs_total_cache_lookup_count(obs_total_cache_lookup_count)
+        .obs_total_cache_lookup_count(obs_total_cache_lookup_count),
+        .obs_total_contract_grant_count(obs_total_contract_grant_count),
+        .obs_total_contract_hold_cycles(obs_total_contract_hold_cycles),
+        .obs_total_contract_defer_count(obs_total_contract_defer_count)
     );
 
     always #5 clk = ~clk;
@@ -151,10 +157,31 @@ module tb_wau_viewer;
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH],
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8]);
                 end
+                // Highway contract bus, per core: `hwy_req` is the core asking
+                // for the data highway, `hwy_call` is that ask landing on its
+                // own offered slot (the moment a core *calls* the highway), and
+                // `hwy_hold` marks the core that currently owns it.
+                $fwrite(trace_f, " hwy_req=%%0d hwy_call=%%0d hwy_hold=%%0d",
+                    dut.data_contract_req[core_i],
+                    dut.data_contract_call[core_i],
+                    dut.data_contract_grant_valid
+                        && (dut.data_contract_grant_core == core_i[7:0]));
                 $fwrite(trace_f, " cache_h_count=%%0d cache_l_count=%%0d\n",
                     dut.core_cache_hit_count[(core_i*32) +: 32],
                     dut.core_cache_lookup_count[(core_i*32) +: 32]);
             end
+            // Highway-wide contract state: which slot is being offered, who
+            // holds the highway, under what contract, and how much of it is
+            // left to run.
+            $fwrite(trace_f, "HWY slot=%%0d grant=%%0d gcore=%%0d gmode=%%0d grem=%%0d grants=%%0d hold=%%0d defer=%%0d\n",
+                dut.data_contract_slot,
+                dut.data_contract_grant_valid,
+                dut.data_contract_grant_core,
+                dut.data_contract_grant_mode,
+                dut.data_contract_grant_remaining,
+                obs_total_contract_grant_count,
+                obs_total_contract_hold_cycles,
+                obs_total_contract_defer_count);
             $fwrite(trace_f, "OBS hops=%%0d stalls=%%0d forwards=%%0d deliv=%%0d cache_h=%%0d cache_l=%%0d\n",
                 obs_total_hop_count, obs_total_stall_count, obs_total_forward_count,
                 obs_total_local_delivered_count, obs_total_cache_hit_count, obs_total_cache_lookup_count);

@@ -57,6 +57,9 @@ module wau_de0_nano_top (
     wire [31:0] obs_total_local_delivered_count;
     wire [31:0] obs_total_cache_hit_count;
     wire [31:0] obs_total_cache_lookup_count;
+    wire [31:0] obs_total_contract_grant_count;
+    wire [31:0] obs_total_contract_hold_cycles;
+    wire [31:0] obs_total_contract_defer_count;
 
     // Button-driven MMIO emulator: edge-detect KEY[1] (low-active) and
     // sequence FLOW_ID/IN_A/IN_B/TRIGGER writes. SW[3:0] supplies the data nibble.
@@ -152,7 +155,10 @@ module wau_de0_nano_top (
         .obs_total_forward_count(obs_total_forward_count),
         .obs_total_local_delivered_count(obs_total_local_delivered_count),
         .obs_total_cache_hit_count(obs_total_cache_hit_count),
-        .obs_total_cache_lookup_count(obs_total_cache_lookup_count)
+        .obs_total_cache_lookup_count(obs_total_cache_lookup_count),
+        .obs_total_contract_grant_count(obs_total_contract_grant_count),
+        .obs_total_contract_hold_cycles(obs_total_contract_hold_cycles),
+        .obs_total_contract_defer_count(obs_total_contract_defer_count)
     );
 
     assign LED[0] = host_out_valid;
@@ -179,6 +185,9 @@ module wau_de0_nano_top (
         .obs_total_forward_count(obs_total_forward_count),
         .obs_total_local_delivered_count(obs_total_local_delivered_count),
         .obs_total_cache_hit_count(obs_total_cache_hit_count),
-        .obs_total_cache_lookup_count(obs_total_cache_lookup_count)
+        .obs_total_cache_lookup_count(obs_total_cache_lookup_count),
+        .obs_total_contract_grant_count(obs_total_contract_grant_count),
+        .obs_total_contract_hold_cycles(obs_total_contract_hold_cycles),
+        .obs_total_contract_defer_count(obs_total_contract_defer_count)
     );
 endmodule

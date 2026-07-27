@@ -40,6 +40,83 @@ class Coord:
         return Coord(x=x, y=y, z=z)
 
 
+_SUPPORTED_HIGHWAY_TOPOLOGIES = ("linear", "matrix")
+
+
+@dataclass(frozen=True)
+class HighwaySpec:
+    """Highway fabric shape and the per-highway contract bus.
+
+    ``topology`` selects how many dimensions of highway links the emitted mesh
+    carries:
+
+    - ``linear`` (default) — one 1-D highway per layer, walked in core-index
+      order: core ``i`` links to ``i - 1`` / ``i + 1``, so the last core of a
+      row joins the first core of the next row. Routers keep LOCAL/PREV/NEXT
+      (plus UP/DOWN when ``grid.z > 1``) instead of the seven-port mesh, and
+      routing is a plain index compare with no ``% GRID_X`` divider.
+    - ``matrix`` — the full N/S/E/W(/U/D) mesh with X-then-Y-then-Z
+      dimension-order routing. Opt in for kernels whose highway traffic needs
+      the extra cross-section.
+
+    The contract bus is a narrow side-channel on the highway: it cycles one
+    core slot per clock, and the slot owner may post either a single request
+    ("pong") bit or a full contract describing how it intends to occupy the
+    highway.
+    """
+
+    topology: str
+    contract_bus: bool
+    contract_max_burst: int
+    contract_lease_cycles: int
+
+    @property
+    def is_linear(self) -> bool:
+        return self.topology == "linear"
+
+    @staticmethod
+    def from_obj(value: Any) -> "HighwaySpec":
+        if value is None:
+            return HighwaySpec(
+                topology="linear",
+                contract_bus=True,
+                contract_max_burst=8,
+                contract_lease_cycles=64,
+            )
+        if not isinstance(value, dict):
+            raise ConfigError("device.highway must be an object")
+
+        topology = str(value.get("topology", "linear")).strip().lower() or "linear"
+        if topology not in _SUPPORTED_HIGHWAY_TOPOLOGIES:
+            raise ConfigError(
+                "device.highway.topology must be one of: "
+                + ", ".join(_SUPPORTED_HIGHWAY_TOPOLOGIES)
+            )
+
+        max_burst = validate_range(
+            int(value.get("contract_max_burst", 8)),
+            minimum=1,
+            name="device.highway.contract_max_burst",
+        )
+        if max_burst > 255:
+            raise ConfigError("device.highway.contract_max_burst must be <= 255")
+
+        lease = validate_range(
+            int(value.get("contract_lease_cycles", 64)),
+            minimum=1,
+            name="device.highway.contract_lease_cycles",
+        )
+        if lease > 65535:
+            raise ConfigError("device.highway.contract_lease_cycles must be <= 65535")
+
+        return HighwaySpec(
+            topology=topology,
+            contract_bus=bool(value.get("contract_bus", True)),
+            contract_max_burst=max_burst,
+            contract_lease_cycles=lease,
+        )
+
+
 @dataclass(frozen=True)
 class DeviceSpec:
     name: str
@@ -57,6 +134,7 @@ class DeviceSpec:
     global_ram_depth: int
     coordinator_mode: str
     enable_runtime_auto_adapt: bool
+    highway: HighwaySpec
 
     @staticmethod
     def from_obj(value: Any) -> "DeviceSpec":
@@ -124,6 +202,7 @@ class DeviceSpec:
             ),
             coordinator_mode=coordinator_mode,
             enable_runtime_auto_adapt=bool(value.get("enable_runtime_auto_adapt", True)),
+            highway=HighwaySpec.from_obj(value.get("highway")),
         )
 
         if spec.grid_x * spec.grid_y * spec.grid_z > 255:

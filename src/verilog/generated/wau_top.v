@@ -34,10 +34,17 @@ module wau_top #(
     output wire [31:0] obs_total_forward_count,
     output wire [31:0] obs_total_local_delivered_count,
     output wire [31:0] obs_total_cache_hit_count,
-    output wire [31:0] obs_total_cache_lookup_count
+    output wire [31:0] obs_total_cache_lookup_count,
+
+    // Highway contract bus observability (data-plane highway).
+    output wire [31:0] obs_total_contract_grant_count,
+    output wire [31:0] obs_total_contract_hold_cycles,
+    output wire [31:0] obs_total_contract_defer_count
 );
     localparam integer CORE_ID_WIDTH = 8;
     localparam integer COORDINATOR_CORE_INDEX = 0;
+    localparam integer CONTRACT_WORD_WIDTH = `WAU_HIGHWAY_CONTRACT_WORD_WIDTH;
+    localparam integer CONTRACT_BUS_ENABLE = 1;
 
     localparam integer CTRL_STAGE_LSB = 0;
     localparam integer CTRL_IMM_LSB = CTRL_STAGE_LSB + 8;
@@ -223,13 +230,54 @@ module wau_top #(
     wire [CORE_COUNT*32-1:0] data_router_local_delivered_count;
     wire [CORE_COUNT*32-1:0] data_router_forward_count;
 
+    // Highway contract bus. Only the data-plane highway is contracted: it is
+    // the one many cores compete for (every core pushes its results onto it),
+    // whereas the control plane has a single injector (the coordinator) and so
+    // has nothing to arbitrate.
+    //
+    // `data_contract_req` is the *real-time* side — a core raises it the moment
+    // it actually has a result to move. `data_contract_word` is the *program*
+    // side: the expectation the offline scheduler derived for that core, which
+    // the bus applies when the core answers on its offered slot.
+    wire [CORE_COUNT-1:0] data_contract_req;
+    wire [CORE_COUNT*CONTRACT_WORD_WIDTH-1:0] data_contract_word;
+    wire [CORE_COUNT-1:0] data_contract_call;
+    wire [CORE_ID_WIDTH-1:0] data_contract_slot;
+    wire data_contract_grant_valid;
+    wire [CORE_ID_WIDTH-1:0] data_contract_grant_core;
+    wire [1:0] data_contract_grant_mode;
+    wire [15:0] data_contract_grant_remaining;
+    wire [31:0] data_contract_grant_count;
+    wire [31:0] data_contract_hold_cycles;
+    wire [31:0] data_contract_defer_count;
+
+    wire [CORE_COUNT-1:0] ctrl_contract_call;
+    wire [CORE_ID_WIDTH-1:0] ctrl_contract_slot;
+    wire ctrl_contract_grant_valid;
+    wire [CORE_ID_WIDTH-1:0] ctrl_contract_grant_core;
+    wire [1:0] ctrl_contract_grant_mode;
+    wire [15:0] ctrl_contract_grant_remaining;
+    wire [31:0] ctrl_contract_grant_count;
+    wire [31:0] ctrl_contract_hold_cycles;
+    wire [31:0] ctrl_contract_defer_count;
+
+    assign data_contract_req = core_result_valid;
+
+    assign data_contract_word[(0*CONTRACT_WORD_WIDTH) +: CONTRACT_WORD_WIDTH] = 18'h00404;  // core 0: pong words=1 repeats=1
+    assign data_contract_word[(1*CONTRACT_WORD_WIDTH) +: CONTRACT_WORD_WIDTH] = 18'h00404;  // core 1: pong words=1 repeats=1
+    assign data_contract_word[(2*CONTRACT_WORD_WIDTH) +: CONTRACT_WORD_WIDTH] = 18'h00806;  // core 2: stream words=1 repeats=2
+    assign data_contract_word[(3*CONTRACT_WORD_WIDTH) +: CONTRACT_WORD_WIDTH] = 18'h00404;  // core 3: pong words=1 repeats=1
+    assign data_contract_word[(4*CONTRACT_WORD_WIDTH) +: CONTRACT_WORD_WIDTH] = 18'h00404;  // core 4: pong words=1 repeats=1
+    assign data_contract_word[(5*CONTRACT_WORD_WIDTH) +: CONTRACT_WORD_WIDTH] = 18'h00404;  // core 5: pong words=1 repeats=1
+
     wau_highway_mesh #(
         .GRID_X(GRID_X),
         .GRID_Y(GRID_Y),
         .GRID_Z(GRID_Z),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
-        .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH)
+        .PAYLOAD_WIDTH(CTRL_PAYLOAD_WIDTH),
+        .CONTRACT_BUS_ENABLE(0)
     ) control_plane_mesh_u (
         .clk(clk),
         .rst_n(rst_n),
@@ -241,6 +289,17 @@ module wau_top #(
         .local_out_ready(ctrl_local_out_ready),
         .local_out_dst(ctrl_local_out_dst),
         .local_out_payload(ctrl_local_out_payload),
+        .contract_req({CORE_COUNT{1'b0}}),
+        .contract_word({(CORE_COUNT*CONTRACT_WORD_WIDTH){1'b0}}),
+        .contract_call(ctrl_contract_call),
+        .contract_slot(ctrl_contract_slot),
+        .contract_grant_valid(ctrl_contract_grant_valid),
+        .contract_grant_core(ctrl_contract_grant_core),
+        .contract_grant_mode(ctrl_contract_grant_mode),
+        .contract_grant_remaining(ctrl_contract_grant_remaining),
+        .contract_grant_count(ctrl_contract_grant_count),
+        .contract_hold_cycles(ctrl_contract_hold_cycles),
+        .contract_defer_count(ctrl_contract_defer_count),
         .router_hop_count(ctrl_router_hop_count),
         .router_stall_count(ctrl_router_stall_count),
         .router_local_delivered_count(ctrl_router_local_delivered_count),
@@ -253,7 +312,8 @@ module wau_top #(
         .GRID_Z(GRID_Z),
         .CORE_COUNT(CORE_COUNT),
         .CORE_ID_WIDTH(CORE_ID_WIDTH),
-        .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH)
+        .PAYLOAD_WIDTH(DATA_PAYLOAD_WIDTH),
+        .CONTRACT_BUS_ENABLE(CONTRACT_BUS_ENABLE)
     ) data_plane_mesh_u (
         .clk(clk),
         .rst_n(rst_n),
@@ -265,6 +325,17 @@ module wau_top #(
         .local_out_ready(data_local_out_ready),
         .local_out_dst(data_local_out_dst),
         .local_out_payload(data_local_out_payload),
+        .contract_req(data_contract_req),
+        .contract_word(data_contract_word),
+        .contract_call(data_contract_call),
+        .contract_slot(data_contract_slot),
+        .contract_grant_valid(data_contract_grant_valid),
+        .contract_grant_core(data_contract_grant_core),
+        .contract_grant_mode(data_contract_grant_mode),
+        .contract_grant_remaining(data_contract_grant_remaining),
+        .contract_grant_count(data_contract_grant_count),
+        .contract_hold_cycles(data_contract_hold_cycles),
+        .contract_defer_count(data_contract_defer_count),
         .router_hop_count(data_router_hop_count),
         .router_stall_count(data_router_stall_count),
         .router_local_delivered_count(data_router_local_delivered_count),
@@ -364,4 +435,14 @@ module wau_top #(
     assign obs_total_local_delivered_count = total_local_delivered_count;
     assign obs_total_cache_hit_count = total_cache_hit_count;
     assign obs_total_cache_lookup_count = total_cache_lookup_count;
+
+    // The control-plane highway runs uncontracted, so its counters are constant
+    // zero; summing both planes keeps the observability bus meaningful if the
+    // control plane is ever contracted too.
+    assign obs_total_contract_grant_count =
+        data_contract_grant_count + ctrl_contract_grant_count;
+    assign obs_total_contract_hold_cycles =
+        data_contract_hold_cycles + ctrl_contract_hold_cycles;
+    assign obs_total_contract_defer_count =
+        data_contract_defer_count + ctrl_contract_defer_count;
 endmodule

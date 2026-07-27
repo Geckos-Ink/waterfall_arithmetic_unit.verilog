@@ -13,6 +13,73 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-07-27)
+Implemented this cycle (highway fabric slice):
+
+- **Single-dimension highway is now the default** (`device.highway.topology`,
+  default `linear`). Each layer's cores form one 1-D highway walked in
+  core-index order — the last core of a row is the previous hop of the first
+  core of the next row — so `wau_highway_router` keeps `LOCAL`/`PREV`/`NEXT`
+  (plus `UP`/`DOWN` for layered grids): 5 ports instead of 7, and `N-1` links
+  per layer instead of `2N - GRID_X - GRID_Y`. Routing collapses to comparing
+  the destination index against the router's own, which removes the
+  `dst_core % GRID_X` / `dst_core / GRID_X` arithmetic entirely — and with it
+  the per-port `LPM_DIVIDE` that made a non-power-of-two `GRID_X` blow the LE
+  budget. The full mesh remains available as `topology: "matrix"` for kernels
+  that need the cross-section, with
+  `src/python/configs/wau_matrix_highway_demo.json` tracked and the whole
+  fabric testbench suite re-run against it by `run_iverilog_tests.sh`.
+- **Highway contracting bus** (`wau_highway_contract.v`,
+  `device.highway.contract_bus`, default on). One core slot is offered per
+  clock; on its own slot a core answers with either a bare request bit
+  (`pong`) or an 18-bit contract word `{repeats, words, mode}` stating **how**
+  (`pong`/`burst`/`stream`/`reserve`), **how much** and **how many times** it
+  intends to transmit. While a contract is in force the highway admits only its
+  holder, so a contracted transfer neither interleaves with other cores' traffic
+  nor re-arbitrates for its slot per beat. It is deliberately **non-blocking
+  when idle** (an uncontended highway admits everyone, adding no latency) and
+  bounded twice — by beat count and by `contract_lease_cycles` — with immediate
+  release of a quiet holder, so it can never wedge the fabric.
+- **Both contract drivers wired**: the real-time one (`data_contract_req` =
+  `core_result_valid`) and the programmed one — a per-core contract word
+  derived from the offline `SchedulePlan` (`words` = longest single-flow run on
+  that core, `repeats` = distinct flows placed on it) and emitted into
+  `wau_top`. This is the first path by which the offline schedule reaches the
+  generated RTL directly.
+- **Viewer highway scheme**: the graph view now draws the topology actually
+  emitted (chain or mesh) plus a contract-bus rail with one numbered tick per
+  core slot, a stub tapping each core onto it, and a sliding offered-slot
+  marker. The stub answers "when does a core call a highway" — dim, dashed
+  while requesting, amber on the cycle it calls from its own slot, solid red
+  while it holds the highway under contract. All of it is parsed from new
+  `HWY` / `hwy_req` / `hwy_call` / `hwy_hold` trace records, never inferred.
+- **Observability**: `obs_total_contract_grant_count` / `_hold_cycles` /
+  `_defer_count` on `wau_top`, readable at the additive MMIO addresses
+  `0x18`–`0x1A`. The published register map is otherwise untouched.
+
+Verification: both benchmark gates hold `scoreboard_pass_ratio == 1.0` with
+**unchanged per-case exec latencies and makespan** versus the previous
+`matrix`-fabric reference (`example-program.cw` 58–70 cycles, makespan 42;
+`mesh_stress.cw` unchanged), and the full RTL suite passes against both
+topologies.
+
+Follow-ups this opens:
+
+- Board-calibrate the linear topology's area saving through Quartus — the LE
+  reduction is currently argued from port/link counts and verified only in
+  `iverilog`. Until then it must not be reported as measured.
+- Demonstrate the contract bus under genuine highway contention; on the current
+  demo kernels the highway is rarely contended, so the exclusivity path is
+  exercised by `tb_wau_highway_contract.v` rather than by the benchmark gate.
+  A contention-shaped stress kernel would make its effect measurable.
+- Make the transfer-hop model topology-aware. `_coord_distance` and the
+  `dependency_edges_v1` metric still use Manhattan distance, which is the true
+  hop count only on a `matrix` highway. Blocked on `arch-search`'s byte-frozen
+  output, which ranks on that metric — needs a versioned successor metric
+  (`dependency_edges_v2`) rather than an in-place change.
+- Consider giving the coordinator a contract of its own if the control plane
+  ever gains a second injector.
+
 ## Progress Update (2026-07-16)
 Implemented this cycle (pipelines-viewer simulator + visualization slice):
 - **Ad-hoc circuit preparation inside the viewer** (`wau_viewer/prepare.py`):
