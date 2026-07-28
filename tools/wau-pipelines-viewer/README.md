@@ -45,8 +45,9 @@ What you get:
   core holds one with its contract mode and beats left, and grant/defer
   totals), so how efficiently a program uses the WAU fabric is readable at a
   glance — and captured in recordings.
-- A Gantt-style schedule timeline showing program instructions per-core with a
-  live "playhead" at the current cycle.
+- A Gantt-style timeline showing the operations actually dispatched per-core
+  (from the RTL trace, not the offline schedule) with a live "playhead" at the
+  current cycle.
 - A performance / bottleneck panel (hops, stalls, forwards, local deliveries,
   station cache hit ratio, busy time per core, dispatch back-pressure events).
 - Transport controls: play / pause / single-step / reverse-step / a
@@ -167,7 +168,7 @@ wau_viewer/
   trace_parser.py    # parses the iverilog $fwrite trace into typed events
   model.py           # in-memory model + stress stimulus + mesh route helper
   graph_view.py      # zoomable scene; phased hop-by-hop packet animation + HUD
-  timeline_view.py   # Gantt-style schedule strip with playhead
+  timeline_view.py   # Gantt-style trace-derived operation strip with playhead
   stats_panel.py     # live performance + bottleneck readout
   main_window.py     # main app (transport controls + animation clock)
   recorder.py        # frame capture + MP4 (ffmpeg) / GIF (ffmpeg or Pillow)
@@ -228,11 +229,13 @@ first elaboration's result reaches the host, so the recording ends on a
 completed flow rather than in the middle of one; the untrimmed trace runs
 769 cycles for the four packets.
 
-One thing that recording makes obvious: the Gantt strip runs out of blocks
-after cycle 44. That is the *offline* schedule's makespan for this kernel,
-while the real RTL takes 198 cycles to retire the same flow — the timeline
-draws `wau_schedule.json`, not the trace, so past the makespan only the
-playhead keeps moving.
+The Gantt strip is built from the RTL trace itself (each core's dispatch and
+result events), not the *offline* `wau_schedule.json` estimate: for this
+kernel the offline schedule's makespan is only 44 cycles, while the real RTL
+takes 198 cycles to retire the same flow, so drawing the plan would leave the
+strip empty for most of the run. Blocks track the cycle a core actually
+dispatched an op and the cycle its result actually came back, so they stay in
+sync with the playhead for the full 769-cycle trace.
 
 In headless mode the GUI is never shown — frames are rendered off-screen by
 `QGraphicsView.grab()`.

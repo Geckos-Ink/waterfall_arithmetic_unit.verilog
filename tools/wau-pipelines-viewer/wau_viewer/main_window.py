@@ -62,7 +62,7 @@ class ViewerWindow(QMainWindow):
         self.graph_view = WauGraphView(self.scene)
 
         total_cycles = max(trace.meta.total_cycles, model.makespan_cycles, len(trace.cycles))
-        self.timeline_scene = TimelineScene(model, total_cycles)
+        self.timeline_scene = TimelineScene(model, trace, total_cycles)
         self.timeline_view = TimelineView(self.timeline_scene)
 
         self.stats = StatsPanel(model, trace)

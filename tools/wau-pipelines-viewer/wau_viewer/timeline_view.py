@@ -1,8 +1,18 @@
-"""Gantt-style schedule timeline with a live playhead."""
+"""Gantt-style operation timeline with a live playhead.
+
+The strip is built from the *actual* RTL trace (each core's dispatch/result
+events), not the offline `wau_schedule.json` estimate: stalls, backpressure,
+retries and fallback-core reassignment all make the real per-cycle timing
+diverge from the static plan, and a run's real makespan can run far longer
+than the plan's. Drawing the plan produced blocks that drifted out of sync
+with the playhead and simply stopped appearing once the plan's makespan was
+exceeded, even though cores kept executing for the rest of the trace.
+"""
 
 from __future__ import annotations
 
-from typing import Dict
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
@@ -15,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from .model import WauModel
+from .trace_parser import ParsedTrace
 
 
 ROW_HEIGHT = 24
@@ -34,11 +45,74 @@ FLOW_COLORS = [
 ]
 
 
+@dataclass
+class RealInstruction:
+    """One core's dispatch-to-result span, as actually observed in the trace."""
+
+    core_index: int
+    cycle_start: int
+    cycle_end: int  # exclusive; end == start+1 until a matching result arrives
+    flow_id: int
+    stage_id: int
+    op: str
+    used_fallback: bool
+    complete: bool  # False if the trace ended before a matching result showed up
+
+
+def _build_real_instructions(model: WauModel, trace: ParsedTrace) -> List[RealInstruction]:
+    """Reconstruct per-core operation spans from dispatch/result trace events.
+
+    Each core dispatches at most one op at a time (`disp`), and later reports
+    its result (`res`) tagged with the same flow/stage id; a per-core FIFO
+    pairs them up so the drawn span reflects the real dispatch and completion
+    cycles rather than the offline schedule's estimate.
+    """
+    primary_core_of: Dict[Tuple[int, int], int] = {
+        (stage.flow_id, stage.stage_index): model.core_index(*stage.primary_core)
+        for stage in model.flows
+    }
+
+    pending: Dict[int, List[RealInstruction]] = {}
+    finished: List[RealInstruction] = []
+    for snap in trace.cycles:
+        for cs in snap.cores:
+            queue = pending.setdefault(cs.core_index, [])
+            if cs.has_result and queue:
+                inst = queue.pop(0)
+                inst.cycle_end = snap.cycle + 1
+                inst.complete = True
+                finished.append(inst)
+            if cs.dispatched:
+                flow_id = cs.disp_flow_id or 0
+                stage_id = cs.disp_stage_id or 0
+                primary = primary_core_of.get((flow_id, stage_id))
+                queue.append(RealInstruction(
+                    core_index=cs.core_index,
+                    cycle_start=snap.cycle,
+                    cycle_end=snap.cycle + 1,
+                    flow_id=flow_id,
+                    stage_id=stage_id,
+                    op=model.opcode_to_name.get(cs.disp_op, str(cs.disp_op)),
+                    used_fallback=primary is not None and primary != cs.core_index,
+                    complete=False,
+                ))
+
+    # Ops still open when the trace ended (still in flight / never resolved):
+    # keep them visible rather than dropping them silently.
+    for queue in pending.values():
+        finished.extend(queue)
+
+    finished.sort(key=lambda i: (i.core_index, i.cycle_start))
+    return finished
+
+
 class TimelineScene(QGraphicsScene):
-    def __init__(self, model: WauModel, total_cycles: int) -> None:
+    def __init__(self, model: WauModel, trace: ParsedTrace, total_cycles: int) -> None:
         super().__init__()
         self.model = model
-        self.total_cycles = max(total_cycles, model.makespan_cycles, 32)
+        self.instructions = _build_real_instructions(model, trace)
+        last_end = max((i.cycle_end for i in self.instructions), default=0)
+        self.total_cycles = max(total_cycles, last_end, 32)
         self.setBackgroundBrush(QBrush(QColor("#0f1014")))
         self._playhead: QGraphicsLineItem = QGraphicsLineItem()
         self._build()
@@ -75,9 +149,9 @@ class TimelineScene(QGraphicsScene):
                 lbl.setPos(x + 2, 2)
                 self.addItem(lbl)
 
-        # instructions from the static schedule
+        # instructions actually observed in the RTL trace
         flow_colors: Dict[int, QColor] = {}
-        for ins in self.model.schedule:
+        for ins in self.instructions:
             color = flow_colors.setdefault(
                 ins.flow_id,
                 FLOW_COLORS[len(flow_colors) % len(FLOW_COLORS)],
@@ -86,12 +160,13 @@ class TimelineScene(QGraphicsScene):
             w = max(2, (ins.cycle_end - ins.cycle_start) * CYCLE_WIDTH - 2)
             y = HEADER_HEIGHT + ins.core_index * ROW_HEIGHT + 2
             rect = QGraphicsRectItem(x0, y, w, ROW_HEIGHT - 6)
-            rect.setBrush(QBrush(color))
+            rect.setBrush(QBrush(color, Qt.SolidPattern if ins.complete else Qt.Dense4Pattern))
             rect.setPen(QPen(QColor("#0b0c10"), 1))
             rect.setToolTip(
-                f"flow={ins.flow_id} {ins.op} (stage {ins.node_id})  "
+                f"flow={ins.flow_id} {ins.op} (stage {ins.stage_id})  "
                 f"cycles [{ins.cycle_start}..{ins.cycle_end})  "
                 f"{'FALLBACK' if ins.used_fallback else 'primary'}"
+                + ("" if ins.complete else "  (no result observed before trace end)")
             )
             self.addItem(rect)
             text = QGraphicsSimpleTextItem(f"{ins.op}")
