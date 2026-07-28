@@ -1,5 +1,7 @@
 # Waterfall Arithmetic Unit - Verilog implementation
 
+![](https://github.com/Geckos-Ink/waterfall_arithmetic_unit.verilog/blob/main/assets/wau-logo.png?raw=true)
+
 The **Waterfall Arithmetic Unit (WAU)** is a configurable arithmetic compute fabric for FPGAs: a 2D or layered-3D grid of small ALU cores wired together by a packet-switched mesh, designed to stream pipelines of math operations (add, multiply, max, FMA, ...) from a host program. Think of it as a tiny, generator-driven dataflow accelerator you can drop onto a real board.
 
 This repository is the **toolchain that builds one**. You describe your kernel in a high-level form — an arithmetic expression, a constrained pseudo-C snippet, or a `.cw` program — and the Python generator emits the full Verilog (cores, mesh, coordinator, host MMIO), a compiled schedule, and a software reference model used as a correctness oracle. No hand-written RTL, no separate compiler stack.
