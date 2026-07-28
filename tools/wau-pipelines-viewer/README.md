@@ -193,7 +193,7 @@ repository root is produced this way:
 python3 -m wau_viewer \
   --config examples/wau_3x3_demo.json --stress 6 \
   --record examples/wau_3x3_demo.gif \
-  --framerate 10 --frames-per-cycle 6 --gif-width 1500 --headless
+  --framerate 10 --frames-per-cycle 6 --gif-width 2000 --window-size 3000x1900 --headless
 ```
 
 (`frames_per_cycle / framerate` = seconds of video per simulated cycle; the
@@ -217,7 +217,7 @@ python3 -m wau_viewer \
   --mnist-images ../../datasets/mnist/t10k-images-idx3-ubyte.gz \
   --mnist-count 4 --mnist-offset 5888 \
   --record examples/wau_mnist_mesh_stress.gif \
-  --framerate 10 --frames-per-cycle 3 --gif-width 1200 \
+  --framerate 10 --frames-per-cycle 3 --gif-width 2400 --window-size 3000x1900 \
   --record-max-cycles 198 --headless
 ```
 
@@ -228,6 +228,17 @@ highways of four cores, which reads better in a landscape recording than the
 first elaboration's result reaches the host, so the recording ends on a
 completed flow rather than in the middle of one; the untrimmed trace runs
 769 cycles for the four packets.
+
+The third demo GIF in the repository root — the per-core fast-path table
+lighting up amber "core → core" hops — is produced from the tracked
+`compiler.station_program`-enabled demo config with an auto-derived stimulus:
+
+```bash
+python3 -m wau_viewer \
+  --config ../../src/python/configs/wau_station_program_demo.json --auto-stimulus \
+  --record examples/wau_fast_path_demo.gif \
+  --framerate 10 --frames-per-cycle 6 --gif-width 2000 --window-size 3000x1900 --headless
+```
 
 The Gantt strip is built from the RTL trace itself (each core's dispatch and
 result events), not the *offline* `wau_schedule.json` estimate: for this

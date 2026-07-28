@@ -59,7 +59,7 @@ cd tools/wau-pipelines-viewer && python3 -m wau_viewer \
   --mnist-images ../../datasets/mnist/t10k-images-idx3-ubyte.gz \
   --mnist-count 4 --mnist-offset 5888 \
   --record examples/wau_mnist_mesh_stress.gif \
-  --framerate 10 --frames-per-cycle 3 --gif-width 1200 \
+  --framerate 10 --frames-per-cycle 3 --gif-width 2400 --window-size 3000x1900 \
   --record-max-cycles 198 --headless
 ```
 

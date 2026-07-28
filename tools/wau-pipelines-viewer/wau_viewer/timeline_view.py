@@ -34,6 +34,10 @@ HEADER_HEIGHT = 22
 LEFT_GUTTER = 110
 
 
+# Mirrors graph_view.COLOR_PACKET_FASTPATH so a fast-path-fed op's bar reads
+# as the same "amber = fast-path" cue as the fabric diagram above it.
+COLOR_FASTPATH_BORDER = QColor("#ff8f3f")
+
 FLOW_COLORS = [
     QColor("#4caf50"),
     QColor("#3f9cff"),
@@ -56,16 +60,23 @@ class RealInstruction:
     stage_id: int
     op: str
     used_fallback: bool
+    used_fastpath: bool
     complete: bool  # False if the trace ended before a matching result showed up
 
 
 def _build_real_instructions(model: WauModel, trace: ParsedTrace) -> List[RealInstruction]:
     """Reconstruct per-core operation spans from dispatch/result trace events.
 
-    Each core dispatches at most one op at a time (`disp`), and later reports
-    its result (`res`) tagged with the same flow/stage id; a per-core FIFO
-    pairs them up so the drawn span reflects the real dispatch and completion
-    cycles rather than the offline schedule's estimate.
+    Each core dispatches at most one op at a time (`disp` -- which covers both
+    an ordinary coordinator dispatch and a fast-path self-dispatch; see
+    `trace_parser.CoreState.disp_fastpath`), and later reports its result
+    (`res`) tagged with the same flow/stage id; a per-core FIFO pairs them up
+    so the drawn span reflects the real dispatch and completion cycles rather
+    than the offline schedule's estimate. Without tracing the fast-path
+    dispatch too, a fast-path-fed op's `res` would arrive with no pending
+    entry to close (silently dropped -- the op never appears) or would
+    wrongly close an unrelated, still-pending entry (stretching that bar out
+    to the fast-path op's completion cycle instead).
     """
     primary_core_of: Dict[Tuple[int, int], int] = {
         (stage.flow_id, stage.stage_index): model.core_index(*stage.primary_core)
@@ -94,6 +105,7 @@ def _build_real_instructions(model: WauModel, trace: ParsedTrace) -> List[RealIn
                     stage_id=stage_id,
                     op=model.opcode_to_name.get(cs.disp_op, str(cs.disp_op)),
                     used_fallback=primary is not None and primary != cs.core_index,
+                    used_fastpath=cs.disp_fastpath,
                     complete=False,
                 ))
 
@@ -161,11 +173,12 @@ class TimelineScene(QGraphicsScene):
             y = HEADER_HEIGHT + ins.core_index * ROW_HEIGHT + 2
             rect = QGraphicsRectItem(x0, y, w, ROW_HEIGHT - 6)
             rect.setBrush(QBrush(color, Qt.SolidPattern if ins.complete else Qt.Dense4Pattern))
-            rect.setPen(QPen(QColor("#0b0c10"), 1))
+            rect.setPen(QPen(COLOR_FASTPATH_BORDER if ins.used_fastpath else QColor("#0b0c10"), 2 if ins.used_fastpath else 1))
             rect.setToolTip(
                 f"flow={ins.flow_id} {ins.op} (stage {ins.stage_id})  "
                 f"cycles [{ins.cycle_start}..{ins.cycle_end})  "
                 f"{'FALLBACK' if ins.used_fallback else 'primary'}"
+                + (" FAST-PATH" if ins.used_fastpath else "")
                 + ("" if ins.complete else "  (no result observed before trace end)")
             )
             self.addItem(rect)

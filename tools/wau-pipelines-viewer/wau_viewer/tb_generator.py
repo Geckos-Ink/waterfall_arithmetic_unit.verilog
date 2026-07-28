@@ -158,6 +158,27 @@ module tb_wau_viewer;
                         dut.core_dispatch_use_immediate[core_i],
                         dut.core_dispatch_stage_id[(core_i*8) +: 8],
                         dut.core_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]);
+                end else if (dut.core_self_dispatch_valid[core_i] && dut.core_self_dispatch_ready[core_i]) begin
+                    // Fast-path self-dispatch (compiler.station_program): this
+                    // core just started an op handed to it directly by another
+                    // core's station, bypassing wau_coordinator entirely, so it
+                    // never touches core_dispatch_valid/ready above. Without this
+                    // branch the Gantt strip's dispatch/result FIFO (built from
+                    // `disp`/`res` events) never sees a start event for it: the
+                    // eventual `res=1` either gets silently dropped (no pending
+                    // entry to close) or wrongly closes an unrelated older
+                    // pending entry, stretching its bar out to the fast-path
+                    // op's completion cycle. Mutually exclusive with the branch
+                    // above by construction (wau_core_station's `in_ready` is
+                    // forced low whenever `self_valid` is asserted).
+                    $fwrite(trace_f, " disp=1 disp_op=%%0d disp_a=%%0d disp_b=%%0d disp_imm=%%0d disp_use_imm=%%0d disp_stage=%%0d disp_flow=%%0d disp_fastpath=1",
+                        dut.core_self_dispatch_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH],
+                        $signed(dut.core_self_dispatch_a[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
+                        $signed(dut.core_self_dispatch_b_reg[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
+                        $signed(dut.core_self_dispatch_immediate_b[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
+                        dut.core_self_dispatch_use_immediate[core_i],
+                        dut.core_self_dispatch_stage_id[(core_i*8) +: 8],
+                        dut.core_self_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]);
                 end
                 if (dut.core_result_valid[core_i] && dut.core_result_ready[core_i]) begin
                     $fwrite(trace_f, " res=1 res_val=%%0d res_stage=%%0d res_flow=%%0d",

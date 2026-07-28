@@ -51,6 +51,10 @@ class CoreState:
     disp_use_immediate: bool = False
     disp_stage_id: Optional[int] = None
     disp_flow_id: Optional[int] = None
+    # Set when this dispatch is a fast-path self-dispatch (core_self_dispatch_*)
+    # rather than an ordinary coordinator dispatch (core_dispatch_*) -- the
+    # direct core-to-core handoff `compiler.station_program` introduces.
+    disp_fastpath: bool = False
     has_result: bool = False
     res_value: Optional[int] = None
     res_stage_id: Optional[int] = None
@@ -250,6 +254,7 @@ def parse_trace(path: Path) -> ParsedTrace:
                     cs.disp_use_immediate = kv.get("disp_use_imm") == "1"
                     cs.disp_stage_id = _to_int(kv.get("disp_stage", "0"))
                     cs.disp_flow_id = _to_int(kv.get("disp_flow", "0"))
+                    cs.disp_fastpath = kv.get("disp_fastpath") == "1"
                 if kv.get("res") == "1":
                     cs.has_result = True
                     cs.res_value = _to_int(kv.get("res_val", "0"))
