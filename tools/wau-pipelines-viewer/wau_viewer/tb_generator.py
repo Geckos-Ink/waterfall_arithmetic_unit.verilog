@@ -40,7 +40,18 @@ module tb_wau_viewer;
     localparam integer TB_DATA_STAGE_LSB     = TB_DATA_FLOW_ID_LSB + FLOW_ID_WIDTH;
     localparam integer TB_DATA_VALUE_LSB     = TB_DATA_STAGE_LSB + 8;
     localparam integer TB_DATA_SRC_CORE_LSB  = TB_DATA_VALUE_LSB + DATA_WIDTH;
-    localparam integer TB_DATA_PAYLOAD_WIDTH = TB_DATA_SRC_CORE_LSB + TB_CORE_ID_WIDTH;
+    // Fast-path fields, appended in exactly the order wau_top's own
+    // DATA_*_LSB chain appends them (see verilog_emit.py's _render_top) --
+    // this trace decodes the real, generated payload, so drift here would
+    // silently desync the two the same way AGENTS.md's "Viewer route
+    // drifting from the emitted router" pitfall warns about for routing.
+    localparam integer TB_DATA_IS_FAST_PATH_LSB = TB_DATA_SRC_CORE_LSB + TB_CORE_ID_WIDTH;
+    localparam integer TB_DATA_NEXT_STAGE_LSB   = TB_DATA_IS_FAST_PATH_LSB + 1;
+    localparam integer TB_DATA_NEXT_OPCODE_LSB  = TB_DATA_NEXT_STAGE_LSB + 8;
+    localparam integer TB_DATA_NEXT_USE_IMM_LSB = TB_DATA_NEXT_OPCODE_LSB + OPCODE_WIDTH;
+    localparam integer TB_DATA_NEXT_IMM_LSB     = TB_DATA_NEXT_USE_IMM_LSB + 1;
+    localparam integer TB_DATA_B_REG_LSB        = TB_DATA_NEXT_IMM_LSB + DATA_WIDTH;
+    localparam integer TB_DATA_PAYLOAD_WIDTH    = TB_DATA_B_REG_LSB + DATA_WIDTH;
 
     reg clk;
     reg rst_n;
@@ -159,25 +170,42 @@ module tb_wau_viewer;
                 // exposes the per-link/per-core data movement the viewer animates
                 // (src core -> this core), previously not present in the trace.
                 if (dut.data_local_out_valid[core_i] && dut.data_local_out_ready[core_i]) begin
-                    $fwrite(trace_f, " ddeliv=1 ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d",
+                    $fwrite(trace_f, " ddeliv=1 ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d ddeliv_fastpath=%%0d",
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_SRC_CORE_LSB +: TB_CORE_ID_WIDTH],
                         $signed(dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_VALUE_LSB +: DATA_WIDTH]),
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH],
-                        dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8]);
+                        dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8],
+                        dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_IS_FAST_PATH_LSB +: 1]);
+                    if (dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_IS_FAST_PATH_LSB +: 1]) begin
+                        $fwrite(trace_f, " ddeliv_next_stage=%%0d ddeliv_next_op=%%0d",
+                            dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_NEXT_STAGE_LSB +: 8],
+                            dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_NEXT_OPCODE_LSB +: OPCODE_WIDTH]);
+                    end
                 end else if (core_i == TB_COORDINATOR_CORE) begin
                     // With one highway per line a result leaves the fabric at
                     // its line's hub, not at a core's local port. The result
                     // arbiter grants a single line per cycle, so at most one
                     // hub handshakes here; attribute it to the coordinator,
                     // which is where the value actually lands.
+                    //
+                    // ddeliv_fastpath=1 here specifically means a fast-path-
+                    // tagged packet whose destination was on a *different*
+                    // highway line: there is no hub-to-hub bridge, so it was
+                    // absorbed by the coordinator instead of ever reaching
+                    // its intended core (safe -- see wau_coordinator's
+                    // relaxed result matching -- but not a speedup for that
+                    // hop). ddeliv_next_stage/_next_op are meaningless here
+                    // (the coordinator ignores them), so unlike the per-core
+                    // branch above they are not emitted.
                     for (deliv_line = 0; deliv_line < TB_LINE_COUNT; deliv_line = deliv_line + 1) begin
                         if (dut.data_hub_out_valid[deliv_line] && dut.data_hub_out_ready[deliv_line]) begin
-                            $fwrite(trace_f, " ddeliv=1 ddeliv_line=%%0d ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d",
+                            $fwrite(trace_f, " ddeliv=1 ddeliv_line=%%0d ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d ddeliv_fastpath=%%0d",
                                 deliv_line,
                                 dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_SRC_CORE_LSB +: TB_CORE_ID_WIDTH],
                                 $signed(dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_VALUE_LSB +: DATA_WIDTH]),
                                 dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH],
-                                dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8]);
+                                dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8],
+                                dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_IS_FAST_PATH_LSB +: 1]);
                         end
                     end
                 end

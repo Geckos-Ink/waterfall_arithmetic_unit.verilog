@@ -65,6 +65,16 @@ class CoreState:
     # Set when the delivery left the fabric at a highway line's hub rather than
     # at this core's local port (the default `lines` topology).
     ddeliv_line: Optional[int] = None
+    # Fast-path delivery (compiler.build_fast_path_tables / wau_core_station):
+    # this data-plane delivery is a core handing its result directly to the
+    # next stage's core instead of routing back through wau_coordinator.
+    # ddeliv_next_stage/_next_op are only set when ddeliv_fastpath is true,
+    # and only for a genuine per-core delivery -- a hub delivery tagged
+    # fastpath means the hop crossed highway lines and was safely absorbed
+    # by the coordinator instead (no per-core next-stage info to show).
+    ddeliv_fastpath: bool = False
+    ddeliv_next_stage: Optional[int] = None
+    ddeliv_next_op: Optional[int] = None
     # Highway contract bus. `highway_request` is the core wanting the data
     # highway at all; `highway_call` is that request landing on the core's own
     # offered slot -- the cycle it actually calls the highway; `highway_holder`
@@ -253,6 +263,11 @@ def parse_trace(path: Path) -> ParsedTrace:
                     cs.ddeliv_stage_id = _to_int(kv.get("ddeliv_stage", "0"))
                     if "ddeliv_line" in kv:
                         cs.ddeliv_line = _to_int(kv["ddeliv_line"])
+                    cs.ddeliv_fastpath = kv.get("ddeliv_fastpath") == "1"
+                    if "ddeliv_next_stage" in kv:
+                        cs.ddeliv_next_stage = _to_int(kv["ddeliv_next_stage"])
+                    if "ddeliv_next_op" in kv:
+                        cs.ddeliv_next_op = _to_int(kv["ddeliv_next_op"])
                 cs.highway_request = kv.get("hwy_req") == "1"
                 cs.highway_call = kv.get("hwy_call") == "1"
                 cs.highway_holder = kv.get("hwy_hold") == "1"

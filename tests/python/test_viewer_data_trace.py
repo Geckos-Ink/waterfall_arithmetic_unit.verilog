@@ -65,6 +65,43 @@ class DataTraceParserTests(unittest.TestCase):
         self.assertFalse(core1.data_delivered)
         self.assertTrue(core1.dispatched)
 
+    def test_parses_fast_path_delivery_fields(self) -> None:
+        import tempfile
+
+        trace_text = (
+            "# wau-pipelines-viewer trace v1\n"
+            "META grid_x=3 grid_y=2 core_count=6 stim_count=1 line_count=2 line_size=3\n"
+            "@CYCLE 5\n"
+            "HOST_IN v=0 r=1 flow=0 a=0 b=0\n"
+            "HOST_OUT v=0 r=1 flow=0 val=0\n"
+            "CORE 0 busy=0 cache_hit=0 ddeliv=1 ddeliv_src=1 ddeliv_val=14 ddeliv_flow=1"
+            " ddeliv_stage=0 ddeliv_fastpath=1 ddeliv_next_stage=1 ddeliv_next_op=3"
+            " hwy_req=0 hwy_call=0 hwy_hold=0 cache_h_count=0 cache_l_count=1\n"
+            "CORE 1 busy=0 cache_hit=0 ddeliv=1 ddeliv_src=2 ddeliv_val=38 ddeliv_flow=1"
+            " ddeliv_stage=2 ddeliv_fastpath=0"
+            " hwy_req=0 hwy_call=0 hwy_hold=0 cache_h_count=0 cache_l_count=0\n"
+            "OBS hops=4 stalls=0 forwards=2 deliv=2 cache_h=0 cache_l=1\n"
+            "@END total_cycles=5 outputs_seen=1\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "trace.log"
+            p.write_text(trace_text)
+            trace = parse_trace(p)
+
+        snap = trace.cycles[0]
+        core0 = next(c for c in snap.cores if c.core_index == 0)
+        self.assertTrue(core0.data_delivered)
+        self.assertTrue(core0.ddeliv_fastpath)
+        self.assertEqual(core0.ddeliv_next_stage, 1)
+        self.assertEqual(core0.ddeliv_next_op, 3)
+
+        # A legacy (non-fast-path) delivery must not report next-stage fields.
+        core1 = next(c for c in snap.cores if c.core_index == 1)
+        self.assertTrue(core1.data_delivered)
+        self.assertFalse(core1.ddeliv_fastpath)
+        self.assertIsNone(core1.ddeliv_next_stage)
+        self.assertIsNone(core1.ddeliv_next_op)
+
     def test_parses_highway_contract_bus_records(self) -> None:
         import tempfile
 
@@ -183,6 +220,46 @@ class DataTraceEndToEndTests(unittest.TestCase):
         # at least one data-plane delivery with a real source core + value.
         self.assertTrue(deliveries, "no data-plane deliveries captured from RTL")
         self.assertTrue(any(c.ddeliv_value not in (None, 0) for c in deliveries))
+
+    def test_fast_path_delivery_is_captured_from_real_rtl(self) -> None:
+        """`compiler.station_program.enabled=true` (see
+        src/python/configs/wau_station_program_demo.json, proven end-to-end
+        by tests/rtl/tb_wau_core_fast_path_overlap.v) must show up in the
+        viewer's own trace, not just in a dedicated RTL testbench."""
+        import tempfile
+
+        from waugen.compiler import compile_project
+        from waugen.config import load_config
+        from waugen.scheduler import build_schedule
+        from waugen.verilog_emit import emit_verilog
+        from wau_viewer.simulator import IverilogRunner
+
+        config_path = REPO_ROOT / "src/python/configs/wau_station_program_demo.json"
+        with tempfile.TemporaryDirectory() as td:
+            rtl_dir = Path(td)
+            project = compile_project(load_config(config_path))
+            schedule = build_schedule(project)
+            emit_verilog(project, schedule, rtl_dir)
+
+            # Flow 1 "accumulate_and_scale": (0,0)->(1,0)->(2,0), both interior
+            # transitions have a fast-path entry (see wau_program.json's
+            # station_program section for this config).
+            runner = IverilogRunner(rtl_dir)
+            res = runner.run([1], [10], [4], max_cycles=400)
+            trace = parse_trace(res.trace_path)
+
+        fast_path_deliveries = [
+            c
+            for snap in trace.cycles
+            for c in snap.cores
+            if c.data_delivered and c.ddeliv_fastpath
+        ]
+        self.assertTrue(
+            fast_path_deliveries, "no fast-path delivery captured from real RTL"
+        )
+        self.assertTrue(
+            any(c.ddeliv_next_stage is not None for c in fast_path_deliveries)
+        )
 
     def test_highway_calls_are_captured_from_real_rtl(self) -> None:
         from wau_viewer.simulator import IverilogRunner

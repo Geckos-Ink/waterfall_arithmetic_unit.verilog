@@ -607,3 +607,153 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
         )
 
     return CompiledProject(config=config, flows=tuple(compiled_flows), core_load=core_load)
+
+
+def _core_index_for(coord: Coord, *, grid_x: int, grid_y: int) -> int:
+    """Mirrors `scheduler.core_index`'s formula exactly. Duplicated (rather
+    than imported) because `scheduler.py` imports from `compiler.py`, and this
+    module must not import back from it."""
+    return (coord.z * grid_x * grid_y) + (coord.y * grid_x) + coord.x
+
+
+@dataclass(frozen=True)
+class FastPathHop:
+    """One per-core fast-path table entry: what a core should do with a
+    completed (flow_id, stage_index) result, if that stage is not the flow's
+    last. `concurrence_id` is the entry's ordinal position within its core's
+    table (assigned deterministically in `build_fast_path_tables`) -- it
+    exists to bound and report per-core table capacity; the RTL lookup itself
+    is keyed by (flow_id, stage_index), not by this id."""
+
+    concurrence_id: int
+    next_stage_index: int
+    next_opcode: int
+    next_use_immediate: bool
+    next_immediate_b: int | None
+    next_dst_primary: int
+    next_dst_fallback: int  # == next_dst_primary when no real alternate is offered
+
+
+@dataclass(frozen=True)
+class CoreFastPathTable:
+    core_index: int
+    hops: dict[tuple[int, int], FastPathHop]
+    overflowed_keys: tuple[tuple[int, int], ...]
+
+
+def build_fast_path_tables(
+    project: CompiledProject,
+    *,
+    table_bits: int,
+    excluded_destinations: frozenset[int] = frozenset(),
+) -> tuple[CoreFastPathTable, ...]:
+    """Derive each core's static fast-path dispatch table from the already-
+    compiled placement -- never from `SchedulePlan`, since the dynamic
+    coordinator (and therefore this table, which must stay consistent with it)
+    only ever dispatches to a stage's `primary_core` or `fallback_core`, while
+    a schedule-time pick can legitimately land on a third `prefer_balance`
+    candidate for offline timeline/contract-ROM bookkeeping only.
+
+    A flow's last stage never gets an entry: that structurally guarantees
+    every flow chain still reaches the coordinator's hub eventually, however
+    long a fast-path run in between, which is what keeps flow completion
+    detection correct. This is a read-only analysis pass -- it does not
+    change any placement decision `compile_project` already made.
+
+    `excluded_destinations` lets the emitter (verilog_emit.py) veto specific
+    physical core indices as fast-path targets. This exists for the `chain`/
+    `matrix` highway topologies, where the coordinator shares one physical
+    core's own local data-plane port (`COORDINATOR_CORE_INDEX`, always core
+    0) rather than owning a dedicated one (unlike `lines`, where every core's
+    local port is exclusively its own). A fast-path packet routed to that
+    shared port would be misread as a coordinator-bound legacy result instead
+    of reaching that core's own station. When a hop's primary destination is
+    excluded, the whole entry is skipped -- that stage transition simply keeps
+    using the always-correct legacy coordinator path, exactly like a
+    capacity overflow. When only the fallback candidate is excluded, the hop
+    still gets an entry with just its primary destination."""
+    grid_x = project.config.device.grid_x
+    grid_y = project.config.device.grid_y
+    core_count = grid_x * grid_y * project.config.device.grid_z
+    allow_adaptive_reroute = project.config.compiler.allow_adaptive_reroute
+
+    capacity = 1 << table_bits
+    # pending[core_index][(flow_id, stage_index)] = FastPathHop stub (no concurrence_id yet)
+    pending: dict[int, dict[tuple[int, int], FastPathHop]] = {
+        idx: {} for idx in range(core_count)
+    }
+
+    for flow in project.flows:
+        stages = flow.stages
+        for stage_index in range(len(stages) - 1):
+            stage = stages[stage_index]
+            next_stage = stages[stage_index + 1]
+
+            producer_indices = {
+                _core_index_for(stage.primary_core, grid_x=grid_x, grid_y=grid_y)
+            }
+            if stage.fallback_core is not None:
+                producer_indices.add(
+                    _core_index_for(stage.fallback_core, grid_x=grid_x, grid_y=grid_y)
+                )
+
+            next_dst_primary = _core_index_for(
+                next_stage.primary_core, grid_x=grid_x, grid_y=grid_y
+            )
+            if next_dst_primary in excluded_destinations:
+                # This stage transition can never be a fast-path hop (its
+                # destination shares a port the coordinator itself owns);
+                # leave it out entirely so the legacy path handles it.
+                continue
+
+            next_dst_fallback = next_dst_primary
+            if (
+                next_stage.fallback_core is not None
+                and next_stage.allow_adaptive
+                and allow_adaptive_reroute
+            ):
+                candidate = _core_index_for(
+                    next_stage.fallback_core, grid_x=grid_x, grid_y=grid_y
+                )
+                if candidate != next_dst_primary and candidate not in excluded_destinations:
+                    next_dst_fallback = candidate
+
+            hop_stub = FastPathHop(
+                concurrence_id=-1,  # assigned per-core below
+                next_stage_index=next_stage.stage_index,
+                next_opcode=next_stage.opcode,
+                next_use_immediate=next_stage.immediate_b is not None,
+                next_immediate_b=next_stage.immediate_b,
+                next_dst_primary=next_dst_primary,
+                next_dst_fallback=next_dst_fallback,
+            )
+            key = (flow.flow_id, stage_index)
+            for producer in producer_indices:
+                pending[producer][key] = hop_stub
+
+    tables: list[CoreFastPathTable] = []
+    for idx in range(core_count):
+        ordered_keys = sorted(pending[idx].keys())
+        hops: dict[tuple[int, int], FastPathHop] = {}
+        overflowed: list[tuple[int, int]] = []
+        for concurrence_id, key in enumerate(ordered_keys):
+            stub = pending[idx][key]
+            if concurrence_id >= capacity:
+                overflowed.append(key)
+                continue
+            hops[key] = FastPathHop(
+                concurrence_id=concurrence_id,
+                next_stage_index=stub.next_stage_index,
+                next_opcode=stub.next_opcode,
+                next_use_immediate=stub.next_use_immediate,
+                next_immediate_b=stub.next_immediate_b,
+                next_dst_primary=stub.next_dst_primary,
+                next_dst_fallback=stub.next_dst_fallback,
+            )
+        tables.append(
+            CoreFastPathTable(
+                core_index=idx, hops=hops, overflowed_keys=tuple(overflowed)
+            )
+        )
+
+    return tuple(tables)

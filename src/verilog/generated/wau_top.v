@@ -67,7 +67,27 @@ module wau_top #(
     localparam integer DATA_STAGE_LSB = DATA_FLOW_ID_LSB + FLOW_ID_WIDTH;
     localparam integer DATA_VALUE_LSB = DATA_STAGE_LSB + 8;
     localparam integer DATA_SRC_CORE_LSB = DATA_VALUE_LSB + DATA_WIDTH;
-    localparam integer DATA_PAYLOAD_WIDTH = DATA_SRC_CORE_LSB + CORE_ID_WIDTH;
+    // Fast-path fields, appended after the original (unmoved) result fields
+    // above -- coord_result_* keeps reading only those original ranges, so
+    // the coordinator needs no awareness of this widening. Internal mesh
+    // payload width, not part of the frozen host-facing ABI.
+    localparam integer DATA_IS_FAST_PATH_LSB = DATA_SRC_CORE_LSB + CORE_ID_WIDTH;
+    localparam integer DATA_NEXT_STAGE_LSB = DATA_IS_FAST_PATH_LSB + 1;
+    localparam integer DATA_NEXT_OPCODE_LSB = DATA_NEXT_STAGE_LSB + 8;
+    localparam integer DATA_NEXT_USE_IMM_LSB = DATA_NEXT_OPCODE_LSB + OPCODE_WIDTH;
+    localparam integer DATA_NEXT_IMM_LSB = DATA_NEXT_USE_IMM_LSB + 1;
+    localparam integer DATA_B_REG_LSB = DATA_NEXT_IMM_LSB + DATA_WIDTH;
+    localparam integer DATA_PAYLOAD_WIDTH = DATA_B_REG_LSB + DATA_WIDTH;
+
+    localparam integer STATION_PROGRAM_ENABLE = `WAU_STATION_PROGRAM_ENABLE;
+    // Reserved destination meaning "route to the coordinator" for this
+    // topology -- HUB_DST under `lines` (every core owns its own port, so a
+    // fast-path hop leaves through its own line's hub like any other
+    // off-line traffic), or core 0 under `chain`/`matrix` (the coordinator
+    // shares that core's own local port -- see build_fast_path_tables'
+    // excluded_destinations, which keeps a fast-path hop from ever being
+    // routed there in the first place).
+    localparam [CORE_ID_WIDTH-1:0] COORD_DST_SENTINEL = HUB_DST;
 
     wire [CORE_COUNT-1:0] core_dispatch_valid;
     wire [CORE_COUNT-1:0] core_dispatch_ready;
@@ -88,6 +108,31 @@ module wau_top #(
     wire [CORE_COUNT-1:0] core_cache_hit;
     wire [CORE_COUNT*32-1:0] core_cache_hit_count;
     wire [CORE_COUNT*32-1:0] core_cache_lookup_count;
+
+    // Fast-path result-side buses (see wau_core_station), fed from every
+    // core's new result_* outputs and unpacked into the data-plane payload
+    // by _CORE_DISPATCH_UNPACK.
+    wire [CORE_COUNT*DATA_WIDTH-1:0] core_result_b_reg;
+    wire [CORE_COUNT-1:0] core_result_is_fast_path;
+    wire [CORE_COUNT*CORE_ID_WIDTH-1:0] core_result_dst_core;
+    wire [CORE_COUNT*8-1:0] core_result_next_stage_id;
+    wire [CORE_COUNT*OPCODE_WIDTH-1:0] core_result_next_opcode;
+    wire [CORE_COUNT-1:0] core_result_next_use_immediate;
+    wire [CORE_COUNT*DATA_WIDTH-1:0] core_result_next_immediate_b;
+
+    // Fast-path self-dispatch buses: a peer core's fast-path hop, delivered
+    // to this core via the data plane's local port instead of the
+    // coordinator's control plane. See _CORE_DISPATCH_UNPACK for how these
+    // are unpacked from data_local_out_*.
+    wire [CORE_COUNT-1:0] core_self_dispatch_valid;
+    wire [CORE_COUNT-1:0] core_self_dispatch_ready;
+    wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_self_dispatch_flow_id;
+    wire [CORE_COUNT*OPCODE_WIDTH-1:0] core_self_dispatch_opcode;
+    wire [CORE_COUNT*DATA_WIDTH-1:0] core_self_dispatch_a;
+    wire [CORE_COUNT*DATA_WIDTH-1:0] core_self_dispatch_b_reg;
+    wire [CORE_COUNT-1:0] core_self_dispatch_use_immediate;
+    wire [CORE_COUNT*DATA_WIDTH-1:0] core_self_dispatch_immediate_b;
+    wire [CORE_COUNT*8-1:0] core_self_dispatch_stage_id;
 
     wire coord_dispatch_valid;
     wire coord_dispatch_ready;
@@ -167,6 +212,11 @@ module wau_top #(
     // rather than sharing core 0's port. Dispatch is steered to the hub that
     // owns the destination core, and results arrive back from whichever line
     // produced them.
+    //
+    // No core shares its local data-plane port with the coordinator here, so
+    // every core's inbound data-plane traffic is genuinely its own
+    // fast-path self-dispatch (see _CORE_DISPATCH_UNPACK).
+    localparam CORE_SHARES_COORDINATOR_PORT = 1'b0;
     genvar core_i;
     generate
         for (core_i = 0; core_i < CORE_COUNT; core_i = core_i + 1) begin : gen_local_binding
@@ -194,17 +244,63 @@ module wau_top #(
             assign data_local_in_valid[core_i] = core_result_valid[core_i];
             assign core_result_ready[core_i] = data_local_in_ready[core_i];
             assign data_local_in_payload[(core_i*DATA_PAYLOAD_WIDTH) +: DATA_PAYLOAD_WIDTH] = {
+                core_result_b_reg[(core_i*DATA_WIDTH) +: DATA_WIDTH],
+                core_result_next_immediate_b[(core_i*DATA_WIDTH) +: DATA_WIDTH],
+                core_result_next_use_immediate[core_i],
+                core_result_next_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH],
+                core_result_next_stage_id[(core_i*8) +: 8],
+                core_result_is_fast_path[core_i],
                 core_i[CORE_ID_WIDTH-1:0],
                 core_result_value[(core_i*DATA_WIDTH) +: DATA_WIDTH],
                 core_result_stage_id[(core_i*8) +: 8],
                 core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]
             };
-            // Results are addressed to the reserved off-line id, so each one
-            // walks west along its own line and leaves through that line's hub.
-            assign data_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = HUB_DST;
 
-            // No data packet is ever delivered *to* a core.
-            assign data_local_out_ready[core_i] = 1'b1;
+            // Fast-path self-dispatch: unpack whatever the mesh delivers to
+            // this core's local data-plane inbound port into a dispatch-
+            // shaped bundle for wau_core's self_dispatch_* port. Structurally
+            // inert while nothing ever routes here (today: while
+            // WAU_STATION_PROGRAM_ENABLE is 0 everywhere). Under chain/matrix,
+            // core 0's inbound data-plane traffic is always coordinator-bound
+            // (CORE_SHARES_COORDINATOR_PORT), never a genuine self-dispatch --
+            // forced to 0 here rather than risk misreading an ordinary
+            // legacy/final-stage result as one. Each fabric-binding template
+            // drives data_local_out_ready itself (it differs for that one
+            // shared core), not here.
+            assign core_self_dispatch_valid[core_i] =
+                (CORE_SHARES_COORDINATOR_PORT && (core_i == COORDINATOR_CORE_INDEX))
+                    ? 1'b0
+                    : data_local_out_valid[core_i];
+            assign core_self_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH] =
+                data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH];
+            assign core_self_dispatch_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH] =
+                data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_NEXT_OPCODE_LSB +: OPCODE_WIDTH];
+            assign core_self_dispatch_a[(core_i*DATA_WIDTH) +: DATA_WIDTH] =
+                data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_VALUE_LSB +: DATA_WIDTH];
+            assign core_self_dispatch_b_reg[(core_i*DATA_WIDTH) +: DATA_WIDTH] =
+                data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_B_REG_LSB +: DATA_WIDTH];
+            assign core_self_dispatch_use_immediate[core_i] =
+                data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_NEXT_USE_IMM_LSB +: 1];
+            assign core_self_dispatch_immediate_b[(core_i*DATA_WIDTH) +: DATA_WIDTH] =
+                data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_NEXT_IMM_LSB +: DATA_WIDTH];
+            assign core_self_dispatch_stage_id[(core_i*8) +: 8] =
+                data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_NEXT_STAGE_LSB +: 8];
+            // Each core's own result is routed to whatever
+            // wau_core_station decided (COORD_DST_SENTINEL = HUB_DST for a
+            // legacy/final-stage result, degenerating to exactly the old
+            // hardwired behaviour when the fast-path table is empty; a real
+            // core index for a fast-path hit, which walks west along its own
+            // line and leaves through that line's hub -- or straight across
+            // if the destination is on this same line -- exactly like any
+            // other off-line traffic).
+            assign data_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] =
+                core_result_dst_core[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH];
+
+            // Every core owns its local data-plane port exclusively under
+            // `lines` (no coordinator-sharing), so a fast-path packet may
+            // land on any core: drain readiness from that core's own
+            // self-dispatch station.
+            assign data_local_out_ready[core_i] = core_self_dispatch_ready[core_i];
         end
     endgenerate
 
@@ -478,7 +574,10 @@ module wau_top #(
                     .CORE_INDEX(CORE_INDEX),
                     .DATA_WIDTH(DATA_WIDTH),
                     .FLOW_ID_WIDTH(FLOW_ID_WIDTH),
-                    .OPCODE_WIDTH(OPCODE_WIDTH)
+                    .OPCODE_WIDTH(OPCODE_WIDTH),
+                    .CORE_COUNT(CORE_COUNT),
+                    .STATION_PROGRAM_ENABLE(STATION_PROGRAM_ENABLE),
+                    .COORD_DST_SENTINEL(COORD_DST_SENTINEL)
                 ) core_u (
                     .clk(clk),
                     .rst_n(rst_n),
@@ -491,11 +590,28 @@ module wau_top #(
                     .dispatch_use_immediate(core_dispatch_use_immediate[CORE_INDEX]),
                     .dispatch_immediate_b(core_dispatch_immediate_b[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
                     .dispatch_stage_id(core_dispatch_stage_id[(CORE_INDEX*8) +: 8]),
+                    .self_dispatch_valid(core_self_dispatch_valid[CORE_INDEX]),
+                    .self_dispatch_ready(core_self_dispatch_ready[CORE_INDEX]),
+                    .self_dispatch_flow_id(core_self_dispatch_flow_id[(CORE_INDEX*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]),
+                    .self_dispatch_opcode(core_self_dispatch_opcode[(CORE_INDEX*OPCODE_WIDTH) +: OPCODE_WIDTH]),
+                    .self_dispatch_a(core_self_dispatch_a[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
+                    .self_dispatch_b_reg(core_self_dispatch_b_reg[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
+                    .self_dispatch_use_immediate(core_self_dispatch_use_immediate[CORE_INDEX]),
+                    .self_dispatch_immediate_b(core_self_dispatch_immediate_b[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
+                    .self_dispatch_stage_id(core_self_dispatch_stage_id[(CORE_INDEX*8) +: 8]),
+                    .peer_busy(core_busy),
                     .result_valid(core_result_valid[CORE_INDEX]),
                     .result_ready(core_result_ready[CORE_INDEX]),
                     .result_flow_id(core_result_flow_id[(CORE_INDEX*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]),
                     .result_stage_id(core_result_stage_id[(CORE_INDEX*8) +: 8]),
                     .result_value(core_result_value[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
+                    .result_b_reg(core_result_b_reg[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
+                    .result_is_fast_path(core_result_is_fast_path[CORE_INDEX]),
+                    .result_dst_core(core_result_dst_core[(CORE_INDEX*CORE_ID_WIDTH) +: CORE_ID_WIDTH]),
+                    .result_next_stage_id(core_result_next_stage_id[(CORE_INDEX*8) +: 8]),
+                    .result_next_opcode(core_result_next_opcode[(CORE_INDEX*OPCODE_WIDTH) +: OPCODE_WIDTH]),
+                    .result_next_use_immediate(core_result_next_use_immediate[CORE_INDEX]),
+                    .result_next_immediate_b(core_result_next_immediate_b[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
                     .busy(core_busy[CORE_INDEX]),
                     .cache_hit(core_cache_hit[CORE_INDEX]),
                     .cache_hit_count(core_cache_hit_count[(CORE_INDEX*32) +: 32]),

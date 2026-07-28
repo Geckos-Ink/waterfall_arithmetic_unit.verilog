@@ -74,6 +74,8 @@ jobs:
           path: |
             src/verilog/generated/**
             .build/iverilog/matrix_rtl/**
+            .build/iverilog/wau_station_program_demo_rtl/**
+            .build/iverilog/wau_station_program_overflow_demo_rtl/**
           if-no-files-found: warn
           retention-days: 14
 

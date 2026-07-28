@@ -39,6 +39,10 @@
 // Highway topology: lines (3 router ports per core, 2 highway line(s) of 3 core(s))
 // Contract bus modes: 0=pong, 1=burst, 2=stream, 3=reserve
 // Supported data types: int32, float16
+`define WAU_STATION_PROGRAM_ENABLE 0
+`define WAU_STATION_PROGRAM_TABLE_BITS 5
+// Per-core fast-path table: disabled (32 entries/core when enabled)
+`define WAU_DEFAULT_AUTO_ADAPT 1
 
 `define WAU_OPCODE_ADD 8'h01
 `define WAU_LATENCY_ADD 8'd1

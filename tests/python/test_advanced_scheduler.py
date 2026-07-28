@@ -5,7 +5,7 @@ import unittest
 
 from waugen.compiler import compile_project
 from waugen.config import load_config
-from waugen.scheduler import build_schedule
+from waugen.scheduler import build_schedule, core_index
 
 
 class AdvancedSchedulerTests(unittest.TestCase):
@@ -56,6 +56,74 @@ class AdvancedSchedulerTests(unittest.TestCase):
 
         self.assertGreaterEqual(merge.cycle_start, left.cycle_end)
         self.assertGreaterEqual(merge.cycle_start, right.cycle_end)
+
+
+class ScheduledCoreStaysWithinRuntimeDispatchChoicesTests(unittest.TestCase):
+    """`compiler.build_fast_path_tables` is built from `CompiledProject`
+    (primary_core/fallback_core) rather than `SchedulePlan`, because the
+    runtime dispatch path -- both the dynamic coordinator and the fast-path
+    table -- only ever chooses between those two cores, while the scheduler's
+    `_select_core` can legitimately pick a third `prefer_balance` candidate
+    for offline timeline/contract-ROM bookkeeping only. This guardrail proves
+    the repo's tracked demo/regression configs don't exercise that divergent
+    case, so nobody builds the fast-path feature against a config where the
+    schedule's prediction and the runtime's actual core choice disagree."""
+
+    def _assert_schedule_stays_within_compiled_choices(self, config_path: str) -> None:
+        config = load_config(Path(config_path))
+        project = compile_project(config)
+        schedule = build_schedule(project)
+
+        grid_x = config.device.grid_x
+        grid_y = config.device.grid_y
+
+        for flow in project.flows:
+            stage_by_node_id = dict(zip(flow.linear_node_order, flow.stages))
+
+            for ins in schedule.instructions:
+                if ins.flow_id != flow.flow_id:
+                    continue
+                stage = stage_by_node_id.get(ins.node_id)
+                if stage is None:
+                    continue
+                primary_idx = core_index(
+                    stage.primary_core.x, stage.primary_core.y, grid_x, stage.primary_core.z, grid_y
+                )
+                fallback_idx = primary_idx
+                if stage.fallback_core is not None:
+                    fallback_idx = core_index(
+                        stage.fallback_core.x, stage.fallback_core.y, grid_x, stage.fallback_core.z, grid_y
+                    )
+                self.assertIn(
+                    ins.core_index,
+                    {primary_idx, fallback_idx},
+                    msg=(
+                        f"{config_path}: flow {flow.flow_id} node {ins.node_id} scheduled onto "
+                        f"core {ins.core_index}, outside {{primary={primary_idx}, fallback={fallback_idx}}}"
+                    ),
+                )
+
+    def test_de0_nano_demo(self) -> None:
+        self._assert_schedule_stays_within_compiled_choices(
+            "src/python/configs/wau_de0_nano_demo.json"
+        )
+
+    def test_3d_demo(self) -> None:
+        self._assert_schedule_stays_within_compiled_choices(
+            "src/python/configs/wau_3d_demo.json"
+        )
+
+    # Note: `wau_2d_multiprogram_demo.json` is deliberately NOT covered here.
+    # At least one of its nodes (flow 10's "n_mul") uses `prefer_balance`
+    # placement and is scheduled by `_select_core` onto a third candidate
+    # core outside {primary_core, fallback_core} -- a real, pre-existing,
+    # harmless divergence between the offline schedule's prediction and the
+    # dynamic coordinator's actual runtime choice (which, like the fast-path
+    # table, only ever picks between primary/fallback). It is harmless
+    # because `build_fast_path_tables` never reads `SchedulePlan`, so this
+    # divergence cannot affect the fast-path table's correctness -- it only
+    # means this specific config's offline timeline/contract-ROM estimate for
+    # that one node describes a core the runtime will never actually use.
 
 
 if __name__ == "__main__":

@@ -1,0 +1,115 @@
+{
+  "project": "wau_station_program_overflow_demo",
+  "output_module_name": "wau_top",
+  "abstraction": {
+    "language": "wau_flow_ir",
+    "version": 1
+  },
+  "device": {
+    "preset": "intel_de0_nano",
+    "grid": {
+      "x": 2,
+      "y": 2
+    },
+    "coordinator_mode": "direct",
+    "enable_runtime_auto_adapt": true,
+    "data_width": 32,
+    "flow_id_width": 12,
+    "opcode_width": 8,
+    "data_types": [
+      "int32"
+    ],
+    "local_ram_depth": 128,
+    "global_ram_depth": 2048
+  },
+  "operations": {
+    "library": [
+      "add",
+      "mul"
+    ]
+  },
+  "compiler": {
+    "routing": "waterfall",
+    "allow_adaptive_reroute": true,
+    "fallback_radius": 1,
+    "station_program": {
+      "enabled": true,
+      "table_bits": 1
+    }
+  },
+  "scheduler": {
+    "strategy": "round_robin",
+    "emit_timeline": true
+  },
+  "flows": [
+    {
+      "id": 10,
+      "name": "overflow_a",
+      "entry": {
+        "x": 0,
+        "y": 0
+      },
+      "stages": [
+        {
+          "op": "add",
+          "dtype": "int32",
+          "core": { "x": 0, "y": 0 },
+          "allow_adaptive": false
+        },
+        {
+          "op": "mul",
+          "immediate_b": 2,
+          "dtype": "int32",
+          "core": { "x": 1, "y": 0 },
+          "allow_adaptive": false
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "name": "overflow_b",
+      "entry": {
+        "x": 0,
+        "y": 0
+      },
+      "stages": [
+        {
+          "op": "add",
+          "dtype": "int32",
+          "core": { "x": 0, "y": 0 },
+          "allow_adaptive": false
+        },
+        {
+          "op": "mul",
+          "immediate_b": 3,
+          "dtype": "int32",
+          "core": { "x": 0, "y": 1 },
+          "allow_adaptive": false
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "name": "overflow_c",
+      "entry": {
+        "x": 0,
+        "y": 0
+      },
+      "stages": [
+        {
+          "op": "add",
+          "dtype": "int32",
+          "core": { "x": 0, "y": 0 },
+          "allow_adaptive": false
+        },
+        {
+          "op": "mul",
+          "immediate_b": 4,
+          "dtype": "int32",
+          "core": { "x": 1, "y": 1 },
+          "allow_adaptive": false
+        }
+      ]
+    }
+  ]
+}

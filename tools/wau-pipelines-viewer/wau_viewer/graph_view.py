@@ -94,6 +94,12 @@ COLOR_PACKET_OP = QColor("#5fd0a0")      # operands flowing toward a core
 COLOR_PACKET_RESULT = QColor("#3f9cff")  # result data flowing back
 COLOR_PACKET_HOST = QColor("#e8e2c0")    # final value handed back to the host
 COLOR_OP_FLASH = QColor("#ffc94d")       # the operation applied at the core
+# A fast-path hop (compiler.build_fast_path_tables): a core handing its
+# result straight to the next stage's core instead of routing back through
+# the coordinator. Reuses COLOR_HWY_CALL's amber rather than inventing a new
+# hue, since both mark "this core is driving the highway on its own terms"
+# rather than waiting on the coordinator's dispatch.
+COLOR_PACKET_FASTPATH = COLOR_HWY_CALL
 PACKET_SIZE = 54.0
 LANE_OFFSET = 18.0
 
@@ -516,6 +522,7 @@ class WauScene(QGraphicsScene):
             ("■ operands → core", COLOR_PACKET_OP),
             ("■ op applied", COLOR_OP_FLASH),
             ("■ result over data mesh", COLOR_PACKET_RESULT),
+            ("■ fast-path hop (core → core)", COLOR_PACKET_FASTPATH),
             ("■ output → host", COLOR_PACKET_HOST),
             ("■ core calls highway", COLOR_HWY_CALL),
             ("■ holds highway (contract)", COLOR_HWY_HOLD),
@@ -839,15 +846,28 @@ class WauScene(QGraphicsScene):
                     t1=PHASE_EXEC[1],
                 ))
 
-            # 3) result data travelling over the data mesh (pop where it lands)
+            # 3) result data travelling over the data mesh (pop where it lands).
+            # A fast-path hop (ddeliv_fastpath) is a direct core-to-core
+            # handoff with no "return to the coordinator" leg of its own, so
+            # it gets a visually distinct amber track (COLOR_PACKET_FASTPATH,
+            # matching the highway-call convention) and shows the next
+            # operation it is about to run rather than just the raw value.
             n = len(delivery_events)
             for i, c in enumerate(delivery_events):
                 if c.ddeliv_src not in self.core_items:
                     continue
                 lane = i - (n - 1) / 2.0
                 points, links = self._route_points(c.ddeliv_src, c.core_index, lane)
-                self._add_track(points, links, str(c.ddeliv_value),
-                                COLOR_PACKET_RESULT, PHASE_RESULT, pop=True)
+                if c.ddeliv_fastpath:
+                    op_name = self.model.opcode_to_name.get(
+                        c.ddeliv_next_op or 0, f"op{c.ddeliv_next_op}"
+                    )
+                    label = f"{c.ddeliv_value} -> {op_name}"
+                    self._add_track(points, links, label,
+                                    COLOR_PACKET_FASTPATH, PHASE_RESULT, pop=True)
+                else:
+                    self._add_track(points, links, str(c.ddeliv_value),
+                                    COLOR_PACKET_RESULT, PHASE_RESULT, pop=True)
 
             # 4) a completed flow's value leaving toward the host
             if snap.host_out.delivered:

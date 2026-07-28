@@ -273,7 +273,8 @@ This runs:
 - `tests/rtl/tb_wau_top_demo.v` (end-to-end flow execution via coordinator/highway/core grid),
 - `tests/rtl/tb_wau_highway_mesh.v` (neighbor forwarding, backpressure, and `router_hop_count` advancement),
 - `tests/rtl/tb_wau_highway_mesh_3d.v` (vertical `up/down` routing across `grid.z` layers),
-- `tests/rtl/tb_wau_host_mmio.v` (MMIO register map: writes, reads, output_pending sticky semantics, observability counter readback).
+- `tests/rtl/tb_wau_host_mmio.v` (MMIO register map: writes, reads, output_pending sticky semantics, observability counter readback),
+- `tests/rtl/tb_wau_core_fast_path_overlap.v` / `tb_wau_station_program_degenerate.v` / `tb_wau_station_program_overflow.v` ([per-core fast-path table](#per-core-fast-path-table): measured speedup + cross-line safety, disabled byte-identity, capacity-overflow safety).
 
 Run the python unit-test suite (compiler/scheduler/CW frontends/program stress matrix/CW reference scoreboard):
 
@@ -475,7 +476,7 @@ Main JSON fields:
   - `grid.x`, `grid.y`, optional `grid.z` (default `1`; `z > 1` emits layered 3D core indexing and vertical mesh links)
   - widths/depths (`data_width`, `flow_id_width`, `opcode_width`, `local_ram_depth`, `global_ram_depth`)
   - `data_types` (e.g. `["int32", "float16", "float32"]`)
-  - `coordinator_mode`, `enable_runtime_auto_adapt`
+  - `coordinator_mode`, `enable_runtime_auto_adapt` (bool, default **`false`**: "disable in-circuit schedulers unless strictly needed" — drives `wau_coordinator`'s `enable_auto_adapt` *reset* value, still live-toggleable over MMIO CTRL bit 1 exactly as before)
   - `highway`: the highway fabric's shape and its contracting bus
     - `topology` (`lines` | `chain` | `matrix`, default **`lines`**): how the highway is laid out over the grid — see [Highway topology](#highway-topology).
     - `contract_bus` (bool, default `true`): emit the per-highway contracting bus (`wau_highway_contract`) on the data-plane highway — see [Highway contracting bus](#highway-contracting-bus).
@@ -491,6 +492,7 @@ Main JSON fields:
   - `allow_adaptive_reroute`, `fallback_radius`, `allow_cycle_recurrence`
   - `core_capabilities`: per-core operation/data type constraints (also consumed by CW lowering to prune incompatible candidate cores up-front)
   - `station_cache`: `{ "entries": <1..32>, "replacement_policy": "fifo" | "lru" }` (default `entries=4`, `replacement_policy=fifo`)
+  - `station_program`: `{ "enabled": bool, "table_bits": <1..8> }` (default `enabled=false`, `table_bits=5` → 32 entries/core) — the per-core fast-path dispatch table; see [Per-core fast-path table](#per-core-fast-path-table).
 - `scheduler`
   - `strategy` (`round_robin`, `serial`, or `dependency_aware`)
   - `program_policy` (`weighted_fair`, `strict_priority`, `round_robin`)
@@ -536,11 +538,15 @@ The point of the arrangement is that the lines are genuinely independent:
   entirely: with no `dst_core % GRID_X` / `dst_core / GRID_X` in the router,
   there is no `LPM_DIVIDE` to infer per port, whatever the grid shape.
 
-Cores never address each other in the current execution model — all traffic is
-coordinator↔core — so per-line hubs cost no reachability. A result is addressed
-to a reserved off-line id, walks west along its own line, and leaves through
-that line's hub; `wau_top` steers dispatch to the hub owning the destination
-core and round-robins the returning lines into the coordinator.
+In the dynamic dispatch model cores never address each other — all
+coordinator-mediated traffic is coordinator↔core — so per-line hubs cost no
+reachability. A result is addressed to a reserved off-line id, walks west
+along its own line, and leaves through that line's hub; `wau_top` steers
+dispatch to the hub owning the destination core and round-robins the
+returning lines into the coordinator. The [per-core fast-path
+table](#per-core-fast-path-table) has since introduced genuine core-to-core
+traffic, but only ever *within* one line — see that section for what happens
+when a fast-path hop's destination is on a different line.
 
 **`chain` — one highway per layer.** Each layer's cores form a *single* 1-D
 highway walked in core-index order: core `i` links to `i - 1` and `i + 1`, so the
@@ -614,6 +620,68 @@ has a single injector (the coordinator), so there is nothing to arbitrate.
 Its counters are aggregated into `obs_total_contract_grant_count` /
 `_hold_cycles` / `_defer_count` and readable at MMIO `0x18`–`0x1A`.
 
+## Per-core fast-path table
+
+![](https://github.com/Geckos-Ink/waterfall_arithmetic_unit.verilog/blob/main/tools/wau-pipelines-viewer/examples/wau_fast_path_demo.gif?raw=true)
+
+*Above: the same viewer replaying `wau_station_program_demo.json` with the
+fast-path table enabled. Watch for the amber "fast-path hop" packets, drawn
+distinctly from the ordinary blue "result over data mesh" ones (see the
+legend) — those are the direct core→core handoffs that skip
+`wau_coordinator` entirely for that stage transition, labeled with the next
+operation the receiving core is about to run.*
+
+Until now, **every single stage of every flow** — without exception — had to
+round-trip `wau_coordinator`: dispatch a packet, cross the mesh to a core,
+execute, cross back, get matched, then dispatch the next stage — one packet
+leaving the coordinator per clock, system-wide. `compiler.station_program`
+(default `enabled=false`) closes that gap: when a core finishes a **non-final**
+stage, it looks up its own local table — built at generate time from the
+already-compiled placement, `compiler.build_fast_path_tables` — and, on a hit,
+hands its result **directly to the next stage's core** over the data plane,
+never touching the coordinator for that hop.
+
+```json
+"compiler": { "station_program": { "enabled": true, "table_bits": 5 } }
+```
+
+- **`table_bits`** (default `5`, range `[1,8]`) bounds each core's table to
+  `2**table_bits` entries — the *maximum number of operations a core can hold
+  the fast-path routing for*, in the sense the knob's name implies. A stage
+  transition that does not fit is simply left out: it keeps round-tripping the
+  coordinator exactly as before — no correctness risk, just no speedup, the
+  same story as a capacity-bounded cache.
+- **Always safe when disabled (the default).** An empty table degenerates the
+  generated RTL to byte-identical behavior: the same coordinator round-trip
+  logic runs unchanged. `tests/rtl/tb_wau_station_program_degenerate.v` proves
+  this against a disabled twin of the same flow/config.
+- **Measured effect.** On the tracked
+  [`wau_station_program_demo.json`](src/python/configs/wau_station_program_demo.json)
+  — two independent 3-stage flows on disjoint cores — enabling the table
+  brings completion from 17 cycles down to 15, entirely from the two interior
+  stage transitions that no longer detour through the coordinator
+  (`tests/rtl/tb_wau_core_fast_path_overlap.v`).
+- **Destination is picked locally, not centrally.** Each table entry carries a
+  primary destination core and, only when the relevant node/program has
+  adaptive rerouting enabled (`compiler.allow_adaptive_reroute` and the
+  node's own `allow_adaptive`), a fallback — the *sending* core checks its
+  chip-wide busy bus and picks the fallback if the primary is momentarily busy
+  and the fallback is not. This is what "disable in-circuit schedulers unless
+  strictly needed" means in practice: static, schedule-baked routing by
+  default; dynamic rerouting only where a node has explicitly opted in.
+- **Crossing highway lines is safe, just not faster.** Under the default
+  `lines` topology (see [Highway topology](#highway-topology)) there is no
+  hub-to-hub bridge. A fast-path hop whose destination sits on a different
+  line is safely absorbed by `wau_coordinator` instead of ever reaching that
+  core directly — the packet's flow/stage/value fields sit at the same fixed
+  positions a legacy result would use, so the coordinator's relaxed matching
+  recognizes it as an ordinary stage completion and re-dispatches the next
+  stage normally. Correct, just without a speedup for that one hop.
+- **`device.enable_runtime_auto_adapt`** now actually reaches the generated
+  RTL (previously validated but never read) and defaults to `false`, driving
+  `wau_coordinator`'s `enable_auto_adapt` *reset* value — still writable live
+  over MMIO CTRL bit 1 exactly as before.
+
 ## CW Syntax Tuning Hint
 `compile-cw` supports optional `.cw` pragmas for practical tuning:
 
@@ -667,7 +735,11 @@ Word-addressed map:
 
 `0x18`–`0x1A` were added with the [highway contracting bus](#highway-contracting-bus);
 every previously published address keeps its meaning, so existing host software
-is unaffected.
+is unaffected. `CTRL[1]`'s **reset** value is now driven by
+`device.enable_runtime_auto_adapt` (default `false`) instead of being
+hardwired on — it remains writable/readable live exactly as before, so no
+register-map or behavior change for host software that already sets it
+explicitly.
 
 The same counters are also available as direct ports on `wau_top` for
 non-MMIO integrations.
@@ -683,6 +755,7 @@ non-MMIO integrations.
 This is a robust **basis**, not final silicon architecture:
 - Control-plane dispatch and data-plane results now traverse explicit neighbor-linked highway meshes with valid/ready backpressure.
 - `grid.z > 1` emits layered 3D core indexing and vertical `up/down` mesh links; this path is currently verified with `iverilog` (`tb_wau_highway_mesh_3d`) and has not yet been calibrated on the DE0-NANO board flow.
+- The [per-core fast-path table](#per-core-fast-path-table) (`compiler.station_program`, default off) is currently verified with `iverilog` only (measured cycle-count speedup, cross-line safety, capacity-overflow safety) and has not yet been run on the DE0-Nano board flow.
 - The historical 2026-07-06 generic 2x4 image fit at 99% but violated timing and timed out. On 2026-07-13, Quartus Lite 25.1 built a program-profiled 2x4 image with a /16 timing-safe WAU clock: `21,478 / 22,320` LEs (96%), `12 / 132` multiplier elements, positive setup slack at every reported corner, and `1032/1032` live scoreboard pass at `95.4` ops/s. Watchdog expiry is now a fail-fast circuit/configuration fault, never a throughput sample. Quartus still reports a combinational router loop, so registered/elastic router links remain required before restoring a fast mesh clock.
 - The DE0-Nano's 32 MB external SDRAM is currently held inactive and is not counted as WAU cache. Active station caches remain on-chip register structures (1..32 entries per core); an SDRAM controller/cache hierarchy remains future work.
 - On 2026-07-07 the ad-hoc `CWs/stress/mesh_stress.cw` kernel was synthesized (Quartus Lite 23.1; Standard 25.1's eval is still expired) and run at 2x2 — a 27-node flow at `10,268 / 22,320` LEs (46%) passing `1032/1032` random and `520/520` real-MNIST triggers at ~1.7x the example's per-case mesh traffic and zero stalls. A build-script bug (`$ErrorActionPreference=Stop` turning Quartus 25.1's benign `TBBmalloc` stderr into a fatal error) was fixed so 25.1 runs can proceed once licensed.

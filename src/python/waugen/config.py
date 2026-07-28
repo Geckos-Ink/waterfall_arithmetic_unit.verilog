@@ -234,7 +234,7 @@ class DeviceSpec:
                 name="device.global_ram_depth",
             ),
             coordinator_mode=coordinator_mode,
-            enable_runtime_auto_adapt=bool(value.get("enable_runtime_auto_adapt", True)),
+            enable_runtime_auto_adapt=bool(value.get("enable_runtime_auto_adapt", False)),
             highway=HighwaySpec.from_obj(value.get("highway")),
         )
 
@@ -350,6 +350,39 @@ class StationCacheSpec:
 
 
 @dataclass(frozen=True)
+class StationProgramSpec:
+    """Per-core static fast-path dispatch table. When enabled, a core that
+    finishes a non-final flow stage looks up its own local table (derived at
+    generate time from `CompiledProject`, never from `SchedulePlan`) and, on a
+    hit, hands its result directly to the next core instead of routing back
+    through `wau_coordinator`. `table_bits` bounds how many distinct
+    `(flow_id, stage_index)` pairs a single core's table may hold
+    (`2**table_bits` entries, no reserved sentinel slot: hit/miss is decided by
+    whether a case arm exists, not by a value-space sentinel). Disabled by
+    default: every stage keeps round-tripping the coordinator exactly as
+    today, byte-identical, until a config opts in."""
+
+    enabled: bool
+    table_bits: int
+
+    @staticmethod
+    def from_obj(value: Any) -> "StationProgramSpec":
+        value = value or {}
+        if not isinstance(value, dict):
+            raise ConfigError("compiler.station_program must be an object")
+        table_bits = validate_range(
+            int(value.get("table_bits", 5)),
+            minimum=1,
+            maximum=8,
+            name="compiler.station_program.table_bits",
+        )
+        return StationProgramSpec(
+            enabled=bool(value.get("enabled", False)),
+            table_bits=table_bits,
+        )
+
+
+@dataclass(frozen=True)
 class CompilerSpec:
     routing: str
     allow_adaptive_reroute: bool
@@ -357,6 +390,7 @@ class CompilerSpec:
     allow_cycle_recurrence: bool
     core_capabilities: tuple[CoreCapabilitySpec, ...]
     station_cache: StationCacheSpec
+    station_program: StationProgramSpec
 
     @staticmethod
     def from_obj(value: Any) -> "CompilerSpec":
@@ -368,6 +402,7 @@ class CompilerSpec:
             raise ConfigError("compiler.routing must be waterfall, serpentine, or manual")
         core_capabilities = _parse_core_capabilities(value.get("core_capabilities"))
         station_cache = StationCacheSpec.from_obj(value.get("station_cache"))
+        station_program = StationProgramSpec.from_obj(value.get("station_program"))
         return CompilerSpec(
             routing=routing,
             allow_adaptive_reroute=bool(value.get("allow_adaptive_reroute", True)),
@@ -377,6 +412,7 @@ class CompilerSpec:
             allow_cycle_recurrence=bool(value.get("allow_cycle_recurrence", True)),
             core_capabilities=core_capabilities,
             station_cache=station_cache,
+            station_program=station_program,
         )
 
 

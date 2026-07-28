@@ -273,14 +273,27 @@ module wau_coordinator #(
     end
 
     // ---- result matcher: map an incoming result to its awaiting slot ----
+    // Matched by flow_id and a stage_id that has reached or passed the slot's
+    // own bookkeeping (not exact-equality, and not also src_core) so that a
+    // chain of per-core fast-path hops (see wau_core_station) can run ahead
+    // of this coordinator's stage counter without ever routing back to it:
+    // the eventual hub-bound packet (always the flow's last stage -- see
+    // compiler.build_fast_path_tables, which never gives a last stage a
+    // fast-path entry) is still recognized and jumps slot_stage to wherever
+    // the chain actually got to. flow_id alone is already the sole *required*
+    // disambiguator (at most one in-flight slot per flow id), so this is a
+    // strict superset of the old exact match: with an empty fast-path table
+    // every stage still round-trips one at a time and
+    // result_pkt_stage_id == slot_stage[ri] always, making this
+    // byte-identical to before. slot_wait_core stays populated for
+    // debug/trace but is no longer part of the match.
     always @(*) begin
         res_found = 1'b0;
         res_slot  = 8'd0;
         for (ri = 0; ri < MAX_IN_FLIGHT; ri = ri + 1) begin
             if (!res_found && slot_valid[ri] && slot_awaiting[ri] &&
-                (slot_flow_id[ri]   == result_pkt_flow_id) &&
-                (slot_stage[ri]     == result_pkt_stage_id) &&
-                (slot_wait_core[ri] == result_pkt_src_core)) begin
+                (slot_flow_id[ri] == result_pkt_flow_id) &&
+                (result_pkt_stage_id >= slot_stage[ri])) begin
                 res_found = 1'b1;
                 res_slot  = ri;
             end
@@ -369,7 +382,7 @@ module wau_coordinator #(
             // result handshake: advance the matched slot's accumulator chain
             if (result_pkt_valid && result_pkt_ready && res_found) begin
                 slot_awaiting[res_slot] <= 1'b0;
-                if (slot_stage[res_slot] >= flow_last_stage(slot_flow_slot[res_slot])) begin
+                if (result_pkt_stage_id >= flow_last_stage(slot_flow_slot[res_slot])) begin
                     // final stage: latch output immediately when the port is
                     // free (keeps single-flow latency identical to the serial
                     // design); otherwise buffer it in the slot until it drains.
@@ -386,7 +399,7 @@ module wau_coordinator #(
                     end
                 end else begin
                     slot_acc[res_slot]   <= result_pkt_value;
-                    slot_stage[res_slot] <= slot_stage[res_slot] + 8'd1;
+                    slot_stage[res_slot] <= result_pkt_stage_id + 8'd1;
                 end
             end
 

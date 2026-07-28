@@ -381,6 +381,12 @@ def _select_core(
     grid_y: int,
     locality_bias: float,
 ) -> tuple[int, int, bool]:
+    # Note: the runtime dispatch path -- both the dynamic coordinator and the
+    # per-core fast-path table in compiler.build_fast_path_tables -- only ever
+    # chooses between a node's primary_core and fallback_core. A `least_busy`/
+    # `prefer_balance` pick of any other candidate here is a timeline/
+    # contract-ROM prediction only, never a runtime path; the two must not be
+    # confused when reasoning about which core "actually" runs a stage.
     candidates = list(node.candidate_core_indices)
     if not (allow_adaptive_reroute and node.allow_adaptive):
         candidates = [node.primary_core_idx]

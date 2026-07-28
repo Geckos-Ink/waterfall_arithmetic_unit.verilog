@@ -90,6 +90,12 @@
       }
     ]
   },
+  "station_program": {
+    "enabled": false,
+    "table_bits": 5,
+    "table_capacity": 32,
+    "cores": []
+  },
   "flows": [
     {
       "flow_id": 1,

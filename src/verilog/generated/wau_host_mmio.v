@@ -77,7 +77,7 @@ module wau_host_mmio #(
             mmio_readdata <= 32'd0;
             mmio_readdatavalid <= 1'b0;
             soft_reset_req <= 1'b0;
-            enable_auto_adapt <= 1'b1;
+            enable_auto_adapt <= `WAU_DEFAULT_AUTO_ADAPT;
             host_in_valid <= 1'b0;
             host_in_flow_id <= {FLOW_ID_WIDTH{1'b0}};
             host_in_a <= {DATA_WIDTH{1'b0}};

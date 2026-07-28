@@ -13,6 +13,108 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-07-28)
+Implemented this cycle (per-core fast-path table slice):
+
+- **Per-core static fast-path dispatch table** (`compiler.station_program`,
+  default `enabled=false`, `table_bits` default `5` → 32 entries/core). Closes
+  the gap the README's own demo recordings showed: previously every single
+  stage of every flow, without exception, round-tripped `wau_coordinator` —
+  dispatch, cross the mesh, execute, cross back, get matched, dispatch the
+  next stage — one packet leaving the coordinator per clock, system-wide, no
+  matter how many cores sat idle in the meantime. When enabled, a core
+  finishing a non-final stage looks up its own local table (derived at
+  generate time from the already-compiled placement,
+  `compiler.build_fast_path_tables` — built from `CompiledProject`, never
+  from `SchedulePlan`, since the runtime dispatch path only ever chooses
+  between a stage's `primary_core`/`fallback_core`) and, on a hit, hands its
+  result **directly to the next stage's core** over the data plane's local
+  port, never touching the coordinator for that hop.
+- **The "concurrence ID"** (`FastPathHop.concurrence_id`) is the deterministic
+  per-core ordinal `build_fast_path_tables` assigns to each distinct
+  `(flow_id, stage_index)` pair a core produces — it bounds and reports the
+  `2**table_bits` capacity (published in `wau_program.json`'s new
+  `station_program` section); the RTL lookup itself is a
+  `case ((flow_id, stage_id))`-keyed function (`_core_fast_path_lookup_function`,
+  same idiom as the existing `_stage_case_entries`), not a literal indexed ROM.
+- **Always safe, even at capacity or across topology boundaries.** A
+  `(flow_id, stage_index)` pair that does not fit a core's table is recorded
+  in `overflowed_keys` and simply keeps using the legacy coordinator path —
+  no correctness risk, just no speedup. The same outcome covers a fast-path
+  hop whose destination sits on a different highway line under the default
+  `lines` topology (there is no hub-to-hub bridge, only hub-to-coordinator):
+  it is safely absorbed by a **deliberately relaxed** coordinator result
+  match (`result_pkt_stage_id >= slot_stage[ri]`, dropping the `src_core`
+  conjunct — a strict superset of the old exact match, byte-identical
+  whenever the table is empty) and the next stage is re-dispatched normally.
+  Under `chain`/`matrix`, `_fast_path_excluded_destinations` unconditionally
+  excludes the one core index the coordinator shares a physical port with,
+  so a fast-path packet can never be misrouted there in the first place.
+- **`device.enable_runtime_auto_adapt`** now actually reaches the generated
+  RTL — previously validated by `config.py` but never read by
+  `verilog_emit.py` — driving `wau_coordinator`'s `enable_auto_adapt` *reset*
+  value (`WAU_DEFAULT_AUTO_ADAPT`), and its default flipped to `false`
+  ("disable in-circuit schedulers unless strictly needed"). Still
+  live-toggleable over MMIO CTRL bit 1 exactly as before; every tracked
+  config that relied on the old always-on behavior sets the key explicitly,
+  so no recorded benchmark/board number is affected.
+- **Viewer support**: the trace format (`tb_generator.py`, mirroring
+  `_render_top`'s widened data-plane payload exactly) now carries
+  `ddeliv_fastpath`/`ddeliv_next_stage`/`ddeliv_next_op`, parsed by
+  `trace_parser.py` and rendered by `graph_view.py` as a visually distinct
+  amber "fast-path hop" packet track (reusing the highway-call color) instead
+  of the plain "result over data mesh" one. New demo GIF
+  (`wau_fast_path_demo.gif`); the two existing README GIFs were re-recorded
+  to confirm no visual regression from the trace-format widening.
+- **Fixed, in passing**: `wau_viewer --headless` used without `--record`
+  (e.g. with only `--dump-trace`) silently fell through to the interactive
+  Qt path and opened a real, blocking window — the opposite of what
+  `--headless` promises. It now always short-circuits before any
+  `QApplication`/`app.exec()`, and the legitimate `--headless --record` path
+  forces Qt's `offscreen` platform plugin rather than relying on a
+  `show()`-then-`hide()` trick that does not reliably hide the window on
+  every platform/Qt version. See the pitfall entry for the failure mode this
+  closes.
+
+Verification: the full existing RTL/Python suite (`tests/python`,
+`./scripts/run_iverilog_tests.sh` across `lines`/`chain`/`matrix`,
+`scripts/run_randomized_stress.py --count 25`,
+`./scripts/run_cw_example_benchmark.sh`) passes unchanged with the feature at
+its default (`enabled=false`) — including byte-identical `tb_wau_top_demo`
+timing and an unchanged CW benchmark scoreboard/latency/makespan. Three new
+tracked configs (`wau_station_program_demo.json`,
+`wau_station_program_demo_disabled.json`,
+`wau_station_program_overflow_demo.json`) and three new dedicated
+testbenches prove the feature itself: `tb_wau_core_fast_path_overlap.v`
+(measured 15 vs. 17 cycles for two independent 3-stage flows, plus a
+cross-line hop that resolves correctly with no speedup),
+`tb_wau_station_program_degenerate.v` (disabled reproduces the legacy timing
+exactly), and `tb_wau_station_program_overflow.v` (a capacity-overflowed flow
+still resolves correctly).
+
+Follow-ups this opens:
+
+- `build_fast_path_tables` does not yet avoid allocating table capacity to a
+  hop whose destination is on a different highway line under `lines` —
+  harmless (see above) but wasteful, since that entry can never actually
+  deliver a speedup. A line-aware capacity check would free that slot for a
+  hop that can.
+- Sweep `station_program.{enabled,table_bits}` as a new `fit-config`/
+  `arch_search.py` `CandidateKnobs` dimension, following the
+  `max_in_flight=None` pattern so `arch-search`'s frozen byte-identity is
+  untouched.
+- A `@wau` pragma in `cw_compiler.py` to toggle the fast path per-kernel from
+  a `.cw` source directly, rather than only via the JSON config.
+- True multi-consumer DAG fan-out — one result feeding two independent
+  downstream branches at the value level, rather than the strict
+  single-accumulator chain the whole coordinator/fast-path model assumes
+  today — is a materially larger, separate undertaking (it would touch the
+  accumulator execution model, `cw_reference.py`, and every DAG-consuming
+  test) and was explicitly kept out of scope for this cycle.
+- No DE0-Nano board run yet exercises the fast-path table; treat its
+  measured speedup as simulator-only until a board benchmark confirms it
+  under real timing.
+
 ## Progress Update (2026-07-27)
 Implemented this cycle (highway fabric slice):
 

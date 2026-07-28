@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import List, Tuple
@@ -189,6 +190,26 @@ def main(argv=None) -> int:
     trace = parse_trace(sim.trace_path)
     print(f"[wau-viewer] parsed {len(trace.cycles)} trace cycles, "
           f"{trace.meta.outputs_seen} outputs", file=sys.stderr)
+
+    if args.headless and not args.record:
+        # Nothing left to do: the trace was already parsed (and dumped, if
+        # --dump-trace was given) above. Returning here -- instead of falling
+        # through to the interactive branch below -- is the fix for
+        # --headless being silently ignored when passed without --record: it
+        # used to still construct a real QApplication and call win.show() +
+        # app.exec(), opening an actual interactive window and blocking on
+        # it, which is the opposite of what --headless promises.
+        return 0
+
+    # --headless (with or without --record) must never show a real window.
+    # QT_QPA_PLATFORM=offscreen makes Qt use its own in-memory backend with
+    # no native window at all, which is more robust than relying on a
+    # show()-then-hide() trick (see run_headless_recording) to make a real
+    # window invisible -- that trick does not reliably hide on every
+    # platform/Qt version, and a stuck-visible offscreen-recording window has
+    # been observed leaving a real, non-interactive window on screen.
+    if args.headless:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     # import Qt lazily so simulation can be run on machines without a GUI
     from PySide6.QtWidgets import QApplication

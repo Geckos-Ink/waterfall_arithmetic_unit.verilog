@@ -242,11 +242,18 @@ class HighwayEmissionTests(unittest.TestCase):
         # Dispatch is steered by compile-time line bounds, not by a divider.
         self.assertIn("localparam integer LINE_LO = hub_i * HIGHWAY_LINE_SIZE;", top)
         self.assertIn("assign ctrl_hub_in_valid[hub_i] = coord_dispatch_valid", top)
-        # Results are addressed off-line and arbitrated round-robin so no line
-        # can starve the others.
+        # Each core's own result is routed by wau_core_station's dst_core
+        # decision (a per-core fast-path table, see build_fast_path_tables),
+        # which degenerates to the reserved off-line HUB_DST id -- arbitrated
+        # round-robin so no line can starve the others -- whenever that
+        # table is empty (COORD_DST_SENTINEL == HUB_DST under `lines`).
         self.assertIn(
-            "assign data_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] = HUB_DST;",
+            "assign data_local_in_dst[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH] =\n"
+            "                core_result_dst_core[(core_i*CORE_ID_WIDTH) +: CORE_ID_WIDTH];",
             top,
+        )
+        self.assertIn(
+            "localparam [CORE_ID_WIDTH-1:0] COORD_DST_SENTINEL = HUB_DST;", top
         )
         self.assertIn("hub_rr_ptr", top)
         self.assertIn("assign coord_result_valid = hub_sel_valid;", top)
@@ -405,6 +412,66 @@ class HighwayProgramJsonTests(unittest.TestCase):
                 "contract_lease_cycles": 64,
             },
         )
+
+
+STATION_PROGRAM_CONFIG_PATH = Path("src/python/configs/wau_station_program_demo.json")
+
+
+class StationProgramJsonTests(unittest.TestCase):
+    """`wau_program.json`'s "station_program" section (`_render_station_program_report`
+    in verilog_emit.py), the observability view of the per-core fast-path
+    table proven end-to-end by tests/rtl/tb_wau_core_fast_path_overlap.v."""
+
+    def test_disabled_by_default_is_an_inert_shell(self) -> None:
+        files = _emit(CONFIG_PATH)
+        payload = json.loads(files["wau_program.json"])
+        self.assertEqual(
+            payload["station_program"],
+            {"enabled": False, "table_bits": 5, "table_capacity": 32, "cores": []},
+        )
+
+    def test_enabled_publishes_per_core_entries_and_concurrence_ids(self) -> None:
+        files = _emit(STATION_PROGRAM_CONFIG_PATH)
+        payload = json.loads(files["wau_program.json"])
+        station_program = payload["station_program"]
+
+        self.assertTrue(station_program["enabled"])
+        self.assertEqual(station_program["table_bits"], 5)
+        self.assertEqual(station_program["table_capacity"], 32)
+
+        cores_by_index = {core["core_index"]: core for core in station_program["cores"]}
+        # Flow 1 "accumulate_and_scale": (0,0)=core0 -> (1,0)=core1 -> (2,0)=core2.
+        # The last stage (core2) never gets an entry.
+        core0_entries = cores_by_index[0]["entries"]
+        self.assertEqual(len(core0_entries), 1)
+        self.assertEqual(core0_entries[0]["flow_id"], 1)
+        self.assertEqual(core0_entries[0]["stage_index"], 0)
+        self.assertEqual(core0_entries[0]["concurrence_id"], 0)
+        self.assertEqual(core0_entries[0]["next_dst_primary"], 1)
+
+        core1_entries = cores_by_index[1]["entries"]
+        self.assertEqual(len(core1_entries), 1)
+        self.assertEqual(core1_entries[0]["stage_index"], 1)
+        self.assertEqual(core1_entries[0]["next_dst_primary"], 2)
+
+        self.assertEqual(cores_by_index[2]["entries"], [])
+        self.assertEqual(cores_by_index[2]["overflowed_keys"], [])
+
+    def test_overflow_is_reported_not_silently_dropped(self) -> None:
+        cfg = load_config(Path("src/python/configs/wau_station_program_overflow_demo.json"))
+        project = compile_project(cfg)
+        schedule = build_schedule(project)
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            emit_verilog(project, schedule, out)
+            payload = json.loads((out / "wau_program.json").read_text())
+
+        station_program = payload["station_program"]
+        self.assertEqual(station_program["table_bits"], 1)
+        self.assertEqual(station_program["table_capacity"], 2)
+        core0 = next(c for c in station_program["cores"] if c["core_index"] == 0)
+        self.assertEqual(len(core0["entries"]), 2)
+        self.assertEqual(core0["overflowed_keys"], [{"flow_id": 12, "stage_index": 0}])
 
 
 if __name__ == "__main__":

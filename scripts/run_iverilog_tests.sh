@@ -118,4 +118,29 @@ for alt in chain matrix; do
   run_suite
 done
 
+# Per-core fast-path table (compiler.station_program): opt-in, so the default
+# config never elaborates it either. Each of these three tracked configs
+# targets exactly one contract of the feature -- enabled speedup, disabled
+# byte-identical degradation, and capacity-overflow safety -- and each runs
+# only its own dedicated testbench (not the whole fabric suite, since these
+# configs' flows/values are purpose-built for that one assertion). Plain
+# parallel arrays (not `declare -A`) to stay bash-3.2-compatible.
+STATION_PROGRAM_CONFIGS=(wau_station_program_demo wau_station_program_demo_disabled wau_station_program_overflow_demo)
+STATION_PROGRAM_TESTBENCHES=(tb_wau_core_fast_path_overlap tb_wau_station_program_degenerate tb_wau_station_program_overflow)
+for i in "${!STATION_PROGRAM_CONFIGS[@]}"; do
+  cfg_name="${STATION_PROGRAM_CONFIGS[$i]}"
+  tb_name="${STATION_PROGRAM_TESTBENCHES[$i]}"
+  SP_CONFIG="src/python/configs/${cfg_name}.json"
+  SP_DIR="$ROOT_BUILD_DIR/${cfg_name}_rtl"
+  echo "[iverilog] regenerating ${cfg_name} RTL into ${SP_DIR}"
+  python3 -m waugen generate --config "$SP_CONFIG" --out "$SP_DIR"
+
+  RTL_DIR="$SP_DIR"
+  BUILD_DIR="$ROOT_BUILD_DIR/${cfg_name}"
+  mkdir -p "$BUILD_DIR"
+  run_test "$tb_name" \
+    $(top_sources) \
+    "tests/rtl/${tb_name}.v"
+done
+
 echo "All iverilog tests passed"
