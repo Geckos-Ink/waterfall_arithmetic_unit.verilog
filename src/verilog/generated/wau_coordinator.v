@@ -29,6 +29,7 @@ module wau_coordinator #(
     output reg dispatch_pkt_valid,
     input wire dispatch_pkt_ready,
     output reg [7:0] dispatch_pkt_dst_core,
+    output reg [7:0] dispatch_pkt_tag,
     output reg [FLOW_ID_WIDTH-1:0] dispatch_pkt_flow_id,
     output reg [OPCODE_WIDTH-1:0] dispatch_pkt_opcode,
     output reg signed [DATA_WIDTH-1:0] dispatch_pkt_a,
@@ -40,6 +41,7 @@ module wau_coordinator #(
     input wire result_pkt_valid,
     output wire result_pkt_ready,
     input wire [7:0] result_pkt_src_core,
+    input wire [7:0] result_pkt_tag,
     input wire [FLOW_ID_WIDTH-1:0] result_pkt_flow_id,
     input wire [7:0] result_pkt_stage_id,
     input wire signed [DATA_WIDTH-1:0] result_pkt_value,
@@ -48,12 +50,13 @@ module wau_coordinator #(
 );
     localparam MAX_IN_FLIGHT = `WAU_COORD_MAX_IN_FLIGHT;
 
-    // Multi-issue slot table. Each slot holds one in-flight flow's accumulator
-    // context; the coordinator keeps up to MAX_IN_FLIGHT *distinct* flows
-    // executing concurrently across the core mesh. Per-flow semantics are
-    // identical to the legacy serial coordinator (one accumulator chain walked
-    // stage-by-stage), so a single in-flight flow keeps cycle-identical timing
-    // while independent flows now overlap on different cores.
+    // Multi-issue slot table. Each slot holds one in-flight transaction's
+    // accumulator context; an internal tag equal to the slot index travels with
+    // every dispatch/result packet, so multiple inputs for the same flow id can
+    // execute concurrently without ambiguous result matching. Per-transaction
+    // semantics are identical to the legacy serial coordinator (one accumulator
+    // chain walked stage-by-stage), so a single in-flight flow keeps
+    // cycle-identical timing while independent flows overlap on different cores.
     reg                          slot_valid     [0:MAX_IN_FLIGHT-1];
     reg [7:0]                    slot_flow_slot [0:MAX_IN_FLIGHT-1];
     reg [FLOW_ID_WIDTH-1:0]      slot_flow_id   [0:MAX_IN_FLIGHT-1];
@@ -64,6 +67,9 @@ module wau_coordinator #(
     reg [7:0]                    slot_wait_core [0:MAX_IN_FLIGHT-1];
     reg                          slot_done      [0:MAX_IN_FLIGHT-1];
     reg signed [DATA_WIDTH-1:0]  slot_outval    [0:MAX_IN_FLIGHT-1];
+    reg [31:0]                   slot_order     [0:MAX_IN_FLIGHT-1];
+    reg [31:0]                   alloc_order;
+    reg [31:0]                   retire_order;
 
     // Combinational selections, driven by the always @(*) blocks below.
     reg        disp_found;
@@ -75,7 +81,6 @@ module wau_coordinator #(
     reg [7:0]  out_slot;
     reg        alloc_found;
     reg [7:0]  alloc_slot;
-    reg        flow_busy;
 
     // Arbiter scratch.
     reg [7:0]  cc_p;
@@ -90,14 +95,12 @@ module wau_coordinator #(
     integer    ri;
     integer    oi;
     integer    ai;
-    integer    fi;
     integer    k;
     reg        latched_now;
 
-    // Accept a new flow when a slot is free and that flow id is not already in
-    // flight (keeps result matching by flow+stage unambiguous without widening
-    // the dispatch/result packet format with a tag).
-    assign host_in_ready = alloc_found && !flow_busy;
+    // The packet-carried slot tag makes same-flow transactions unambiguous, so
+    // admission is limited only by physical coordinator capacity.
+    assign host_in_ready = alloc_found;
     assign result_pkt_ready = res_found;
 
     function [7:0] flow_slot_from_id;
@@ -263,6 +266,7 @@ module wau_coordinator #(
 
         dispatch_pkt_valid         = disp_found;
         dispatch_pkt_dst_core      = disp_core;
+        dispatch_pkt_tag           = disp_slot;
         dispatch_pkt_flow_id       = slot_flow_id[disp_slot];
         dispatch_pkt_opcode        = flow_stage_opcode(sel_flow_slot, sel_stage);
         dispatch_pkt_a             = slot_acc[disp_slot];
@@ -272,17 +276,15 @@ module wau_coordinator #(
         dispatch_pkt_stage_id      = sel_stage;
     end
 
-    // ---- result matcher: map an incoming result to its awaiting slot ----
-    // Matched by flow_id and a stage_id that has reached or passed the slot's
-    // own bookkeeping (not exact-equality, and not also src_core) so that a
+    // ---- result matcher: map an incoming result to its tagged slot --------
+    // The transaction tag is the authoritative identity. Stage progression is
+    // still checked so that a
     // chain of per-core fast-path hops (see wau_core_station) can run ahead
     // of this coordinator's stage counter without ever routing back to it:
     // the eventual hub-bound packet (always the flow's last stage -- see
     // compiler.build_fast_path_tables, which never gives a last stage a
     // fast-path entry) is still recognized and jumps slot_stage to wherever
-    // the chain actually got to. flow_id alone is already the sole *required*
-    // disambiguator (at most one in-flight slot per flow id), so this is a
-    // strict superset of the old exact match: with an empty fast-path table
+    // the chain actually got to. With an empty fast-path table
     // every stage still round-trips one at a time and
     // result_pkt_stage_id == slot_stage[ri] always, making this
     // byte-identical to before. slot_wait_core stays populated for
@@ -292,6 +294,7 @@ module wau_coordinator #(
         res_slot  = 8'd0;
         for (ri = 0; ri < MAX_IN_FLIGHT; ri = ri + 1) begin
             if (!res_found && slot_valid[ri] && slot_awaiting[ri] &&
+                (result_pkt_tag == ri[7:0]) &&
                 (slot_flow_id[ri] == result_pkt_flow_id) &&
                 (result_pkt_stage_id >= slot_stage[ri])) begin
                 res_found = 1'b1;
@@ -300,12 +303,13 @@ module wau_coordinator #(
         end
     end
 
-    // ---- completed-output selector + free-slot/flow guards -------------
+    // ---- completed-output selector + free-slot guard --------------------
     always @(*) begin
         out_found = 1'b0;
         out_slot  = 8'd0;
         for (oi = 0; oi < MAX_IN_FLIGHT; oi = oi + 1) begin
-            if (!out_found && slot_valid[oi] && slot_done[oi]) begin
+            if (!out_found && slot_valid[oi] && slot_done[oi] &&
+                (slot_order[oi] == retire_order)) begin
                 out_found = 1'b1;
                 out_slot  = oi;
             end
@@ -323,21 +327,14 @@ module wau_coordinator #(
         end
     end
 
-    always @(*) begin
-        flow_busy = 1'b0;
-        for (fi = 0; fi < MAX_IN_FLIGHT; fi = fi + 1) begin
-            if (slot_valid[fi] && (slot_flow_id[fi] == host_in_flow_id)) begin
-                flow_busy = 1'b1;
-            end
-        end
-    end
-
     // ---- sequential state ----------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             host_out_valid   <= 1'b0;
             host_out_flow_id <= {FLOW_ID_WIDTH{1'b0}};
             host_out_value   <= {DATA_WIDTH{1'b0}};
+            alloc_order      <= 32'd0;
+            retire_order     <= 32'd0;
             for (k = 0; k < MAX_IN_FLIGHT; k = k + 1) begin
                 slot_valid[k]     <= 1'b0;
                 slot_flow_slot[k] <= 8'hFF;
@@ -349,6 +346,7 @@ module wau_coordinator #(
                 slot_wait_core[k] <= 8'd0;
                 slot_done[k]      <= 1'b0;
                 slot_outval[k]    <= {DATA_WIDTH{1'b0}};
+                slot_order[k]     <= 32'd0;
             end
         end else begin
             latched_now = 1'b0;
@@ -370,6 +368,8 @@ module wau_coordinator #(
                     slot_opb[alloc_slot]       <= host_in_b;
                     slot_awaiting[alloc_slot]  <= 1'b0;
                     slot_done[alloc_slot]      <= 1'b0;
+                    slot_order[alloc_slot]     <= alloc_order;
+                    alloc_order                <= alloc_order + 32'd1;
                 end
             end
 
@@ -386,12 +386,14 @@ module wau_coordinator #(
                     // final stage: latch output immediately when the port is
                     // free (keeps single-flow latency identical to the serial
                     // design); otherwise buffer it in the slot until it drains.
-                    if (!host_out_valid || host_out_ready) begin
+                    if ((slot_order[res_slot] == retire_order) &&
+                        (!host_out_valid || host_out_ready)) begin
                         host_out_valid       <= 1'b1;
                         host_out_flow_id     <= slot_flow_id[res_slot];
                         host_out_value       <= result_pkt_value;
                         slot_valid[res_slot] <= 1'b0;
                         slot_done[res_slot]  <= 1'b0;
+                        retire_order         <= retire_order + 32'd1;
                         latched_now = 1'b1;
                     end else begin
                         slot_done[res_slot]   <= 1'b1;
@@ -410,6 +412,7 @@ module wau_coordinator #(
                 host_out_value       <= slot_outval[out_slot];
                 slot_valid[out_slot] <= 1'b0;
                 slot_done[out_slot]  <= 1'b0;
+                retire_order         <= retire_order + 32'd1;
             end
         end
     end

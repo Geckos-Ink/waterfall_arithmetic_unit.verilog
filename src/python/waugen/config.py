@@ -453,9 +453,10 @@ class SchedulerSpec:
 @dataclass(frozen=True)
 class CoordinatorSpec:
     """Hardware capacity of the generated coordinator. `max_in_flight` is the
-    number of distinct flows the coordinator can keep executing concurrently on
-    the core mesh (one accumulator context per slot). `1` reproduces the legacy
-    strictly-serial coordinator."""
+    number of tagged transactions the coordinator can keep executing
+    concurrently on the core mesh (one accumulator context per slot). Repeated
+    inputs for one flow id are disambiguated by the internal packet tag. `1`
+    reproduces the legacy strictly-serial coordinator."""
 
     max_in_flight: int
 

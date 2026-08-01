@@ -13,6 +13,7 @@ distributions.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -60,6 +61,13 @@ class ArchSearchReportTests(unittest.TestCase):
     def test_report_is_deterministic(self) -> None:
         again = run_arch_search(DEMO_CONFIG)
         self.assertEqual(self.report.to_json(), again.to_json())
+
+    def test_arch_search_v1_report_stays_byte_identical(self) -> None:
+        encoded = (json.dumps(self.report.to_json(), indent=2) + "\n").encode()
+        self.assertEqual(
+            hashlib.sha256(encoded).hexdigest(),
+            "fcebff7e8444c6430fe0cbcaa429e812061fd872298d50fb01594793b72ee3a3",
+        )
 
     def test_ranking_is_dense_and_sorted(self) -> None:
         ranks = [cand.rank for cand in self.report.candidates]
@@ -319,11 +327,12 @@ class FitSearchTests(unittest.TestCase):
 class FitMaxInFlightSweepTests(unittest.TestCase):
     """The fit finder co-sweeps coordinator.max_in_flight so it can keep the
     cheapest in-flight depth that does not cost makespan (unused slots cost
-    LUTs), while never dragging a workload above its concurrency ceiling."""
+    LUTs), using declared flow count as the v1 automatic ceiling. Same-flow
+    stream depth remains an explicit override."""
 
     def test_depth_values_bounded_by_flow_count(self) -> None:
-        # A single-flow workload gets a single, cheapest depth: mif=1 is
-        # cycle-identical there, so higher depths would only burn LUTs.
+        # The v1 automatic workload model cannot infer a repeated-input stream
+        # from one declared flow, so callers override depths for that case.
         self.assertEqual(_fit_max_in_flight_values(base_mif=4, num_flows=1), (1,))
         # More flows unlock more concurrency; base value + powers of two + the
         # cap are all offered, deduplicated and sorted.

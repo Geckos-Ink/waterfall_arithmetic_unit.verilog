@@ -85,6 +85,21 @@ class StatsPanel(QWidget):
         layout.addWidget(sep2)
 
         layout.addWidget(_section_label("Summary"))
+        layout.addWidget(QLabel(
+            f"cores exercised: {self.bottlenecks.get('active_core_count', 0)}"
+            f" / {self.model.core_count}"
+        ))
+        layout.addWidget(QLabel(
+            f"peak busy cores: {self.bottlenecks.get('peak_busy_cores', 0)}"
+            f" / {self.model.core_count}"
+        ))
+        layout.addWidget(QLabel(
+            f"average busy cores: {self.bottlenecks.get('average_busy_cores', 0.0):.2f}"
+        ))
+        layout.addWidget(QLabel(
+            f"whole-fabric utilization: "
+            f"{100.0 * self.bottlenecks.get('fabric_busy_ratio', 0.0):.1f}%"
+        ))
         busiest = self.bottlenecks.get("busiest_core")
         if busiest is not None:
             cx, cy = self.model.core_xy(busiest)

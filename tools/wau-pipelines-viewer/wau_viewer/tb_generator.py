@@ -36,7 +36,8 @@ module tb_wau_viewer;
     localparam integer TB_LINE_SIZE          = `WAU_HIGHWAY_LINE_SIZE;
     // Mirrors wau_top's COORDINATOR_CORE_INDEX.
     localparam integer TB_COORDINATOR_CORE   = 0;
-    localparam integer TB_DATA_FLOW_ID_LSB   = 0;
+    localparam integer TB_DATA_TAG_LSB       = 0;
+    localparam integer TB_DATA_FLOW_ID_LSB   = TB_DATA_TAG_LSB + 8;
     localparam integer TB_DATA_STAGE_LSB     = TB_DATA_FLOW_ID_LSB + FLOW_ID_WIDTH;
     localparam integer TB_DATA_VALUE_LSB     = TB_DATA_STAGE_LSB + 8;
     localparam integer TB_DATA_SRC_CORE_LSB  = TB_DATA_VALUE_LSB + DATA_WIDTH;
@@ -150,14 +151,15 @@ module tb_wau_viewer;
                     dut.core_busy[core_i],
                     dut.core_cache_hit[core_i]);
                 if (dut.core_dispatch_valid[core_i] && dut.core_dispatch_ready[core_i]) begin
-                    $fwrite(trace_f, " disp=1 disp_op=%%0d disp_a=%%0d disp_b=%%0d disp_imm=%%0d disp_use_imm=%%0d disp_stage=%%0d disp_flow=%%0d",
+                    $fwrite(trace_f, " disp=1 disp_op=%%0d disp_a=%%0d disp_b=%%0d disp_imm=%%0d disp_use_imm=%%0d disp_stage=%%0d disp_flow=%%0d disp_tag=%%0d",
                         dut.core_dispatch_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH],
                         $signed(dut.core_dispatch_a[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
                         $signed(dut.core_dispatch_b[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
                         $signed(dut.core_dispatch_immediate_b[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
                         dut.core_dispatch_use_immediate[core_i],
                         dut.core_dispatch_stage_id[(core_i*8) +: 8],
-                        dut.core_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]);
+                        dut.core_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH],
+                        dut.core_dispatch_tag[(core_i*8) +: 8]);
                 end else if (dut.core_self_dispatch_valid[core_i] && dut.core_self_dispatch_ready[core_i]) begin
                     // Fast-path self-dispatch (compiler.station_program): this
                     // core just started an op handed to it directly by another
@@ -171,31 +173,34 @@ module tb_wau_viewer;
                     // op's completion cycle. Mutually exclusive with the branch
                     // above by construction (wau_core_station's `in_ready` is
                     // forced low whenever `self_valid` is asserted).
-                    $fwrite(trace_f, " disp=1 disp_op=%%0d disp_a=%%0d disp_b=%%0d disp_imm=%%0d disp_use_imm=%%0d disp_stage=%%0d disp_flow=%%0d disp_fastpath=1",
+                    $fwrite(trace_f, " disp=1 disp_op=%%0d disp_a=%%0d disp_b=%%0d disp_imm=%%0d disp_use_imm=%%0d disp_stage=%%0d disp_flow=%%0d disp_tag=%%0d disp_fastpath=1",
                         dut.core_self_dispatch_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH],
                         $signed(dut.core_self_dispatch_a[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
                         $signed(dut.core_self_dispatch_b_reg[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
                         $signed(dut.core_self_dispatch_immediate_b[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
                         dut.core_self_dispatch_use_immediate[core_i],
                         dut.core_self_dispatch_stage_id[(core_i*8) +: 8],
-                        dut.core_self_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]);
+                        dut.core_self_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH],
+                        dut.core_self_dispatch_tag[(core_i*8) +: 8]);
                 end
                 if (dut.core_result_valid[core_i] && dut.core_result_ready[core_i]) begin
-                    $fwrite(trace_f, " res=1 res_val=%%0d res_stage=%%0d res_flow=%%0d",
+                    $fwrite(trace_f, " res=1 res_val=%%0d res_stage=%%0d res_flow=%%0d res_tag=%%0d",
                         $signed(dut.core_result_value[(core_i*DATA_WIDTH) +: DATA_WIDTH]),
                         dut.core_result_stage_id[(core_i*8) +: 8],
-                        dut.core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]);
+                        dut.core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH],
+                        dut.core_result_tag[(core_i*8) +: 8]);
                 end
                 // Data-plane delivery to this core: a result packet that has
                 // travelled the data mesh and is consumed here this cycle. This
                 // exposes the per-link/per-core data movement the viewer animates
                 // (src core -> this core), previously not present in the trace.
                 if (dut.data_local_out_valid[core_i] && dut.data_local_out_ready[core_i]) begin
-                    $fwrite(trace_f, " ddeliv=1 ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d ddeliv_fastpath=%%0d",
+                    $fwrite(trace_f, " ddeliv=1 ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d ddeliv_tag=%%0d ddeliv_fastpath=%%0d",
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_SRC_CORE_LSB +: TB_CORE_ID_WIDTH],
                         $signed(dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_VALUE_LSB +: DATA_WIDTH]),
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH],
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8],
+                        dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_TAG_LSB +: 8],
                         dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_IS_FAST_PATH_LSB +: 1]);
                     if (dut.data_local_out_payload[(core_i*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_IS_FAST_PATH_LSB +: 1]) begin
                         $fwrite(trace_f, " ddeliv_next_stage=%%0d ddeliv_next_op=%%0d",
@@ -220,12 +225,13 @@ module tb_wau_viewer;
                     // branch above they are not emitted.
                     for (deliv_line = 0; deliv_line < TB_LINE_COUNT; deliv_line = deliv_line + 1) begin
                         if (dut.data_hub_out_valid[deliv_line] && dut.data_hub_out_ready[deliv_line]) begin
-                            $fwrite(trace_f, " ddeliv=1 ddeliv_line=%%0d ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d ddeliv_fastpath=%%0d",
+                            $fwrite(trace_f, " ddeliv=1 ddeliv_line=%%0d ddeliv_src=%%0d ddeliv_val=%%0d ddeliv_flow=%%0d ddeliv_stage=%%0d ddeliv_tag=%%0d ddeliv_fastpath=%%0d",
                                 deliv_line,
                                 dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_SRC_CORE_LSB +: TB_CORE_ID_WIDTH],
                                 $signed(dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_VALUE_LSB +: DATA_WIDTH]),
                                 dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH],
                                 dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_STAGE_LSB +: 8],
+                                dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_TAG_LSB +: 8],
                                 dut.data_hub_out_payload[(deliv_line*TB_DATA_PAYLOAD_WIDTH) + TB_DATA_IS_FAST_PATH_LSB +: 1]);
                         end
                     end

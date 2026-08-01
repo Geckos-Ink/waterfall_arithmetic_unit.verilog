@@ -160,6 +160,55 @@ class ProgramStressTests(unittest.TestCase):
             "replica count regression: more replicas issued fewer instructions",
         )
 
+    def test_max_parallel_flows_caps_waves_without_dropping_replicas(self) -> None:
+        payload = _load_payload()
+        payload["programs"] = [copy.deepcopy(payload["programs"][0])]
+        program = payload["programs"][0]
+        program["flows"] = [10]
+        program["replicas"] = 3
+        program["max_parallel_flows"] = 1
+
+        _, _, serial_waves = _materialise(payload)
+        replica_ids = {
+            ins.program_replica for ins in serial_waves.instructions
+        }
+        self.assertEqual(replica_ids, {0, 1, 2})
+
+        windows = []
+        for replica in range(3):
+            instructions = [
+                ins
+                for ins in serial_waves.instructions
+                if ins.program_replica == replica and ins.flow_id == 10
+            ]
+            self.assertTrue(instructions)
+            windows.append(
+                (
+                    min(ins.cycle_start for ins in instructions),
+                    max(ins.cycle_end for ins in instructions),
+                )
+            )
+        self.assertGreaterEqual(windows[1][0], windows[0][1])
+        self.assertGreaterEqual(windows[2][0], windows[1][1])
+
+        parallel_payload = copy.deepcopy(payload)
+        parallel_payload["programs"][0]["max_parallel_flows"] = 2
+        _, _, parallel_waves = _materialise(parallel_payload)
+        first_two = []
+        for replica in (0, 1):
+            instructions = [
+                ins
+                for ins in parallel_waves.instructions
+                if ins.program_replica == replica and ins.flow_id == 10
+            ]
+            first_two.append(
+                (
+                    min(ins.cycle_start for ins in instructions),
+                    max(ins.cycle_end for ins in instructions),
+                )
+            )
+        self.assertLess(first_two[1][0], first_two[0][1])
+
 
 if __name__ == "__main__":
     unittest.main()

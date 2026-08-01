@@ -234,11 +234,11 @@ def derive_stress_stimulus(
 ) -> List[Tuple[int, int, int]]:
     """Build a seeded stress stimulus of ``count`` packets across all flows.
 
-    Flow ids are interleaved round-robin so consecutive packets target
-    *different* flows whenever more than one flow exists: the multi-issue
-    coordinator blocks a second in-flight copy of the same flow id, so
-    interleaving is what actually exercises cross-flow concurrency on the mesh.
-    Operand values are drawn from a deterministic RNG so runs are reproducible.
+    Flow ids are interleaved round-robin so every compiled pipeline receives
+    work evenly. Packet-carried transaction tags allow repeated copies of the
+    same flow id to overlap too; a single-flow model therefore still produces a
+    genuine pipeline stress stream. Operand values come from a deterministic
+    RNG so runs are reproducible.
     """
     if count <= 0:
         raise ValueError("stress stimulus count must be positive")

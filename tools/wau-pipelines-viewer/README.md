@@ -14,9 +14,10 @@ What you get:
   (`--config`) or directly at a `.cw` kernel (`--cw`) and it compiles the
   program, emits the RTL through the real `waugen` toolchain, and simulates
   that fresh circuit — no manual `generate` step.
-- **Stress stimulus** (`--stress N`): a seeded random packet stream that
-  interleaves flow ids so independent flows overlap in the multi-issue
-  coordinator and the mesh-level concurrency becomes visible.
+- **Stress stimulus** (`--stress N`): a seeded random packet stream distributed
+  across the available flow ids. Internal transaction tags let repeated inputs
+  of one flow overlap too, so a single compiled pipeline can be filled instead
+  of waiting for each input to retire.
 - **Phased per-cycle animation**: every simulated cycle plays as a slow-motion
   mini-scene — operand packets travel hop-by-hop from the coordinator along
   the same route the generated router uses (along its own line under the
@@ -94,7 +95,7 @@ and let it prepare the ad-hoc circuit itself (compile → generate → simulate 
 animate):
 
 ```bash
-python3 -m wau_viewer --config examples/wau_3x3_demo.json --stress 6
+python3 -m wau_viewer --config examples/wau_4x4_pipeline_demo.json --stress 32
 ```
 
 or compile a `.cw` kernel straight onto the demo-independent base config:
@@ -123,9 +124,8 @@ Stimulus options:
   the host input port — see `examples/`.
 - `--auto-stimulus`: one deterministic packet per flow.
 - `--stress N` (+ `--stress-seed`, `--stress-range`): N seeded random packets
-  with round-robin-interleaved flow ids — consecutive packets always target
-  different flows, which is what lets the multi-issue coordinator keep several
-  flows in flight and makes the concurrency visible on the mesh.
+  distributed round-robin across flow ids. Repeated instances of the same flow
+  carry distinct internal tags and may be in flight together.
 - `--mnist-images <idx3(.gz)>` (+ `--mnist-count`, `--mnist-offset`): **real
   data** instead of an RNG. Operand pairs are streamed from consecutive MNIST
   pixels centered to `[-128, 127]`, the same values the DE0-Nano stress runner
@@ -174,7 +174,8 @@ wau_viewer/
   recorder.py        # frame capture + MP4 (ffmpeg) / GIF (ffmpeg or Pillow)
 examples/
   de0_nano_demo.stim.json
-  wau_3x3_demo.json          # ad-hoc 3x3 demo circuit
+  wau_4x4_pipeline_demo.json # tagged all-core pipeline/concurrency demo
+  wau_3x3_demo.json          # earlier small ad-hoc demo circuit
   wau_mnist_demo_base.json   # 4x2 base used by the MNIST recording
 ```
 
@@ -191,13 +192,19 @@ repository root is produced this way:
 
 ```bash
 python3 -m wau_viewer \
-  --config examples/wau_3x3_demo.json --stress 6 \
-  --record examples/wau_3x3_demo.gif \
-  --framerate 10 --frames-per-cycle 6 --gif-width 2000 --window-size 3000x1900 --headless
+  --config examples/wau_4x4_pipeline_demo.json --stress 32 \
+  --record examples/wau_4x4_pipeline_demo.gif \
+  --framerate 12 --frames-per-cycle 2 --gif-width 1800 --window-size 2600x2100 --headless
 ```
 
 (`frames_per_cycle / framerate` = seconds of video per simulated cycle; the
-example plays each cycle over 0.6 s.) `--record-max-cycles N` trims long
+example plays each cycle over about 0.17 s.) This fixture schedules eight
+replicas of four pinned row pipelines (32 total instances) through a 16-slot
+window. The real iverilog trace exercises every core exactly eight times,
+reaches eight simultaneously busy cores, retires all inputs in 81 cycles, and
+records zero router stalls; the gap from the offline plan's 16-operation peak
+is deliberately visible as a runtime bottleneck, not hidden by the recording.
+`--record-max-cycles N` trims long
 traces, `--gif-width` caps the GIF resolution (default 1000 px), and
 `--window-size WxH` shapes the off-screen window to the fabric — a tall grid
 (2 columns × 4 rows) wastes most of a landscape frame, a wide one fills it.
@@ -205,8 +212,8 @@ MP4 output requires `ffmpeg`; GIF output uses ffmpeg's palette
 pipeline when available and falls back to a pure-Pillow encoder otherwise.
 
 The second demo GIF in the repository root — the same mesh-stress kernel
-elaborating **real MNIST pixels**, recorded over one complete elaboration so
-no flow animation is cut off mid-flight — is produced with:
+elaborating **real MNIST pixels**, recorded through all four tagged inputs so
+no overlapping flow animation is cut off mid-flight — is produced with:
 
 ```bash
 python3 ../../scripts/fetch_dataset.py   # once
@@ -217,17 +224,18 @@ python3 -m wau_viewer \
   --mnist-images ../../datasets/mnist/t10k-images-idx3-ubyte.gz \
   --mnist-count 4 --mnist-offset 5888 \
   --record examples/wau_mnist_mesh_stress.gif \
-  --framerate 10 --frames-per-cycle 3 --gif-width 2400 --window-size 3000x1900 \
-  --record-max-cycles 198 --headless
+  --framerate 12 --frames-per-cycle 1 --gif-width 1200 \
+  --window-size 3000x1900 --headless
 ```
 
 `examples/wau_mnist_demo_base.json` is the demo's own base config: the
 `wau_cw_fit_base` DE0-Nano preset laid out as a 4x2 grid (two independent
 highways of four cores, which reads better in a landscape recording than the
-2x4 board grid) with every core given the full op set. `198` is where the
-first elaboration's result reaches the host, so the recording ends on a
-completed flow rather than in the middle of one; the untrimmed trace runs
-769 cycles for the four packets.
+2x4 board grid) with every core given the full op set. Its two-slot tagged
+coordinator accepts the first two flow-101 inputs on consecutive cycles,
+exercises all eight cores, and retires all four inputs in acceptance order by
+cycle 403; the equivalent pre-tag trace took 769 cycles. The measured two-core
+busy peak makes the kernel's dependency/station bottleneck visible.
 
 The third demo GIF in the repository root — the per-core fast-path table
 lighting up amber "core → core" hops — is produced from the tracked
@@ -242,11 +250,10 @@ python3 -m wau_viewer \
 
 The Gantt strip is built from the RTL trace itself (each core's dispatch and
 result events), not the *offline* `wau_schedule.json` estimate: for this
-kernel the offline schedule's makespan is only 44 cycles, while the real RTL
-takes 198 cycles to retire the same flow, so drawing the plan would leave the
-strip empty for most of the run. Blocks track the cycle a core actually
-dispatched an op and the cycle its result actually came back, so they stay in
-sync with the playhead for the full 769-cycle trace.
+kernel the offline schedule's makespan is only 44 cycles, while the real RTL's
+first result retires at cycle 200 and the four-input run ends at cycle 403.
+Blocks track the cycle a core actually dispatched an op and the cycle its
+result actually came back, so they stay in sync with the playhead throughout.
 
 In headless mode the GUI is never shown — frames are rendered off-screen by
 `QGraphicsView.grab()`.

@@ -29,11 +29,11 @@
 // destination (core (2,0), line y=0) is on a *different* highway line --
 // under `lines` there is no hub-to-hub bridge (only hub-to-coordinator), so
 // that packet is safely absorbed by the coordinator instead of ever reaching
-// core (2,0)'s own station. Because the packet's flow_id/stage_id/value
-// still sit at the same fixed positions a legacy result would use, the
-// coordinator's relaxed matching (see _render_coordinator) treats it as an
-// ordinary stage-0 completion and dispatches stage 1 normally -- correct,
-// just without a speedup for that one hop. This is the same "no entry ->
+// core (2,0)'s own station. The packet retains its transaction tag alongside
+// flow_id/stage_id/value, so the coordinator's relaxed tagged matching (see
+// _render_coordinator) treats it as an ordinary stage-0 completion and
+// dispatches stage 1 normally -- correct, just without a speedup for that one
+// hop. This is the same "no entry ->
 // no risk, just no speedup" guarantee as a capacity overflow (see
 // tb_wau_station_program_overflow.v), just reached a different way.
 module tb_wau_core_fast_path_overlap;

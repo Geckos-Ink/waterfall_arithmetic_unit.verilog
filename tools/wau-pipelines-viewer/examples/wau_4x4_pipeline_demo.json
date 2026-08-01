@@ -1,0 +1,136 @@
+{
+  "project": {
+    "name": "wau_4x4_pipeline_demo",
+    "output_module_name": "wau_top"
+  },
+  "device": {
+    "preset": "intel_de0_nano",
+    "grid": {
+      "x": 4,
+      "y": 4
+    },
+    "coordinator_mode": "direct",
+    "enable_runtime_auto_adapt": false,
+    "data_width": 32,
+    "flow_id_width": 12,
+    "opcode_width": 8,
+    "data_types": [
+      "int32"
+    ],
+    "local_ram_depth": 128,
+    "global_ram_depth": 2048,
+    "highway": {
+      "topology": "lines",
+      "contract_bus": true,
+      "contract_max_burst": 8,
+      "contract_lease_cycles": 64
+    }
+  },
+  "operations": {
+    "library": [
+      "add",
+      "mul",
+      "max"
+    ]
+  },
+  "compiler": {
+    "routing": "manual",
+    "allow_adaptive_reroute": false,
+    "allow_cycle_recurrence": false,
+    "fallback_radius": 1,
+    "station_cache": {
+      "entries": 4,
+      "replacement_policy": "fifo"
+    },
+    "station_program": {
+      "enabled": true,
+      "table_bits": 5
+    },
+    "core_capabilities": [
+      {"core": {"x": 0, "y": 0}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 1, "y": 0}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 2, "y": 0}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 3, "y": 0}, "operations": ["max"], "data_types": ["int32"]},
+      {"core": {"x": 0, "y": 1}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 1, "y": 1}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 2, "y": 1}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 3, "y": 1}, "operations": ["max"], "data_types": ["int32"]},
+      {"core": {"x": 0, "y": 2}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 1, "y": 2}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 2, "y": 2}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 3, "y": 2}, "operations": ["max"], "data_types": ["int32"]},
+      {"core": {"x": 0, "y": 3}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 1, "y": 3}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 2, "y": 3}, "operations": ["mul"], "data_types": ["int32"]},
+      {"core": {"x": 3, "y": 3}, "operations": ["max"], "data_types": ["int32"]}
+    ]
+  },
+  "scheduler": {
+    "strategy": "dependency_aware",
+    "program_policy": "weighted_fair",
+    "emit_timeline": true,
+    "locality_bias": 1.0
+  },
+  "coordinator": {
+    "max_in_flight": 16
+  },
+  "flows": [
+    {
+      "id": 1,
+      "name": "row0_pipeline",
+      "entry": {"x": 0, "y": 0},
+      "stages": [
+        {"op": "mul", "immediate_b": 2, "dtype": "int32", "core": {"x": 0, "y": 0}, "allow_adaptive": false},
+        {"op": "mul", "immediate_b": 3, "dtype": "int32", "core": {"x": 1, "y": 0}, "allow_adaptive": false},
+        {"op": "mul", "immediate_b": 5, "dtype": "int32", "core": {"x": 2, "y": 0}, "allow_adaptive": false},
+        {"op": "max", "immediate_b": 0, "dtype": "int32", "core": {"x": 3, "y": 0}, "allow_adaptive": false}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "row1_pipeline",
+      "entry": {"x": 0, "y": 1},
+      "stages": [
+        {"op": "mul", "immediate_b": 3, "dtype": "int32", "core": {"x": 0, "y": 1}, "allow_adaptive": false},
+        {"op": "mul", "immediate_b": 5, "dtype": "int32", "core": {"x": 1, "y": 1}, "allow_adaptive": false},
+        {"op": "mul", "immediate_b": 7, "dtype": "int32", "core": {"x": 2, "y": 1}, "allow_adaptive": false},
+        {"op": "max", "immediate_b": 0, "dtype": "int32", "core": {"x": 3, "y": 1}, "allow_adaptive": false}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "row2_pipeline",
+      "entry": {"x": 0, "y": 2},
+      "stages": [
+        {"op": "mul", "immediate_b": 5, "dtype": "int32", "core": {"x": 0, "y": 2}, "allow_adaptive": false},
+        {"op": "mul", "immediate_b": 7, "dtype": "int32", "core": {"x": 1, "y": 2}, "allow_adaptive": false},
+        {"op": "mul", "immediate_b": 11, "dtype": "int32", "core": {"x": 2, "y": 2}, "allow_adaptive": false},
+        {"op": "max", "immediate_b": 0, "dtype": "int32", "core": {"x": 3, "y": 2}, "allow_adaptive": false}
+      ]
+    },
+    {
+      "id": 4,
+      "name": "row3_pipeline",
+      "entry": {"x": 0, "y": 3},
+      "stages": [
+        {"op": "mul", "immediate_b": 7, "dtype": "int32", "core": {"x": 0, "y": 3}, "allow_adaptive": false},
+        {"op": "mul", "immediate_b": 11, "dtype": "int32", "core": {"x": 1, "y": 3}, "allow_adaptive": false},
+        {"op": "mul", "immediate_b": 13, "dtype": "int32", "core": {"x": 2, "y": 3}, "allow_adaptive": false},
+        {"op": "max", "immediate_b": 0, "dtype": "int32", "core": {"x": 3, "y": 3}, "allow_adaptive": false}
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": 1,
+      "name": "four_row_stream",
+      "flows": [1, 2, 3, 4],
+      "priority": 1,
+      "replicas": 8,
+      "max_parallel_flows": 16,
+      "load_balance": "least_busy",
+      "allow_async": true,
+      "allow_out_of_order": true
+    }
+  ]
+}

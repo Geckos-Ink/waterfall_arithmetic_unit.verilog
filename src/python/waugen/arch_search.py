@@ -557,9 +557,16 @@ def run_arch_search(
                 )
                 if max_candidates is not None and len(candidates) >= max_candidates:
                     break
-                candidates.append(_evaluate_candidate(base_payload, knobs, preset,
-                                                      heavy_ops=heavy_ops,
-                                                      light_ops=light_ops))
+                candidates.append(
+                    _evaluate_candidate(
+                        base_payload,
+                        knobs,
+                        preset,
+                        heavy_ops=heavy_ops,
+                        light_ops=light_ops,
+                        preserve_arch_search_v1=True,
+                    )
+                )
             if max_candidates is not None and len(candidates) >= max_candidates:
                 break
         if max_candidates is not None and len(candidates) >= max_candidates:
@@ -600,6 +607,7 @@ def _evaluate_candidate(
     *,
     heavy_ops: list[str],
     light_ops: list[str],
+    preserve_arch_search_v1: bool = False,
 ) -> CandidateResult:
     payload = build_candidate_payload(
         base_payload, knobs, heavy_ops=heavy_ops, light_ops=light_ops
@@ -607,8 +615,14 @@ def _evaluate_candidate(
 
     try:
         config = load_config_obj(payload)
-        compiled = compile_project(config)
-        schedule = build_schedule(compiled)
+        compiled = compile_project(
+            config,
+            _preserve_arch_search_v1=preserve_arch_search_v1,
+        )
+        schedule = build_schedule(
+            compiled,
+            _preserve_arch_search_v1=preserve_arch_search_v1,
+        )
     except (ConfigError, ValueError) as exc:
         return CandidateResult(
             knobs=knobs,
@@ -646,12 +660,12 @@ _COORD_MAX_IN_FLIGHT = 16  # schema ceiling for coordinator.max_in_flight
 def _fit_max_in_flight_values(base_mif: int, num_flows: int) -> tuple[int, ...]:
     """Coordinator in-flight depths worth trying for a workload.
 
-    More in-flight slots only help makespan when independent flows can overlap,
-    but every slot costs LUTs (``wau_resource_model_v1`` charges per slot). So
-    the finder co-sweeps ``1`` (cheapest, cycle-identical for a single flow),
-    powers of two, the base config's value, and the concurrency ceiling
-    (bounded by the number of flows and the schema max), letting the ranker keep
-    the cheapest depth that does not cost makespan.
+    The v1 fit workload model uses declared flow count as its automatic
+    concurrency ceiling. Tagged RTL can also overlap repeated inputs for one
+    flow, but that stream depth is not inferable from a config containing one
+    scheduled instance; callers can supply ``max_in_flight_values`` explicitly.
+    Within that limitation, sweep ``1``, powers of two, the base value, and the
+    flow-count ceiling, bounded by the schema maximum.
     """
     cap = min(_COORD_MAX_IN_FLIGHT, max(1, num_flows))
     values = {1, cap, max(1, min(base_mif, cap))}

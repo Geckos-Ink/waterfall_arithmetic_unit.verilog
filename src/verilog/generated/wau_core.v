@@ -21,6 +21,7 @@ module wau_core #(
 
     input wire dispatch_valid,
     output wire dispatch_ready,
+    input wire [7:0] dispatch_tag,
     input wire [FLOW_ID_WIDTH-1:0] dispatch_flow_id,
     input wire [OPCODE_WIDTH-1:0] dispatch_opcode,
     input wire signed [DATA_WIDTH-1:0] dispatch_a,
@@ -33,6 +34,7 @@ module wau_core #(
     // `_render_fabric_binding`) rather than the coordinator's control plane.
     input wire self_dispatch_valid,
     output wire self_dispatch_ready,
+    input wire [7:0] self_dispatch_tag,
     input wire [FLOW_ID_WIDTH-1:0] self_dispatch_flow_id,
     input wire [OPCODE_WIDTH-1:0] self_dispatch_opcode,
     input wire signed [DATA_WIDTH-1:0] self_dispatch_a,
@@ -44,6 +46,7 @@ module wau_core #(
 
     output wire result_valid,
     input wire result_ready,
+    output wire [7:0] result_tag,
     output wire [FLOW_ID_WIDTH-1:0] result_flow_id,
     output wire [7:0] result_stage_id,
     output wire signed [DATA_WIDTH-1:0] result_value,
@@ -74,6 +77,7 @@ module wau_core #(
         .rst_n(rst_n),
         .in_valid(dispatch_valid),
         .in_ready(dispatch_ready),
+        .in_tag(dispatch_tag),
         .in_flow_id(dispatch_flow_id),
         .in_opcode(dispatch_opcode),
         .in_a(dispatch_a),
@@ -83,6 +87,7 @@ module wau_core #(
         .in_stage_id(dispatch_stage_id),
         .self_valid(self_dispatch_valid),
         .self_ready(self_dispatch_ready),
+        .self_tag(self_dispatch_tag),
         .self_flow_id(self_dispatch_flow_id),
         .self_opcode(self_dispatch_opcode),
         .self_a(self_dispatch_a),
@@ -93,6 +98,7 @@ module wau_core #(
         .peer_busy(peer_busy),
         .out_valid(result_valid),
         .out_ready(result_ready),
+        .out_tag(result_tag),
         .out_flow_id(result_flow_id),
         .out_stage_id(result_stage_id),
         .out_value(result_value),

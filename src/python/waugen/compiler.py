@@ -393,6 +393,7 @@ def _resolve_candidates(
     dtype: str | None,
     op_caps: dict[tuple[int, int, int], set[str]],
     dtype_caps: dict[tuple[int, int, int], set[str]],
+    preserve_legacy_order: bool,
 ) -> tuple[tuple[Coord, ...], Coord | None]:
     def supports(coord: Coord) -> bool:
         key = _coord_key(coord)
@@ -456,11 +457,33 @@ def _resolve_candidates(
             base_candidates.append(best)
 
     candidates = _unique_coords(base_candidates)
+    if (
+        not preserve_legacy_order
+        and node.placement.directive == "prefer_balance"
+        and len(candidates) > 1
+    ):
+        # Runtime auto-adapt can see only one fallback, so make that choice the
+        # deterministic least-loaded alternative instead of inheriting an
+        # incidental candidate-list order from a frontend. Keep every candidate
+        # in the compiled report for analysis, with primary fixed at position 0.
+        alternatives = sorted(
+            (cand for cand in candidates if cand != primary),
+            key=lambda cand: (
+                core_load.get(cand, 0),
+                _coord_distance(cand, primary),
+                cand.z,
+                cand.y,
+                cand.x,
+            ),
+        )
+        candidates = (primary, *alternatives)
     fallback = next((cand for cand in candidates if cand != primary), None)
     return candidates, fallback
 
 
-def compile_project(config: ProjectConfig) -> CompiledProject:
+def compile_project(
+    config: ProjectConfig, *, _preserve_arch_search_v1: bool = False
+) -> CompiledProject:
     grid_x = config.device.grid_x
     grid_y = config.device.grid_y
     grid_z = config.device.grid_z
@@ -540,6 +563,10 @@ def compile_project(config: ProjectConfig) -> CompiledProject:
                 dtype=node.dtype,
                 op_caps=op_caps,
                 dtype_caps=dtype_caps,
+                # `arch-search` is a frozen report schema/ranking. Its private
+                # compatibility path retains the candidate order from v1;
+                # normal compilation promotes the best runtime fallback.
+                preserve_legacy_order=_preserve_arch_search_v1,
             )
 
             core_load[primary] = core_load.get(primary, 0) + 1
@@ -648,11 +675,10 @@ def build_fast_path_tables(
     excluded_destinations: frozenset[int] = frozenset(),
 ) -> tuple[CoreFastPathTable, ...]:
     """Derive each core's static fast-path dispatch table from the already-
-    compiled placement -- never from `SchedulePlan`, since the dynamic
-    coordinator (and therefore this table, which must stay consistent with it)
-    only ever dispatches to a stage's `primary_core` or `fallback_core`, while
-    a schedule-time pick can legitimately land on a third `prefer_balance`
-    candidate for offline timeline/contract-ROM bookkeeping only.
+    compiled placement -- never from `SchedulePlan`. The dynamic coordinator,
+    this table, and the scheduler all restrict execution to a stage's
+    `primary_core` or `fallback_core`; any additional candidates are retained
+    only as compiler analysis inputs.
 
     A flow's last stage never gets an entry: that structurally guarantees
     every flow chain still reaches the coordinator's hub eventually, however

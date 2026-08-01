@@ -54,7 +54,11 @@ module wau_top #(
     // Reserved destination meaning "leave this line" (see wau_highway_router).
     localparam [CORE_ID_WIDTH-1:0] HUB_DST = {CORE_ID_WIDTH{1'b1}};
 
-    localparam integer CTRL_STAGE_LSB = 0;
+    // Internal transaction tags are coordinator slot ids. They are deliberately
+    // carried only inside the generated fabric; the host MMIO ABI remains
+    // flow-id based and unchanged.
+    localparam integer CTRL_TAG_LSB = 0;
+    localparam integer CTRL_STAGE_LSB = CTRL_TAG_LSB + 8;
     localparam integer CTRL_IMM_LSB = CTRL_STAGE_LSB + 8;
     localparam integer CTRL_USE_IMM_LSB = CTRL_IMM_LSB + DATA_WIDTH;
     localparam integer CTRL_B_LSB = CTRL_USE_IMM_LSB + 1;
@@ -63,14 +67,13 @@ module wau_top #(
     localparam integer CTRL_FLOW_ID_LSB = CTRL_OPCODE_LSB + OPCODE_WIDTH;
     localparam integer CTRL_PAYLOAD_WIDTH = CTRL_FLOW_ID_LSB + FLOW_ID_WIDTH;
 
-    localparam integer DATA_FLOW_ID_LSB = 0;
+    localparam integer DATA_TAG_LSB = 0;
+    localparam integer DATA_FLOW_ID_LSB = DATA_TAG_LSB + 8;
     localparam integer DATA_STAGE_LSB = DATA_FLOW_ID_LSB + FLOW_ID_WIDTH;
     localparam integer DATA_VALUE_LSB = DATA_STAGE_LSB + 8;
     localparam integer DATA_SRC_CORE_LSB = DATA_VALUE_LSB + DATA_WIDTH;
-    // Fast-path fields, appended after the original (unmoved) result fields
-    // above -- coord_result_* keeps reading only those original ranges, so
-    // the coordinator needs no awareness of this widening. Internal mesh
-    // payload width, not part of the frozen host-facing ABI.
+    // Fast-path fields follow the tagged base result. This is an internal mesh
+    // payload layout, not part of the frozen host-facing ABI.
     localparam integer DATA_IS_FAST_PATH_LSB = DATA_SRC_CORE_LSB + CORE_ID_WIDTH;
     localparam integer DATA_NEXT_STAGE_LSB = DATA_IS_FAST_PATH_LSB + 1;
     localparam integer DATA_NEXT_OPCODE_LSB = DATA_NEXT_STAGE_LSB + 8;
@@ -91,6 +94,7 @@ module wau_top #(
 
     wire [CORE_COUNT-1:0] core_dispatch_valid;
     wire [CORE_COUNT-1:0] core_dispatch_ready;
+    wire [CORE_COUNT*8-1:0] core_dispatch_tag;
     wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_dispatch_flow_id;
     wire [CORE_COUNT*OPCODE_WIDTH-1:0] core_dispatch_opcode;
     wire [CORE_COUNT*DATA_WIDTH-1:0] core_dispatch_a;
@@ -101,6 +105,7 @@ module wau_top #(
 
     wire [CORE_COUNT-1:0] core_result_valid;
     wire [CORE_COUNT-1:0] core_result_ready;
+    wire [CORE_COUNT*8-1:0] core_result_tag;
     wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_result_flow_id;
     wire [CORE_COUNT*8-1:0] core_result_stage_id;
     wire [CORE_COUNT*DATA_WIDTH-1:0] core_result_value;
@@ -126,6 +131,7 @@ module wau_top #(
     // are unpacked from data_local_out_*.
     wire [CORE_COUNT-1:0] core_self_dispatch_valid;
     wire [CORE_COUNT-1:0] core_self_dispatch_ready;
+    wire [CORE_COUNT*8-1:0] core_self_dispatch_tag;
     wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_self_dispatch_flow_id;
     wire [CORE_COUNT*OPCODE_WIDTH-1:0] core_self_dispatch_opcode;
     wire [CORE_COUNT*DATA_WIDTH-1:0] core_self_dispatch_a;
@@ -137,6 +143,7 @@ module wau_top #(
     wire coord_dispatch_valid;
     wire coord_dispatch_ready;
     wire [CORE_ID_WIDTH-1:0] coord_dispatch_dst_core;
+    wire [7:0] coord_dispatch_tag;
     wire [FLOW_ID_WIDTH-1:0] coord_dispatch_flow_id;
     wire [OPCODE_WIDTH-1:0] coord_dispatch_opcode;
     wire signed [DATA_WIDTH-1:0] coord_dispatch_a;
@@ -148,6 +155,7 @@ module wau_top #(
     wire coord_result_valid;
     wire coord_result_ready;
     wire [CORE_ID_WIDTH-1:0] coord_result_src_core;
+    wire [7:0] coord_result_tag;
     wire [FLOW_ID_WIDTH-1:0] coord_result_flow_id;
     wire [7:0] coord_result_stage_id;
     wire signed [DATA_WIDTH-1:0] coord_result_value;
@@ -191,6 +199,7 @@ module wau_top #(
         .dispatch_pkt_valid(coord_dispatch_valid),
         .dispatch_pkt_ready(coord_dispatch_ready),
         .dispatch_pkt_dst_core(coord_dispatch_dst_core),
+        .dispatch_pkt_tag(coord_dispatch_tag),
         .dispatch_pkt_flow_id(coord_dispatch_flow_id),
         .dispatch_pkt_opcode(coord_dispatch_opcode),
         .dispatch_pkt_a(coord_dispatch_a),
@@ -201,6 +210,7 @@ module wau_top #(
         .result_pkt_valid(coord_result_valid),
         .result_pkt_ready(coord_result_ready),
         .result_pkt_src_core(coord_result_src_core),
+        .result_pkt_tag(coord_result_tag),
         .result_pkt_flow_id(coord_result_flow_id),
         .result_pkt_stage_id(coord_result_stage_id),
         .result_pkt_value(coord_result_value),
@@ -226,6 +236,8 @@ module wau_top #(
             assign ctrl_local_in_payload[(core_i*CTRL_PAYLOAD_WIDTH) +: CTRL_PAYLOAD_WIDTH] = {CTRL_PAYLOAD_WIDTH{1'b0}};
             assign core_dispatch_valid[core_i] = ctrl_local_out_valid[core_i];
             assign ctrl_local_out_ready[core_i] = core_dispatch_ready[core_i];
+            assign core_dispatch_tag[(core_i*8) +: 8] =
+                ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_TAG_LSB +: 8];
             assign core_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH] =
                 ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_FLOW_ID_LSB +: FLOW_ID_WIDTH];
             assign core_dispatch_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH] =
@@ -253,7 +265,8 @@ module wau_top #(
                 core_i[CORE_ID_WIDTH-1:0],
                 core_result_value[(core_i*DATA_WIDTH) +: DATA_WIDTH],
                 core_result_stage_id[(core_i*8) +: 8],
-                core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]
+                core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH],
+                core_result_tag[(core_i*8) +: 8]
             };
 
             // Fast-path self-dispatch: unpack whatever the mesh delivers to
@@ -271,6 +284,8 @@ module wau_top #(
                 (CORE_SHARES_COORDINATOR_PORT && (core_i == COORDINATOR_CORE_INDEX))
                     ? 1'b0
                     : data_local_out_valid[core_i];
+            assign core_self_dispatch_tag[(core_i*8) +: 8] =
+                data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_TAG_LSB +: 8];
             assign core_self_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH] =
                 data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH];
             assign core_self_dispatch_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH] =
@@ -324,7 +339,8 @@ module wau_top #(
                 coord_dispatch_b,
                 coord_dispatch_use_immediate,
                 coord_dispatch_immediate_b,
-                coord_dispatch_stage_id
+                coord_dispatch_stage_id,
+                coord_dispatch_tag
             };
 
             // Nothing is injected into the data plane from the host side, and
@@ -383,6 +399,8 @@ module wau_top #(
         data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_STAGE_LSB +: 8];
     assign coord_result_flow_id =
         data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH];
+    assign coord_result_tag =
+        data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_TAG_LSB +: 8];
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -583,6 +601,7 @@ module wau_top #(
                     .rst_n(rst_n),
                     .dispatch_valid(core_dispatch_valid[CORE_INDEX]),
                     .dispatch_ready(core_dispatch_ready[CORE_INDEX]),
+                    .dispatch_tag(core_dispatch_tag[(CORE_INDEX*8) +: 8]),
                     .dispatch_flow_id(core_dispatch_flow_id[(CORE_INDEX*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]),
                     .dispatch_opcode(core_dispatch_opcode[(CORE_INDEX*OPCODE_WIDTH) +: OPCODE_WIDTH]),
                     .dispatch_a(core_dispatch_a[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
@@ -592,6 +611,7 @@ module wau_top #(
                     .dispatch_stage_id(core_dispatch_stage_id[(CORE_INDEX*8) +: 8]),
                     .self_dispatch_valid(core_self_dispatch_valid[CORE_INDEX]),
                     .self_dispatch_ready(core_self_dispatch_ready[CORE_INDEX]),
+                    .self_dispatch_tag(core_self_dispatch_tag[(CORE_INDEX*8) +: 8]),
                     .self_dispatch_flow_id(core_self_dispatch_flow_id[(CORE_INDEX*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]),
                     .self_dispatch_opcode(core_self_dispatch_opcode[(CORE_INDEX*OPCODE_WIDTH) +: OPCODE_WIDTH]),
                     .self_dispatch_a(core_self_dispatch_a[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
@@ -602,6 +622,7 @@ module wau_top #(
                     .peer_busy(core_busy),
                     .result_valid(core_result_valid[CORE_INDEX]),
                     .result_ready(core_result_ready[CORE_INDEX]),
+                    .result_tag(core_result_tag[(CORE_INDEX*8) +: 8]),
                     .result_flow_id(core_result_flow_id[(CORE_INDEX*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]),
                     .result_stage_id(core_result_stage_id[(CORE_INDEX*8) +: 8]),
                     .result_value(core_result_value[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),

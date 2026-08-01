@@ -195,8 +195,8 @@ class StressStimulusTests(unittest.TestCase):
         model = _make_model([1, 2, 3])
         stim = derive_stress_stimulus(model, 7, seed=1)
         self.assertEqual([s[0] for s in stim], [1, 2, 3, 1, 2, 3, 1])
-        # consecutive packets always target different flows (what actually
-        # produces multi-issue overlap: host_in_ready blocks same-flow reuse)
+        # Multiple flows remain distributed evenly; tagged same-flow reuse now
+        # also overlaps when the model contains only one flow.
         for prev, cur in zip(stim, stim[1:]):
             self.assertNotEqual(prev[0], cur[0])
 

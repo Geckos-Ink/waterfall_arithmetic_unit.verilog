@@ -329,6 +329,7 @@ module wau_core_station #(
 
     input wire in_valid,
     output wire in_ready,
+    input wire [7:0] in_tag,
     input wire [FLOW_ID_WIDTH-1:0] in_flow_id,
     input wire [OPCODE_WIDTH-1:0] in_opcode,
     input wire signed [DATA_WIDTH-1:0] in_a,
@@ -347,6 +348,7 @@ module wau_core_station #(
     // destination locally instead of via the central coordinator.
     input wire self_valid,
     output wire self_ready,
+    input wire [7:0] self_tag,
     input wire [FLOW_ID_WIDTH-1:0] self_flow_id,
     input wire [OPCODE_WIDTH-1:0] self_opcode,
     input wire signed [DATA_WIDTH-1:0] self_a,
@@ -358,6 +360,7 @@ module wau_core_station #(
 
     output reg out_valid,
     input wire out_ready,
+    output reg [7:0] out_tag,
     output reg [FLOW_ID_WIDTH-1:0] out_flow_id,
     output reg [7:0] out_stage_id,
     output reg signed [DATA_WIDTH-1:0] out_value,
@@ -399,6 +402,7 @@ module wau_core_station #(
 
     reg [1:0] state;
 
+    reg [7:0] active_tag;
     reg [FLOW_ID_WIDTH-1:0] active_flow_id;
     reg [OPCODE_WIDTH-1:0] active_opcode;
     reg [7:0] active_stage_id;
@@ -453,12 +457,14 @@ module wau_core_station #(
     assign effective_b = in_use_immediate ? in_immediate_b : in_b;
     assign self_effective_b = self_use_immediate ? self_immediate_b : self_b_reg;
 
+    wire [7:0] sel_tag;
     wire [FLOW_ID_WIDTH-1:0] sel_flow_id;
     wire [OPCODE_WIDTH-1:0] sel_opcode;
     wire signed [DATA_WIDTH-1:0] sel_a;
     wire signed [DATA_WIDTH-1:0] sel_b;
     wire signed [DATA_WIDTH-1:0] sel_b_reg;
     wire [7:0] sel_stage_id;
+    assign sel_tag      = sel_use_self ? self_tag           : in_tag;
     assign sel_flow_id  = sel_use_self ? self_flow_id       : in_flow_id;
     assign sel_opcode   = sel_use_self ? self_opcode        : in_opcode;
     assign sel_a        = sel_use_self ? self_a             : in_a;
@@ -549,9 +555,11 @@ module wau_core_station #(
         if (!rst_n) begin
             state <= ST_IDLE;
             out_valid <= 1'b0;
+            out_tag <= 8'd0;
             out_flow_id <= {{FLOW_ID_WIDTH{{1'b0}}}};
             out_stage_id <= 8'd0;
             out_value <= {{DATA_WIDTH{{1'b0}}}};
+            active_tag <= 8'd0;
             active_flow_id <= {{FLOW_ID_WIDTH{{1'b0}}}};
             active_opcode <= {{OPCODE_WIDTH{{1'b0}}}};
             active_stage_id <= 8'd0;
@@ -599,6 +607,7 @@ module wau_core_station #(
                         if (cache_hit_comb) begin
                             cache_hit_count <= cache_hit_count + 32'd1;
                             out_valid <= 1'b1;
+                            out_tag <= sel_tag;
                             out_flow_id <= sel_flow_id;
                             out_stage_id <= sel_stage_id;
                             out_value <= cache_hit_value;
@@ -625,6 +634,7 @@ module wau_core_station #(
                             end
                             state <= ST_OUT;
                         end else begin
+                            active_tag <= sel_tag;
                             active_flow_id <= sel_flow_id;
                             active_opcode <= sel_opcode;
                             active_stage_id <= sel_stage_id;
@@ -651,6 +661,7 @@ module wau_core_station #(
 
                     if ((wait_cycles == 8'd0) && (result_latched_valid || alu_out_valid)) begin
                         out_valid <= 1'b1;
+                        out_tag <= active_tag;
                         out_flow_id <= active_flow_id;
                         out_stage_id <= active_stage_id;
                         out_value <= alu_out_valid ? alu_out_value : result_latched_value;
@@ -729,6 +740,7 @@ module wau_core #(
 
     input wire dispatch_valid,
     output wire dispatch_ready,
+    input wire [7:0] dispatch_tag,
     input wire [FLOW_ID_WIDTH-1:0] dispatch_flow_id,
     input wire [OPCODE_WIDTH-1:0] dispatch_opcode,
     input wire signed [DATA_WIDTH-1:0] dispatch_a,
@@ -741,6 +753,7 @@ module wau_core #(
     // `_render_fabric_binding`) rather than the coordinator's control plane.
     input wire self_dispatch_valid,
     output wire self_dispatch_ready,
+    input wire [7:0] self_dispatch_tag,
     input wire [FLOW_ID_WIDTH-1:0] self_dispatch_flow_id,
     input wire [OPCODE_WIDTH-1:0] self_dispatch_opcode,
     input wire signed [DATA_WIDTH-1:0] self_dispatch_a,
@@ -752,6 +765,7 @@ module wau_core #(
 
     output wire result_valid,
     input wire result_ready,
+    output wire [7:0] result_tag,
     output wire [FLOW_ID_WIDTH-1:0] result_flow_id,
     output wire [7:0] result_stage_id,
     output wire signed [DATA_WIDTH-1:0] result_value,
@@ -782,6 +796,7 @@ module wau_core #(
         .rst_n(rst_n),
         .in_valid(dispatch_valid),
         .in_ready(dispatch_ready),
+        .in_tag(dispatch_tag),
         .in_flow_id(dispatch_flow_id),
         .in_opcode(dispatch_opcode),
         .in_a(dispatch_a),
@@ -791,6 +806,7 @@ module wau_core #(
         .in_stage_id(dispatch_stage_id),
         .self_valid(self_dispatch_valid),
         .self_ready(self_dispatch_ready),
+        .self_tag(self_dispatch_tag),
         .self_flow_id(self_dispatch_flow_id),
         .self_opcode(self_dispatch_opcode),
         .self_a(self_dispatch_a),
@@ -801,6 +817,7 @@ module wau_core #(
         .peer_busy(peer_busy),
         .out_valid(result_valid),
         .out_ready(result_ready),
+        .out_tag(result_tag),
         .out_flow_id(result_flow_id),
         .out_stage_id(result_stage_id),
         .out_value(result_value),
@@ -1892,6 +1909,7 @@ module wau_coordinator #(
     output reg dispatch_pkt_valid,
     input wire dispatch_pkt_ready,
     output reg [7:0] dispatch_pkt_dst_core,
+    output reg [7:0] dispatch_pkt_tag,
     output reg [FLOW_ID_WIDTH-1:0] dispatch_pkt_flow_id,
     output reg [OPCODE_WIDTH-1:0] dispatch_pkt_opcode,
     output reg signed [DATA_WIDTH-1:0] dispatch_pkt_a,
@@ -1903,6 +1921,7 @@ module wau_coordinator #(
     input wire result_pkt_valid,
     output wire result_pkt_ready,
     input wire [7:0] result_pkt_src_core,
+    input wire [7:0] result_pkt_tag,
     input wire [FLOW_ID_WIDTH-1:0] result_pkt_flow_id,
     input wire [7:0] result_pkt_stage_id,
     input wire signed [DATA_WIDTH-1:0] result_pkt_value,
@@ -1911,12 +1930,13 @@ module wau_coordinator #(
 );
     localparam MAX_IN_FLIGHT = `WAU_COORD_MAX_IN_FLIGHT;
 
-    // Multi-issue slot table. Each slot holds one in-flight flow's accumulator
-    // context; the coordinator keeps up to MAX_IN_FLIGHT *distinct* flows
-    // executing concurrently across the core mesh. Per-flow semantics are
-    // identical to the legacy serial coordinator (one accumulator chain walked
-    // stage-by-stage), so a single in-flight flow keeps cycle-identical timing
-    // while independent flows now overlap on different cores.
+    // Multi-issue slot table. Each slot holds one in-flight transaction's
+    // accumulator context; an internal tag equal to the slot index travels with
+    // every dispatch/result packet, so multiple inputs for the same flow id can
+    // execute concurrently without ambiguous result matching. Per-transaction
+    // semantics are identical to the legacy serial coordinator (one accumulator
+    // chain walked stage-by-stage), so a single in-flight flow keeps
+    // cycle-identical timing while independent flows overlap on different cores.
     reg                          slot_valid     [0:MAX_IN_FLIGHT-1];
     reg [7:0]                    slot_flow_slot [0:MAX_IN_FLIGHT-1];
     reg [FLOW_ID_WIDTH-1:0]      slot_flow_id   [0:MAX_IN_FLIGHT-1];
@@ -1927,6 +1947,9 @@ module wau_coordinator #(
     reg [7:0]                    slot_wait_core [0:MAX_IN_FLIGHT-1];
     reg                          slot_done      [0:MAX_IN_FLIGHT-1];
     reg signed [DATA_WIDTH-1:0]  slot_outval    [0:MAX_IN_FLIGHT-1];
+    reg [31:0]                   slot_order     [0:MAX_IN_FLIGHT-1];
+    reg [31:0]                   alloc_order;
+    reg [31:0]                   retire_order;
 
     // Combinational selections, driven by the always @(*) blocks below.
     reg        disp_found;
@@ -1938,7 +1961,6 @@ module wau_coordinator #(
     reg [7:0]  out_slot;
     reg        alloc_found;
     reg [7:0]  alloc_slot;
-    reg        flow_busy;
 
     // Arbiter scratch.
     reg [7:0]  cc_p;
@@ -1953,14 +1975,12 @@ module wau_coordinator #(
     integer    ri;
     integer    oi;
     integer    ai;
-    integer    fi;
     integer    k;
     reg        latched_now;
 
-    // Accept a new flow when a slot is free and that flow id is not already in
-    // flight (keeps result matching by flow+stage unambiguous without widening
-    // the dispatch/result packet format with a tag).
-    assign host_in_ready = alloc_found && !flow_busy;
+    // The packet-carried slot tag makes same-flow transactions unambiguous, so
+    // admission is limited only by physical coordinator capacity.
+    assign host_in_ready = alloc_found;
     assign result_pkt_ready = res_found;
 
     function [7:0] flow_slot_from_id;
@@ -2104,6 +2124,7 @@ module wau_coordinator #(
 
         dispatch_pkt_valid         = disp_found;
         dispatch_pkt_dst_core      = disp_core;
+        dispatch_pkt_tag           = disp_slot;
         dispatch_pkt_flow_id       = slot_flow_id[disp_slot];
         dispatch_pkt_opcode        = flow_stage_opcode(sel_flow_slot, sel_stage);
         dispatch_pkt_a             = slot_acc[disp_slot];
@@ -2113,17 +2134,15 @@ module wau_coordinator #(
         dispatch_pkt_stage_id      = sel_stage;
     end
 
-    // ---- result matcher: map an incoming result to its awaiting slot ----
-    // Matched by flow_id and a stage_id that has reached or passed the slot's
-    // own bookkeeping (not exact-equality, and not also src_core) so that a
+    // ---- result matcher: map an incoming result to its tagged slot --------
+    // The transaction tag is the authoritative identity. Stage progression is
+    // still checked so that a
     // chain of per-core fast-path hops (see wau_core_station) can run ahead
     // of this coordinator's stage counter without ever routing back to it:
     // the eventual hub-bound packet (always the flow's last stage -- see
     // compiler.build_fast_path_tables, which never gives a last stage a
     // fast-path entry) is still recognized and jumps slot_stage to wherever
-    // the chain actually got to. flow_id alone is already the sole *required*
-    // disambiguator (at most one in-flight slot per flow id), so this is a
-    // strict superset of the old exact match: with an empty fast-path table
+    // the chain actually got to. With an empty fast-path table
     // every stage still round-trips one at a time and
     // result_pkt_stage_id == slot_stage[ri] always, making this
     // byte-identical to before. slot_wait_core stays populated for
@@ -2133,6 +2152,7 @@ module wau_coordinator #(
         res_slot  = 8'd0;
         for (ri = 0; ri < MAX_IN_FLIGHT; ri = ri + 1) begin
             if (!res_found && slot_valid[ri] && slot_awaiting[ri] &&
+                (result_pkt_tag == ri[7:0]) &&
                 (slot_flow_id[ri] == result_pkt_flow_id) &&
                 (result_pkt_stage_id >= slot_stage[ri])) begin
                 res_found = 1'b1;
@@ -2141,12 +2161,13 @@ module wau_coordinator #(
         end
     end
 
-    // ---- completed-output selector + free-slot/flow guards -------------
+    // ---- completed-output selector + free-slot guard --------------------
     always @(*) begin
         out_found = 1'b0;
         out_slot  = 8'd0;
         for (oi = 0; oi < MAX_IN_FLIGHT; oi = oi + 1) begin
-            if (!out_found && slot_valid[oi] && slot_done[oi]) begin
+            if (!out_found && slot_valid[oi] && slot_done[oi] &&
+                (slot_order[oi] == retire_order)) begin
                 out_found = 1'b1;
                 out_slot  = oi;
             end
@@ -2164,21 +2185,14 @@ module wau_coordinator #(
         end
     end
 
-    always @(*) begin
-        flow_busy = 1'b0;
-        for (fi = 0; fi < MAX_IN_FLIGHT; fi = fi + 1) begin
-            if (slot_valid[fi] && (slot_flow_id[fi] == host_in_flow_id)) begin
-                flow_busy = 1'b1;
-            end
-        end
-    end
-
     // ---- sequential state ----------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             host_out_valid   <= 1'b0;
             host_out_flow_id <= {{FLOW_ID_WIDTH{{1'b0}}}};
             host_out_value   <= {{DATA_WIDTH{{1'b0}}}};
+            alloc_order      <= 32'd0;
+            retire_order     <= 32'd0;
             for (k = 0; k < MAX_IN_FLIGHT; k = k + 1) begin
                 slot_valid[k]     <= 1'b0;
                 slot_flow_slot[k] <= 8'hFF;
@@ -2190,6 +2204,7 @@ module wau_coordinator #(
                 slot_wait_core[k] <= 8'd0;
                 slot_done[k]      <= 1'b0;
                 slot_outval[k]    <= {{DATA_WIDTH{{1'b0}}}};
+                slot_order[k]     <= 32'd0;
             end
         end else begin
             latched_now = 1'b0;
@@ -2211,6 +2226,8 @@ module wau_coordinator #(
                     slot_opb[alloc_slot]       <= host_in_b;
                     slot_awaiting[alloc_slot]  <= 1'b0;
                     slot_done[alloc_slot]      <= 1'b0;
+                    slot_order[alloc_slot]     <= alloc_order;
+                    alloc_order                <= alloc_order + 32'd1;
                 end
             end
 
@@ -2227,12 +2244,14 @@ module wau_coordinator #(
                     // final stage: latch output immediately when the port is
                     // free (keeps single-flow latency identical to the serial
                     // design); otherwise buffer it in the slot until it drains.
-                    if (!host_out_valid || host_out_ready) begin
+                    if ((slot_order[res_slot] == retire_order) &&
+                        (!host_out_valid || host_out_ready)) begin
                         host_out_valid       <= 1'b1;
                         host_out_flow_id     <= slot_flow_id[res_slot];
                         host_out_value       <= result_pkt_value;
                         slot_valid[res_slot] <= 1'b0;
                         slot_done[res_slot]  <= 1'b0;
+                        retire_order         <= retire_order + 32'd1;
                         latched_now = 1'b1;
                     end else begin
                         slot_done[res_slot]   <= 1'b1;
@@ -2251,6 +2270,7 @@ module wau_coordinator #(
                 host_out_value       <= slot_outval[out_slot];
                 slot_valid[out_slot] <= 1'b0;
                 slot_done[out_slot]  <= 1'b0;
+                retire_order         <= retire_order + 32'd1;
             end
         end
     end
@@ -2261,6 +2281,8 @@ endmodule
 _CORE_DISPATCH_UNPACK = """
             assign core_dispatch_valid[core_i] = ctrl_local_out_valid[core_i];
             assign ctrl_local_out_ready[core_i] = core_dispatch_ready[core_i];
+            assign core_dispatch_tag[(core_i*8) +: 8] =
+                ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_TAG_LSB +: 8];
             assign core_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH] =
                 ctrl_local_out_payload[(core_i*CTRL_PAYLOAD_WIDTH) + CTRL_FLOW_ID_LSB +: FLOW_ID_WIDTH];
             assign core_dispatch_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH] =
@@ -2288,7 +2310,8 @@ _CORE_DISPATCH_UNPACK = """
                 core_i[CORE_ID_WIDTH-1:0],
                 core_result_value[(core_i*DATA_WIDTH) +: DATA_WIDTH],
                 core_result_stage_id[(core_i*8) +: 8],
-                core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]
+                core_result_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH],
+                core_result_tag[(core_i*8) +: 8]
             };
 
             // Fast-path self-dispatch: unpack whatever the mesh delivers to
@@ -2306,6 +2329,8 @@ _CORE_DISPATCH_UNPACK = """
                 (CORE_SHARES_COORDINATOR_PORT && (core_i == COORDINATOR_CORE_INDEX))
                     ? 1'b0
                     : data_local_out_valid[core_i];
+            assign core_self_dispatch_tag[(core_i*8) +: 8] =
+                data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_TAG_LSB +: 8];
             assign core_self_dispatch_flow_id[(core_i*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH] =
                 data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH];
             assign core_self_dispatch_opcode[(core_i*OPCODE_WIDTH) +: OPCODE_WIDTH] =
@@ -2380,7 +2405,8 @@ __WAU_CORE_DISPATCH_UNPACK__
                 coord_dispatch_b,
                 coord_dispatch_use_immediate,
                 coord_dispatch_immediate_b,
-                coord_dispatch_stage_id
+                coord_dispatch_stage_id,
+                coord_dispatch_tag
             };
 
             // Nothing is injected into the data plane from the host side, and
@@ -2439,6 +2465,8 @@ __WAU_CORE_DISPATCH_UNPACK__
         data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_STAGE_LSB +: 8];
     assign coord_result_flow_id =
         data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH];
+    assign coord_result_tag =
+        data_hub_out_payload[(hub_sel*DATA_PAYLOAD_WIDTH) + DATA_TAG_LSB +: 8];
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -2475,7 +2503,8 @@ _FABRIC_BINDING_SHARED = """    // Single-highway fabric binding (chain / matrix
                     coord_dispatch_b,
                     coord_dispatch_use_immediate,
                     coord_dispatch_immediate_b,
-                    coord_dispatch_stage_id
+                    coord_dispatch_stage_id,
+                    coord_dispatch_tag
                 };
             end else begin : gen_ctrl_ingress_zero
                 assign ctrl_local_in_valid[core_i] = 1'b0;
@@ -2503,6 +2532,8 @@ __WAU_CORE_DISPATCH_UNPACK__
                     data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_STAGE_LSB +: 8];
                 assign coord_result_flow_id =
                     data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_FLOW_ID_LSB +: FLOW_ID_WIDTH];
+                assign coord_result_tag =
+                    data_local_out_payload[(core_i*DATA_PAYLOAD_WIDTH) + DATA_TAG_LSB +: 8];
             end else begin : gen_data_egress_drop
                 // Any core other than the one the coordinator shares a port
                 // with genuinely owns its inbound data-plane traffic --
@@ -2628,7 +2659,11 @@ module __WAU_TOP_MODULE__ #(
     // Reserved destination meaning "leave this line" (see wau_highway_router).
     localparam [CORE_ID_WIDTH-1:0] HUB_DST = {CORE_ID_WIDTH{1'b1}};
 
-    localparam integer CTRL_STAGE_LSB = 0;
+    // Internal transaction tags are coordinator slot ids. They are deliberately
+    // carried only inside the generated fabric; the host MMIO ABI remains
+    // flow-id based and unchanged.
+    localparam integer CTRL_TAG_LSB = 0;
+    localparam integer CTRL_STAGE_LSB = CTRL_TAG_LSB + 8;
     localparam integer CTRL_IMM_LSB = CTRL_STAGE_LSB + 8;
     localparam integer CTRL_USE_IMM_LSB = CTRL_IMM_LSB + DATA_WIDTH;
     localparam integer CTRL_B_LSB = CTRL_USE_IMM_LSB + 1;
@@ -2637,14 +2672,13 @@ module __WAU_TOP_MODULE__ #(
     localparam integer CTRL_FLOW_ID_LSB = CTRL_OPCODE_LSB + OPCODE_WIDTH;
     localparam integer CTRL_PAYLOAD_WIDTH = CTRL_FLOW_ID_LSB + FLOW_ID_WIDTH;
 
-    localparam integer DATA_FLOW_ID_LSB = 0;
+    localparam integer DATA_TAG_LSB = 0;
+    localparam integer DATA_FLOW_ID_LSB = DATA_TAG_LSB + 8;
     localparam integer DATA_STAGE_LSB = DATA_FLOW_ID_LSB + FLOW_ID_WIDTH;
     localparam integer DATA_VALUE_LSB = DATA_STAGE_LSB + 8;
     localparam integer DATA_SRC_CORE_LSB = DATA_VALUE_LSB + DATA_WIDTH;
-    // Fast-path fields, appended after the original (unmoved) result fields
-    // above -- coord_result_* keeps reading only those original ranges, so
-    // the coordinator needs no awareness of this widening. Internal mesh
-    // payload width, not part of the frozen host-facing ABI.
+    // Fast-path fields follow the tagged base result. This is an internal mesh
+    // payload layout, not part of the frozen host-facing ABI.
     localparam integer DATA_IS_FAST_PATH_LSB = DATA_SRC_CORE_LSB + CORE_ID_WIDTH;
     localparam integer DATA_NEXT_STAGE_LSB = DATA_IS_FAST_PATH_LSB + 1;
     localparam integer DATA_NEXT_OPCODE_LSB = DATA_NEXT_STAGE_LSB + 8;
@@ -2665,6 +2699,7 @@ module __WAU_TOP_MODULE__ #(
 
     wire [CORE_COUNT-1:0] core_dispatch_valid;
     wire [CORE_COUNT-1:0] core_dispatch_ready;
+    wire [CORE_COUNT*8-1:0] core_dispatch_tag;
     wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_dispatch_flow_id;
     wire [CORE_COUNT*OPCODE_WIDTH-1:0] core_dispatch_opcode;
     wire [CORE_COUNT*DATA_WIDTH-1:0] core_dispatch_a;
@@ -2675,6 +2710,7 @@ module __WAU_TOP_MODULE__ #(
 
     wire [CORE_COUNT-1:0] core_result_valid;
     wire [CORE_COUNT-1:0] core_result_ready;
+    wire [CORE_COUNT*8-1:0] core_result_tag;
     wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_result_flow_id;
     wire [CORE_COUNT*8-1:0] core_result_stage_id;
     wire [CORE_COUNT*DATA_WIDTH-1:0] core_result_value;
@@ -2700,6 +2736,7 @@ module __WAU_TOP_MODULE__ #(
     // are unpacked from data_local_out_*.
     wire [CORE_COUNT-1:0] core_self_dispatch_valid;
     wire [CORE_COUNT-1:0] core_self_dispatch_ready;
+    wire [CORE_COUNT*8-1:0] core_self_dispatch_tag;
     wire [CORE_COUNT*FLOW_ID_WIDTH-1:0] core_self_dispatch_flow_id;
     wire [CORE_COUNT*OPCODE_WIDTH-1:0] core_self_dispatch_opcode;
     wire [CORE_COUNT*DATA_WIDTH-1:0] core_self_dispatch_a;
@@ -2711,6 +2748,7 @@ module __WAU_TOP_MODULE__ #(
     wire coord_dispatch_valid;
     wire coord_dispatch_ready;
     wire [CORE_ID_WIDTH-1:0] coord_dispatch_dst_core;
+    wire [7:0] coord_dispatch_tag;
     wire [FLOW_ID_WIDTH-1:0] coord_dispatch_flow_id;
     wire [OPCODE_WIDTH-1:0] coord_dispatch_opcode;
     wire signed [DATA_WIDTH-1:0] coord_dispatch_a;
@@ -2722,6 +2760,7 @@ module __WAU_TOP_MODULE__ #(
     wire coord_result_valid;
     wire coord_result_ready;
     wire [CORE_ID_WIDTH-1:0] coord_result_src_core;
+    wire [7:0] coord_result_tag;
     wire [FLOW_ID_WIDTH-1:0] coord_result_flow_id;
     wire [7:0] coord_result_stage_id;
     wire signed [DATA_WIDTH-1:0] coord_result_value;
@@ -2765,6 +2804,7 @@ module __WAU_TOP_MODULE__ #(
         .dispatch_pkt_valid(coord_dispatch_valid),
         .dispatch_pkt_ready(coord_dispatch_ready),
         .dispatch_pkt_dst_core(coord_dispatch_dst_core),
+        .dispatch_pkt_tag(coord_dispatch_tag),
         .dispatch_pkt_flow_id(coord_dispatch_flow_id),
         .dispatch_pkt_opcode(coord_dispatch_opcode),
         .dispatch_pkt_a(coord_dispatch_a),
@@ -2775,6 +2815,7 @@ module __WAU_TOP_MODULE__ #(
         .result_pkt_valid(coord_result_valid),
         .result_pkt_ready(coord_result_ready),
         .result_pkt_src_core(coord_result_src_core),
+        .result_pkt_tag(coord_result_tag),
         .result_pkt_flow_id(coord_result_flow_id),
         .result_pkt_stage_id(coord_result_stage_id),
         .result_pkt_value(coord_result_value),
@@ -2966,6 +3007,7 @@ __WAU_CONTRACT_ROM__
                     .rst_n(rst_n),
                     .dispatch_valid(core_dispatch_valid[CORE_INDEX]),
                     .dispatch_ready(core_dispatch_ready[CORE_INDEX]),
+                    .dispatch_tag(core_dispatch_tag[(CORE_INDEX*8) +: 8]),
                     .dispatch_flow_id(core_dispatch_flow_id[(CORE_INDEX*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]),
                     .dispatch_opcode(core_dispatch_opcode[(CORE_INDEX*OPCODE_WIDTH) +: OPCODE_WIDTH]),
                     .dispatch_a(core_dispatch_a[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
@@ -2975,6 +3017,7 @@ __WAU_CONTRACT_ROM__
                     .dispatch_stage_id(core_dispatch_stage_id[(CORE_INDEX*8) +: 8]),
                     .self_dispatch_valid(core_self_dispatch_valid[CORE_INDEX]),
                     .self_dispatch_ready(core_self_dispatch_ready[CORE_INDEX]),
+                    .self_dispatch_tag(core_self_dispatch_tag[(CORE_INDEX*8) +: 8]),
                     .self_dispatch_flow_id(core_self_dispatch_flow_id[(CORE_INDEX*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]),
                     .self_dispatch_opcode(core_self_dispatch_opcode[(CORE_INDEX*OPCODE_WIDTH) +: OPCODE_WIDTH]),
                     .self_dispatch_a(core_self_dispatch_a[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),
@@ -2985,6 +3028,7 @@ __WAU_CONTRACT_ROM__
                     .peer_busy(core_busy),
                     .result_valid(core_result_valid[CORE_INDEX]),
                     .result_ready(core_result_ready[CORE_INDEX]),
+                    .result_tag(core_result_tag[(CORE_INDEX*8) +: 8]),
                     .result_flow_id(core_result_flow_id[(CORE_INDEX*FLOW_ID_WIDTH) +: FLOW_ID_WIDTH]),
                     .result_stage_id(core_result_stage_id[(CORE_INDEX*8) +: 8]),
                     .result_value(core_result_value[(CORE_INDEX*DATA_WIDTH) +: DATA_WIDTH]),

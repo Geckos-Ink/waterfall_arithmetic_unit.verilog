@@ -10,10 +10,21 @@ It is **silicon-verified**: the same flow has been taken end-to-end onto a Teras
 
 Typical uses: experimenting with small FPGA-side math accelerators, teaching dataflow / NoC concepts on real silicon, or as a reusable reference for the "high-level kernel → generated RTL → working bitstream" path.
 
-![](https://github.com/Geckos-Ink/waterfall_arithmetic_unit.verilog/blob/main/tools/wau-pipelines-viewer/examples/wau_3x3_demo.gif?raw=true)
+![](https://github.com/Geckos-Ink/waterfall_arithmetic_unit.verilog/blob/main/tools/wau-pipelines-viewer/examples/wau_4x4_pipeline_demo.gif?raw=true)
 
 *Above: the [wau-pipelines-viewer](tools/wau-pipelines-viewer) replaying a real
-iverilog simulation of a 3x3 WAU under a randomized multi-flow stress stream.
+iverilog simulation of the tracked
+[`wau_4x4_pipeline_demo.json`](tools/wau-pipelines-viewer/examples/wau_4x4_pipeline_demo.json).
+Four pinned four-stage row pipelines process 32 inputs through a 16-slot
+coordinator. Every dispatch carries an internal transaction tag, so repeated
+inputs for the **same** flow can occupy successive stages at once instead of
+waiting for the previous input to retire. In the measured trace all 16 cores
+execute exactly eight operations, the runtime reaches eight simultaneously busy
+cores, retires all 32 inputs in 81 cycles, and records zero router stalls. That
+8/16 peak is useful rather than embarrassing: the animation exposes the real
+remaining station/highway cadence instead of pretending the offline plan's
+16-operation peak is achieved in RTL.
+
 Each cycle plays as a slow-motion scene: operand packets travel hop-by-hop from
 the coordinator, the applied operation flashes on the core, and result data
 flows back over the highway — with a HUD tracking busy cores, packets in flight,
@@ -22,7 +33,7 @@ and peak parallel operations. Each row of cores has its **own
 highway per line, drawn as the rail beneath that row, ending at its own
 coordinator `hub` on the left. Every rail carries its own
 [contracting bus](#highway-contracting-bus) with its own slot numbering and its
-own marker, so the three arbitrate in parallel rather than in turn. Watch a
+own marker, so the four rows arbitrate in parallel rather than in turn. Watch a
 core's stub go dashed when it wants its highway, amber on the cycle it calls
 from its own slot, and solid red while it holds that highway under a contract —
 and note that a contract on one row never stops another row moving. The viewer can also compile a
@@ -42,13 +53,15 @@ from offset `5888`) and centered to `[-128, 127]` exactly as the DE0-Nano
 stress runner does, so the animation moves the same values that were checked
 bit-exact on silicon in the
 [live MNIST board run](#ad-hoc-mesh-stress-kernel--live-board-run-2026-07-07).
-The recording covers **one whole elaboration, uncut** — all 198 cycles from
-the first operand packet leaving the coordinator to the finished result being
-handed back to the host — so no flow animation is truncated mid-flight: you
-can follow a single MNIST pixel pair the whole way through the 47-node DAG,
-across both independent highways, and watch the run end with core `#7`
-holding its highway under a burst contract while the HUD reads `258` mesh
-hops and `0` stalls. Reproduce it with:*
+The recording covers the **complete four-input run, uncut**. The first two
+transactions are accepted on consecutive cycles, demonstrating that repeated
+inputs for flow `101` now overlap safely instead of being serialized by flow
+id. All four results retire in acceptance order by cycle 403 (down from 769
+cycles before transaction tagging), all eight cores execute work, and the
+final counters read `932` mesh hops and `4` stalls. The modest two-core busy
+peak also exposes the 47-node kernel's remaining dependency/station bottleneck
+instead of conflating total core coverage with instantaneous parallelism.
+Reproduce it with:*
 
 ```bash
 python3 scripts/fetch_dataset.py   # once: writes git-ignored datasets/mnist/
@@ -59,8 +72,8 @@ cd tools/wau-pipelines-viewer && python3 -m wau_viewer \
   --mnist-images ../../datasets/mnist/t10k-images-idx3-ubyte.gz \
   --mnist-count 4 --mnist-offset 5888 \
   --record examples/wau_mnist_mesh_stress.gif \
-  --framerate 10 --frames-per-cycle 3 --gif-width 2400 --window-size 3000x1900 \
-  --record-max-cycles 198 --headless
+  --framerate 12 --frames-per-cycle 1 --gif-width 1200 \
+  --window-size 3000x1900 --headless
 ```
 
 Drop `--record`/`--headless` to drive the same MNIST run interactively.
@@ -76,7 +89,7 @@ This repository now contains a working foundation for:
 - constrained pseudo-C accumulator frontend (`compile-pseudoc`) and kernel-style `.cw` frontend (`compile-cw`) in addition to expression compilation,
 - a real `.cw` language front-end (`cw-lint`/`cw-eval`: lexer → AST → host-side interpreter) with **classes and magic methods** for compile-time type handling — operator overloading and type-conversion hooks (`__to_float__`/`__to_int__`/`__convert__`) the compiler can invoke to bridge precisions dynamically,
 - CW software reference model + benchmark value scoreboard (`scoreboard_pass_ratio` gate on top of latency/makespan),
-- Verilog emission for a multi-issue coordinator (keeps up to `coordinator.max_in_flight` distinct flows executing concurrently across the core mesh, so independent flows actually overlap on different cores at runtime), core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
+- Verilog emission for a tagged multi-issue coordinator (keeps up to `coordinator.max_in_flight` transactions executing concurrently; an internal slot tag lets repeated inputs of one flow fill a real pipeline alongside independent flows), core/station, ALU, explicit highway routers/links, top-level grid, and a memory-mapped host control/status register file (`wau_host_mmio`),
 - selectable [highway topology](#highway-topology) via `device.highway.topology`: **one independent highway per line of cores by default** (3-port routers, per-line coordinator hubs, index-compare routing, no per-port divider) so rows carry traffic in parallel, with a single-highway `chain` and the full `matrix` mesh available opt-in,
 - a [highway contracting bus](#highway-contracting-bus) (`device.highway.contract_bus`) that offers one core slot per clock and lets a core answer with either a bare request bit or a contract stating how, how much and how many times it intends to transmit — taking the highway exclusively for that transfer instead of re-arbitrating per beat, bounded by a beat count and a hard lease,
 - reusable generated-project assembly through `thirds/veribuilder`, an externalizable Python package for parameterized Verilog project manifests, feature-gated files, simple templates, headers, and deterministic file emission,
@@ -240,13 +253,15 @@ Use `--quick` for a grid-only sweep, `--lut-budget` /
 `--max-utilization` / `--tolerance` to tune the envelope.
 
 Alongside grid shape, op distribution, and memory split, `fit-config` also
-co-sweeps `coordinator.max_in_flight`: every in-flight slot costs LUTs, but the
-depth only buys makespan when independent flows overlap, so the finder tries the
-workload-appropriate depths (a single-flow program collapses to `1`, reclaiming
-those LUTs; multi-flow workloads try `1`, powers of two, and the flow-count
-ceiling) and the ranker keeps the cheapest depth that doesn't cost makespan.
-Override the depths with `--max-in-flight 1,2,4`; the swept set is reported as
-`max_in_flight_swept` and encoded in each candidate id as a `_mif<N>` suffix.
+co-sweeps `coordinator.max_in_flight`: every in-flight slot costs LUTs, so the
+ranker keeps the cheapest evaluated depth that doesn't cost makespan. Its
+automatic ceiling is currently the number of declared flow ids; consequently a
+single-flow workload collapses to `1` even though the tagged RTL can overlap a
+host stream of repeated same-flow inputs. When that stream is the intended
+workload, state its depths explicitly with `--max-in-flight 1,2,4`. The swept
+set is reported as `max_in_flight_swept` and encoded in each candidate id as a
+`_mif<N>` suffix; replica/stream-aware automatic inference is tracked in
+[`ROADMAP.md`](ROADMAP.md).
 
 ### Datasets for data-exchange testing
 
@@ -496,9 +511,9 @@ Main JSON fields:
 - `scheduler`
   - `strategy` (`round_robin`, `serial`, or `dependency_aware`)
   - `program_policy` (`weighted_fair`, `strict_priority`, `round_robin`)
-  - `locality_bias` (float `>= 0`, default `0.0`): routing-aware core-selection tiebreaker that weights each candidate core by its Manhattan hop distance to the cores holding the node's true data-dependency results. Applied only after the earliest-free-cycle key, so it shrinks transfer hops without inflating makespan/latency; `0.0` disables locality weighting. Scheduler ties use explicit replica/runtime-node keys, so output is stable across Python hash seeds. `wau_schedule.json` exports the matching `dependency_edges_v1` metric name, hop total/count/average, and unresolved-edge count.
+  - `locality_bias` (float `>= 0`, default `0.0`): routing-aware core-selection tiebreaker that weights each **runtime-executable primary/fallback** core by its Manhattan hop distance to the cores holding the node's true data-dependency results. Applied only after the earliest-free-cycle key, so it shrinks transfer hops without inflating makespan/latency; `0.0` disables locality weighting. Ready nodes are ranked by the earliest cycle one of those cores can actually start them, and all ties use explicit replica/runtime-node keys, so output is stable across Python hash seeds. `wau_schedule.json` exports the matching `dependency_edges_v1` metric name, hop total/count/average, and unresolved-edge count.
 - `coordinator`
-  - `max_in_flight` (int `[1,16]`, default `4`): hardware capacity of the generated `wau_coordinator` — the number of **distinct** flows it can keep executing concurrently across the core mesh (one accumulator context per slot). Independent flows injected back-to-back overlap on different cores instead of running strictly one-at-a-time. `1` reproduces the legacy serial coordinator. Emitted as `WAU_COORD_MAX_IN_FLIGHT`. Per-flow results are unchanged; a single in-flight flow keeps identical timing.
+  - `max_in_flight` (int `[1,16]`, default `4`): hardware capacity of the generated `wau_coordinator` — the number of tagged input transactions it can keep executing concurrently across the core mesh (one accumulator context per slot). The slot index travels internally through dispatch, core execution, fast-path handoffs, and results, so same-flow inputs as well as independent flows overlap safely. Completed slots retire to the unchanged host/MMIO stream in input acceptance order, so the internal tag does not leak into the public ABI. `1` reproduces the legacy serial coordinator. Emitted as `WAU_COORD_MAX_IN_FLIGHT`; a single in-flight flow keeps identical timing.
 - `flows`
   - `id`, `name`, `entry`, optional `exit`; coordinates are `x,y` with optional `z` (default `0`)
   - per-stage: `op`, optional `core`, `fallback_core`, `immediate_b`, `allow_adaptive`, `dtype`
@@ -506,6 +521,7 @@ Main JSON fields:
 - `programs`
   - `id`, `name`, `flows`, `priority`, `replicas`, `max_parallel_flows`, `load_balance`
   - `allow_async`, `allow_out_of_order`
+  - `replicas * len(flows)` is the total number of instances in the offline plan; `max_parallel_flows` is only the overlap window. Instances beyond the first window are scheduled in deterministic waves, never silently discarded.
 
 ## Highway topology
 

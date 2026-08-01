@@ -20,6 +20,7 @@ module wau_core_station #(
 
     input wire in_valid,
     output wire in_ready,
+    input wire [7:0] in_tag,
     input wire [FLOW_ID_WIDTH-1:0] in_flow_id,
     input wire [OPCODE_WIDTH-1:0] in_opcode,
     input wire signed [DATA_WIDTH-1:0] in_a,
@@ -38,6 +39,7 @@ module wau_core_station #(
     // destination locally instead of via the central coordinator.
     input wire self_valid,
     output wire self_ready,
+    input wire [7:0] self_tag,
     input wire [FLOW_ID_WIDTH-1:0] self_flow_id,
     input wire [OPCODE_WIDTH-1:0] self_opcode,
     input wire signed [DATA_WIDTH-1:0] self_a,
@@ -49,6 +51,7 @@ module wau_core_station #(
 
     output reg out_valid,
     input wire out_ready,
+    output reg [7:0] out_tag,
     output reg [FLOW_ID_WIDTH-1:0] out_flow_id,
     output reg [7:0] out_stage_id,
     output reg signed [DATA_WIDTH-1:0] out_value,
@@ -90,6 +93,7 @@ module wau_core_station #(
 
     reg [1:0] state;
 
+    reg [7:0] active_tag;
     reg [FLOW_ID_WIDTH-1:0] active_flow_id;
     reg [OPCODE_WIDTH-1:0] active_opcode;
     reg [7:0] active_stage_id;
@@ -144,12 +148,14 @@ module wau_core_station #(
     assign effective_b = in_use_immediate ? in_immediate_b : in_b;
     assign self_effective_b = self_use_immediate ? self_immediate_b : self_b_reg;
 
+    wire [7:0] sel_tag;
     wire [FLOW_ID_WIDTH-1:0] sel_flow_id;
     wire [OPCODE_WIDTH-1:0] sel_opcode;
     wire signed [DATA_WIDTH-1:0] sel_a;
     wire signed [DATA_WIDTH-1:0] sel_b;
     wire signed [DATA_WIDTH-1:0] sel_b_reg;
     wire [7:0] sel_stage_id;
+    assign sel_tag      = sel_use_self ? self_tag           : in_tag;
     assign sel_flow_id  = sel_use_self ? self_flow_id       : in_flow_id;
     assign sel_opcode   = sel_use_self ? self_opcode        : in_opcode;
     assign sel_a        = sel_use_self ? self_a             : in_a;
@@ -251,9 +257,11 @@ module wau_core_station #(
         if (!rst_n) begin
             state <= ST_IDLE;
             out_valid <= 1'b0;
+            out_tag <= 8'd0;
             out_flow_id <= {FLOW_ID_WIDTH{1'b0}};
             out_stage_id <= 8'd0;
             out_value <= {DATA_WIDTH{1'b0}};
+            active_tag <= 8'd0;
             active_flow_id <= {FLOW_ID_WIDTH{1'b0}};
             active_opcode <= {OPCODE_WIDTH{1'b0}};
             active_stage_id <= 8'd0;
@@ -301,6 +309,7 @@ module wau_core_station #(
                         if (cache_hit_comb) begin
                             cache_hit_count <= cache_hit_count + 32'd1;
                             out_valid <= 1'b1;
+                            out_tag <= sel_tag;
                             out_flow_id <= sel_flow_id;
                             out_stage_id <= sel_stage_id;
                             out_value <= cache_hit_value;
@@ -327,6 +336,7 @@ module wau_core_station #(
                             end
                             state <= ST_OUT;
                         end else begin
+                            active_tag <= sel_tag;
                             active_flow_id <= sel_flow_id;
                             active_opcode <= sel_opcode;
                             active_stage_id <= sel_stage_id;
@@ -353,6 +363,7 @@ module wau_core_station #(
 
                     if ((wait_cycles == 8'd0) && (result_latched_valid || alu_out_valid)) begin
                         out_valid <= 1'b1;
+                        out_tag <= active_tag;
                         out_flow_id <= active_flow_id;
                         out_stage_id <= active_stage_id;
                         out_value <= alu_out_valid ? alu_out_value : result_latched_value;

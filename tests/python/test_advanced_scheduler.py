@@ -59,15 +59,9 @@ class AdvancedSchedulerTests(unittest.TestCase):
 
 
 class ScheduledCoreStaysWithinRuntimeDispatchChoicesTests(unittest.TestCase):
-    """`compiler.build_fast_path_tables` is built from `CompiledProject`
-    (primary_core/fallback_core) rather than `SchedulePlan`, because the
-    runtime dispatch path -- both the dynamic coordinator and the fast-path
-    table -- only ever chooses between those two cores, while the scheduler's
-    `_select_core` can legitimately pick a third `prefer_balance` candidate
-    for offline timeline/contract-ROM bookkeeping only. This guardrail proves
-    the repo's tracked demo/regression configs don't exercise that divergent
-    case, so nobody builds the fast-path feature against a config where the
-    schedule's prediction and the runtime's actual core choice disagree."""
+    """The offline plan and contract ROM must describe an executable runtime
+    path: generated dispatch can choose only primary or fallback, never an
+    analysis-only third candidate retained by the compiler."""
 
     def _assert_schedule_stays_within_compiled_choices(self, config_path: str) -> None:
         config = load_config(Path(config_path))
@@ -113,17 +107,10 @@ class ScheduledCoreStaysWithinRuntimeDispatchChoicesTests(unittest.TestCase):
             "src/python/configs/wau_3d_demo.json"
         )
 
-    # Note: `wau_2d_multiprogram_demo.json` is deliberately NOT covered here.
-    # At least one of its nodes (flow 10's "n_mul") uses `prefer_balance`
-    # placement and is scheduled by `_select_core` onto a third candidate
-    # core outside {primary_core, fallback_core} -- a real, pre-existing,
-    # harmless divergence between the offline schedule's prediction and the
-    # dynamic coordinator's actual runtime choice (which, like the fast-path
-    # table, only ever picks between primary/fallback). It is harmless
-    # because `build_fast_path_tables` never reads `SchedulePlan`, so this
-    # divergence cannot affect the fast-path table's correctness -- it only
-    # means this specific config's offline timeline/contract-ROM estimate for
-    # that one node describes a core the runtime will never actually use.
+    def test_multiprogram_demo(self) -> None:
+        self._assert_schedule_stays_within_compiled_choices(
+            "src/python/configs/wau_2d_multiprogram_demo.json"
+        )
 
 
 if __name__ == "__main__":

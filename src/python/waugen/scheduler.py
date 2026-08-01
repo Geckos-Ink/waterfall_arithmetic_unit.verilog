@@ -180,7 +180,14 @@ def _resolve_dep_iteration(current: CompiledNode, dep: CompiledNode, iteration: 
     return min(iteration, dep.max_iterations - 1)
 
 
-def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNode], dict[str, list[str]], dict[str, int], dict[int, _ProgramMeta]]:
+def _build_runtime_nodes(
+    project: CompiledProject, *, preserve_arch_search_v1: bool = False
+) -> tuple[
+    dict[str, _RuntimeNode],
+    dict[str, list[str]],
+    dict[str, int],
+    dict[int, _ProgramMeta],
+]:
     grid_x = project.config.device.grid_x
     grid_y = project.config.device.grid_y
 
@@ -198,8 +205,14 @@ def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNo
             for flow_id in program.flow_ids:
                 flow_instances.append((replica, flow_id))
 
-        if len(flow_instances) > program.max_parallel_flows:
+        if preserve_arch_search_v1 and len(flow_instances) > program.max_parallel_flows:
             flow_instances = flow_instances[: program.max_parallel_flows]
+
+        # `replicas` describes how many executions belong in the program;
+        # `max_parallel_flows` is a concurrency window, not permission to drop
+        # every instance after the first window. We build every instance and
+        # add order-only wave dependencies below to cap simultaneous activity.
+        instance_boundaries: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
 
         for replica, flow_id in flow_instances:
             flow = flow_by_id[flow_id]
@@ -216,21 +229,6 @@ def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNo
                     )
                     key_of[(node.node_id, iteration)] = key
 
-                    candidate_core_indices = tuple(
-                        core_index(coord.x, coord.y, grid_x, coord.z, grid_y)
-                        for coord in node.candidate_cores
-                    )
-                    if not candidate_core_indices:
-                        candidate_core_indices = (
-                            core_index(
-                                node.primary_core.x,
-                                node.primary_core.y,
-                                grid_x,
-                                node.primary_core.z,
-                                grid_y,
-                            ),
-                        )
-
                     primary_idx = core_index(
                         node.primary_core.x,
                         node.primary_core.y,
@@ -238,8 +236,34 @@ def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNo
                         node.primary_core.z,
                         grid_y,
                     )
-                    if primary_idx not in candidate_core_indices:
-                        candidate_core_indices = (primary_idx,) + candidate_core_indices
+                    if preserve_arch_search_v1:
+                        candidate_core_indices = tuple(
+                            core_index(coord.x, coord.y, grid_x, coord.z, grid_y)
+                            for coord in node.candidate_cores
+                        )
+                        if not candidate_core_indices:
+                            candidate_core_indices = (primary_idx,)
+                        elif primary_idx not in candidate_core_indices:
+                            candidate_core_indices = (
+                                primary_idx,
+                                *candidate_core_indices,
+                            )
+                    else:
+                        # Keep the offline plan executable by generated RTL:
+                        # dispatch can choose only primary/fallback, even when
+                        # compilation retained more exploratory candidates.
+                        runtime_candidates = [primary_idx]
+                        if node.fallback_core is not None:
+                            fallback_idx = core_index(
+                                node.fallback_core.x,
+                                node.fallback_core.y,
+                                grid_x,
+                                node.fallback_core.z,
+                                grid_y,
+                            )
+                            if fallback_idx != primary_idx:
+                                runtime_candidates.append(fallback_idx)
+                        candidate_core_indices = tuple(runtime_candidates)
 
                     runtime_nodes[key] = _RuntimeNode(
                         key=key,
@@ -308,6 +332,42 @@ def _build_runtime_nodes(project: CompiledProject) -> tuple[dict[str, _RuntimeNo
                 for prev_key, next_key in zip(serial_keys, serial_keys[1:]):
                     if prev_key not in runtime_nodes[next_key].dep_keys:
                         runtime_nodes[next_key].dep_keys.append(prev_key)
+
+            if not preserve_arch_search_v1:
+                instance_keys = set(key_of.values())
+                depended_on = {
+                    dep_key
+                    for key in instance_keys
+                    for dep_key in runtime_nodes[key].dep_keys
+                    if dep_key in instance_keys
+                }
+                roots = tuple(
+                    sorted(
+                        key
+                        for key in instance_keys
+                        if not any(
+                            dep_key in instance_keys
+                            for dep_key in runtime_nodes[key].dep_keys
+                        )
+                    )
+                )
+                terminals = tuple(sorted(instance_keys - depended_on))
+                instance_boundaries.append((roots, terminals))
+
+        if not preserve_arch_search_v1:
+            parallel_window = max(1, program.max_parallel_flows)
+            for instance_index in range(parallel_window, len(instance_boundaries)):
+                current_roots, _ = instance_boundaries[instance_index]
+                _, previous_terminals = instance_boundaries[
+                    instance_index - parallel_window
+                ]
+                for root_key in current_roots:
+                    for terminal_key in previous_terminals:
+                        if terminal_key not in runtime_nodes[root_key].dep_keys:
+                            # Concurrency-window edges are ordering constraints,
+                            # not data movement, so data_dep_keys intentionally
+                            # stays untouched.
+                            runtime_nodes[root_key].dep_keys.append(terminal_key)
 
     for key, node in runtime_nodes.items():
         indegree[key] = len(node.dep_keys)
@@ -381,12 +441,9 @@ def _select_core(
     grid_y: int,
     locality_bias: float,
 ) -> tuple[int, int, bool]:
-    # Note: the runtime dispatch path -- both the dynamic coordinator and the
-    # per-core fast-path table in compiler.build_fast_path_tables -- only ever
-    # chooses between a node's primary_core and fallback_core. A `least_busy`/
-    # `prefer_balance` pick of any other candidate here is a timeline/
-    # contract-ROM prediction only, never a runtime path; the two must not be
-    # confused when reasoning about which core "actually" runs a stage.
+    # _build_runtime_nodes has already narrowed this list to the generated
+    # coordinator's executable primary/fallback choices. The schedule and its
+    # contract ROM must never predict work on an unreachable third candidate.
     candidates = list(node.candidate_core_indices)
     if not (allow_adaptive_reroute and node.allow_adaptive):
         candidates = [node.primary_core_idx]
@@ -441,7 +498,25 @@ def _select_core(
     return chosen, chosen_start, chosen != node.primary_core_idx
 
 
-def build_schedule(project: CompiledProject) -> SchedulePlan:
+def _earliest_candidate_start(
+    node: _RuntimeNode,
+    *,
+    ready_time: int,
+    core_ready: dict[int, int],
+    allow_adaptive_reroute: bool,
+) -> int:
+    """Lower bound used by list scheduling before core selection mutates RR state."""
+    candidates = list(node.candidate_core_indices)
+    if not (allow_adaptive_reroute and node.allow_adaptive):
+        candidates = [node.primary_core_idx]
+    if not candidates:
+        candidates = [node.primary_core_idx]
+    return min(max(ready_time, core_ready.get(core, 0)) for core in candidates)
+
+
+def build_schedule(
+    project: CompiledProject, *, _preserve_arch_search_v1: bool = False
+) -> SchedulePlan:
     strategy = project.config.scheduler.strategy
     allow_adapt = project.config.compiler.allow_adaptive_reroute
     policy = project.config.scheduler.program_policy
@@ -449,7 +524,9 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
     grid_x = project.config.device.grid_x
     grid_y = project.config.device.grid_y
 
-    runtime_nodes, dependents, indegree, program_meta = _build_runtime_nodes(project)
+    runtime_nodes, dependents, indegree, program_meta = _build_runtime_nodes(
+        project, preserve_arch_search_v1=_preserve_arch_search_v1
+    )
 
     unscheduled: set[str] = set(runtime_nodes)
     ready_keys: set[str] = {key for key, indeg in indegree.items() if indeg == 0}
@@ -503,19 +580,31 @@ def build_schedule(project: CompiledProject) -> SchedulePlan:
                     return 0
                 return max(dep_end_cycle.get(dep_key, 0) for dep_key in deps)
 
-            if runtime_nodes[program_keys[0]].program_allow_out_of_order:
-                selected_key = min(
-                    program_keys,
-                    key=lambda k: (
-                        ready_time(k),
-                        runtime_nodes[k].program_replica,
-                        runtime_nodes[k].flow_slot,
-                        runtime_nodes[k].iteration,
-                        runtime_nodes[k].node_slot,
-                        runtime_nodes[k].node_id,
-                        k,
-                    ),
+            def earliest_start(node_key: str) -> int:
+                return _earliest_candidate_start(
+                    runtime_nodes[node_key],
+                    ready_time=ready_time(node_key),
+                    core_ready=core_ready,
+                    allow_adaptive_reroute=allow_adapt,
                 )
+
+            def out_of_order_key(node_key: str) -> tuple:
+                node = runtime_nodes[node_key]
+                stable_tail = (
+                    ready_time(node_key),
+                    node.program_replica,
+                    node.flow_slot,
+                    node.iteration,
+                    node.node_slot,
+                    node.node_id,
+                    node_key,
+                )
+                if _preserve_arch_search_v1:
+                    return stable_tail
+                return (earliest_start(node_key), *stable_tail)
+
+            if runtime_nodes[program_keys[0]].program_allow_out_of_order:
+                selected_key = min(program_keys, key=out_of_order_key)
             else:
                 selected_key = min(
                     program_keys,

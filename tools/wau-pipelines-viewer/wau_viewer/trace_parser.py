@@ -51,6 +51,7 @@ class CoreState:
     disp_use_immediate: bool = False
     disp_stage_id: Optional[int] = None
     disp_flow_id: Optional[int] = None
+    disp_tag: Optional[int] = None
     # Set when this dispatch is a fast-path self-dispatch (core_self_dispatch_*)
     # rather than an ordinary coordinator dispatch (core_dispatch_*) -- the
     # direct core-to-core handoff `compiler.station_program` introduces.
@@ -59,6 +60,7 @@ class CoreState:
     res_value: Optional[int] = None
     res_stage_id: Optional[int] = None
     res_flow_id: Optional[int] = None
+    res_tag: Optional[int] = None
     # Data-plane delivery: a result packet arrived at this core over the data
     # mesh this cycle (src core -> this core). Drives the data-movement animation.
     data_delivered: bool = False
@@ -66,6 +68,7 @@ class CoreState:
     ddeliv_value: Optional[int] = None
     ddeliv_flow_id: Optional[int] = None
     ddeliv_stage_id: Optional[int] = None
+    ddeliv_tag: Optional[int] = None
     # Set when the delivery left the fabric at a highway line's hub rather than
     # at this core's local port (the default `lines` topology).
     ddeliv_line: Optional[int] = None
@@ -254,18 +257,21 @@ def parse_trace(path: Path) -> ParsedTrace:
                     cs.disp_use_immediate = kv.get("disp_use_imm") == "1"
                     cs.disp_stage_id = _to_int(kv.get("disp_stage", "0"))
                     cs.disp_flow_id = _to_int(kv.get("disp_flow", "0"))
+                    cs.disp_tag = _to_int(kv.get("disp_tag", "0"))
                     cs.disp_fastpath = kv.get("disp_fastpath") == "1"
                 if kv.get("res") == "1":
                     cs.has_result = True
                     cs.res_value = _to_int(kv.get("res_val", "0"))
                     cs.res_stage_id = _to_int(kv.get("res_stage", "0"))
                     cs.res_flow_id = _to_int(kv.get("res_flow", "0"))
+                    cs.res_tag = _to_int(kv.get("res_tag", "0"))
                 if kv.get("ddeliv") == "1":
                     cs.data_delivered = True
                     cs.ddeliv_src = _to_int(kv.get("ddeliv_src", "0"))
                     cs.ddeliv_value = _to_int(kv.get("ddeliv_val", "0"))
                     cs.ddeliv_flow_id = _to_int(kv.get("ddeliv_flow", "0"))
                     cs.ddeliv_stage_id = _to_int(kv.get("ddeliv_stage", "0"))
+                    cs.ddeliv_tag = _to_int(kv.get("ddeliv_tag", "0"))
                     if "ddeliv_line" in kv:
                         cs.ddeliv_line = _to_int(kv["ddeliv_line"])
                     cs.ddeliv_fastpath = kv.get("ddeliv_fastpath") == "1"
@@ -342,6 +348,13 @@ def derive_bottlenecks(trace: ParsedTrace) -> Dict[str, object]:
             highway_held_cycles += 1
 
     busy_ratio = [b / n for b in busy]
+    busy_per_cycle = [sum(1 for c in snap.cores if c.busy) for snap in trace.cycles]
+    active_core_count = sum(1 for count in dispatched if count > 0)
+    peak_busy_cores = max(busy_per_cycle, default=0)
+    average_busy_cores = sum(busy_per_cycle) / n
+    fabric_busy_ratio = (
+        sum(busy_per_cycle) / (n * core_count) if core_count else 0.0
+    )
     busiest = int(max(range(core_count), key=lambda i: busy_ratio[i])) if core_count else None
     last_obs = trace.cycles[-1].obs
     last_hwy = trace.cycles[-1].highway
@@ -350,6 +363,10 @@ def derive_bottlenecks(trace: ParsedTrace) -> Dict[str, object]:
         "busiest_core": busiest,
         "core_busy_ratio": busy_ratio,
         "core_dispatch_count": dispatched,
+        "active_core_count": active_core_count,
+        "peak_busy_cores": peak_busy_cores,
+        "average_busy_cores": average_busy_cores,
+        "fabric_busy_ratio": fabric_busy_ratio,
         "backpressure_cycles": backpressure,
         "stall_rate": stall_rate,
         "total_cycles": n,

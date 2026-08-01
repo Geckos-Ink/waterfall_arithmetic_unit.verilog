@@ -13,6 +13,48 @@ Completed baseline:
 - Generated RTL for coordinator/core/station/ALU/top.
 - Initial verification with Python unit tests + `iverilog` testbenches.
 
+## Progress Update (2026-08-01)
+Implemented this cycle (tagged pipeline occupancy + truthful scheduling):
+
+- **Concurrent same-flow transactions are now implemented.** The coordinator
+  slot index travels as an 8-bit internal transaction tag through control-plane
+  dispatch, `wau_core_station`, direct fast-path handoffs, the data plane, and
+  result matching. `host_in_ready` is therefore capacity-based instead of
+  rejecting a flow id already in flight. Completed slots are reordered by
+  acceptance sequence before reaching the host, so the host/MMIO ABI remains unchanged;
+  `tb_wau_coordinator_multiissue.v` injects two different inputs for flow 1
+  before either retires, plus flow 2, and observes three simultaneously busy
+  cores with all three results correct.
+- **Program concurrency no longer deletes work.** The scheduler now expands all
+  `replicas × flows`; `max_parallel_flows` adds deterministic ordering-only
+  edges between waves. Those edges do not pollute data-dependency hop metrics.
+  Ready-node selection considers the earliest cycle an executable core can
+  actually start, and schedule placement is restricted to the compiled
+  primary/fallback pair the RTL can dispatch to. `prefer_balance` compilation
+  deterministically promotes the least-loaded alternative to fallback.
+- **The paradoxical headline demo was replaced by a measured 4x4 pipeline
+  fixture.** `tools/wau-pipelines-viewer/examples/wau_4x4_pipeline_demo.json`
+  uses four pinned row pipelines, direct core-to-core fast paths, 32 total
+  program instances, and a 16-transaction window. Its real iverilog trace
+  retires 32/32 inputs in 81 cycles, dispatches exactly eight operations on
+  every one of the 16 cores, reaches eight busy cores concurrently, and records
+  zero router stalls. The remaining gap from the offline plan's 16-operation
+  peak stays visible as an honest station/highway cadence bottleneck.
+- **Bottleneck reporting now quantifies whole-fabric use:** active cores,
+  peak/average busy cores, and aggregate fabric utilization are derived from
+  the RTL trace and shown beside the existing per-core ratios and stall data.
+
+Still open:
+
+- A nonlinear DAG is linearized for runtime execution; independent branch
+  fan-out/join within one transaction remains a separate architecture feature.
+  The new tags improve pipeline throughput across input transactions, not
+  intra-transaction fan-out.
+- `fit-config` still derives its automatic `max_in_flight` sweep ceiling from
+  the number of declared flow ids. Teach its workload model to infer repeated
+  same-flow stream depth from program replicas or an explicit throughput target;
+  until then, use `--max-in-flight` when fitting a one-flow streaming workload.
+
 ## Progress Update (2026-07-28)
 Implemented this cycle (per-core fast-path table slice):
 

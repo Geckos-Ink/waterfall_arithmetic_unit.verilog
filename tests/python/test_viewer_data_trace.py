@@ -156,6 +156,10 @@ class DataTraceParserTests(unittest.TestCase):
             trace = parse_trace(p)
 
         stats = derive_bottlenecks(trace)
+        self.assertEqual(stats["active_core_count"], 1)
+        self.assertEqual(stats["peak_busy_cores"], 1)
+        self.assertAlmostEqual(stats["average_busy_cores"], 1.0)
+        self.assertAlmostEqual(stats["fabric_busy_ratio"], 1.0 / 6.0)
         self.assertEqual(stats["highway_call_count"][1], 1)
         self.assertEqual(stats["highway_call_count"][0], 0)
         self.assertEqual(stats["highway_held_cycles"], 1)
@@ -302,6 +306,44 @@ class DataTraceEndToEndTests(unittest.TestCase):
             self.assertGreater(
                 len(offered), 1, f"line {line_index} never advanced its slot"
             )
+
+    def test_4x4_demo_exercises_every_core_with_tagged_pipeline_overlap(self) -> None:
+        import tempfile
+
+        from waugen.compiler import compile_project
+        from waugen.config import load_config
+        from waugen.scheduler import build_schedule
+        from waugen.verilog_emit import emit_verilog
+        from wau_viewer.simulator import IverilogRunner
+
+        config_path = (
+            REPO_ROOT
+            / "tools/wau-pipelines-viewer/examples/wau_4x4_pipeline_demo.json"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            rtl_dir = Path(td)
+            project = compile_project(load_config(config_path))
+            emit_verilog(project, build_schedule(project), rtl_dir)
+            flow_ids = [1, 2, 3, 4] * 4
+            operands = list(range(10, 26))
+            result = IverilogRunner(rtl_dir).run(
+                flow_ids, operands, list(reversed(operands)), max_cycles=500
+            )
+            trace = parse_trace(result.trace_path)
+
+        stats = derive_bottlenecks(trace)
+        self.assertEqual(trace.meta.outputs_seen, 16)
+        self.assertEqual(stats["active_core_count"], 16)
+        self.assertGreaterEqual(stats["peak_busy_cores"], 8)
+        self.assertTrue(all(count > 0 for count in stats["core_dispatch_count"]))
+
+        flow1_tags = {
+            core.disp_tag
+            for snapshot in trace.cycles
+            for core in snapshot.cores
+            if core.dispatched and core.disp_flow_id == 1
+        }
+        self.assertGreaterEqual(len(flow1_tags), 4)
 
 
 if __name__ == "__main__":

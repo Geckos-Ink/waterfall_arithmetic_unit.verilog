@@ -3,9 +3,10 @@
 
 """Schema + emission tests for the multi-issue coordinator capacity knob.
 
-`coordinator.max_in_flight` is the number of distinct flows the generated
-coordinator can keep executing concurrently on the core mesh. `1` reproduces
-the legacy strictly-serial coordinator. The value must flow into the
+`coordinator.max_in_flight` is the number of internally tagged transactions the
+generated coordinator can keep executing concurrently on the core mesh,
+including repeated inputs for one flow id. `1` reproduces the legacy
+strictly-serial coordinator. The value must flow into the
 `WAU_COORD_MAX_IN_FLIGHT` macro and the emitted `wau_coordinator.v`.
 """
 from __future__ import annotations
@@ -63,6 +64,11 @@ class CoordinatorConfigTests(unittest.TestCase):
         self.assertIn("MAX_IN_FLIGHT = `WAU_COORD_MAX_IN_FLIGHT", coord)
         # Multi-issue structures must be present (not the legacy single FSM).
         self.assertIn("slot_valid", coord)
+        self.assertIn("dispatch_pkt_tag", coord)
+        self.assertIn("result_pkt_tag", coord)
+        self.assertIn("slot_order", coord)
+        self.assertIn("assign host_in_ready = alloc_found;", coord)
+        self.assertNotIn("flow_busy", coord)
         self.assertNotIn("ST_WAIT_RESULT", coord)
 
 
